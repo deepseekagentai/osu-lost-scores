@@ -258,6 +258,7 @@ dependencies = [
  "osu-formats",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
