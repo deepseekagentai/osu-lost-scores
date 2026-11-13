@@ -2,13 +2,14 @@ mod detect;
 mod dump;
 mod keys;
 mod online;
+mod progress;
 mod report;
 mod setup;
 mod timings;
 
 use std::cmp::Reverse;
 use std::fs::File;
-use std::io::{self, BufWriter, IsTerminal, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -30,52 +31,44 @@ use crate::timings::Timings;
 #[command(
     name = "lost-scores",
     version,
-    about = "Find osu!stable plays that ScoreV1 overwrote and the pp they were worth"
+    about = "Find osu!stable plays that ScoreV1 overwrote and the pp they were worth",
+    after_help = guide(),
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
     #[command(flatten)]
-    source: Source,
-    #[command(flatten)]
     view: View,
-    #[arg(long, global = true, help = "Print how long each step took")]
-    timings: bool,
+    #[command(flatten)]
+    source: Source,
 }
 
 #[derive(Args)]
 struct Source {
     #[arg(
         long,
-        global = true,
-        help = "osu! folder; remembered after the first use"
+        help = "osu! folder; found automatically and remembered once given"
     )]
     osu_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        global = true,
-        help = "Player name; read from the osu! config by default"
-    )]
+    #[arg(long, help = "Player name; read from the osu! config by default")]
     player: Option<String>,
-    #[arg(
-        long,
-        global = true,
-        help = "Songs folder; read from the osu! config by default"
-    )]
+    #[arg(long, help = "Songs folder; read from the osu! config by default")]
     songs_dir: Option<PathBuf>,
-    #[arg(long, global = true, help = "Do not use the osu! API")]
+    #[arg(long, help = "Do not use the osu! API, even with saved keys")]
     offline: bool,
     #[arg(
         long,
-        global = true,
-        help = "Find lost plays on maps missing from Songs by downloading them (slow the first time)"
+        help = "Also find lost plays on maps missing from Songs by downloading them (slow the first time)"
     )]
     check_missing: bool,
+    #[arg(long, help = "Print how long each step took")]
+    timings: bool,
 }
 
 #[derive(Args)]
 struct View {
-    #[arg(long, help = "Map catalog with statuses and ranked dates")]
+    #[arg(long, hide = true)]
     maps: Option<PathBuf>,
     #[arg(long, help = "Also show plays on loved and unranked maps")]
     all: bool,
@@ -95,24 +88,71 @@ enum SortBy {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Dump every selected replay with its beatmap and pp as JSON")]
-    Scan {
-        #[arg(long, help = "Write the JSON to this file instead of standard output")]
-        output: Option<PathBuf>,
-    },
     #[command(about = "Show your top 200 as it would be if ScoreV1 had kept your best plays")]
     Potential {
-        #[arg(long, help = "Map catalog with statuses and ranked dates")]
+        #[arg(long, hide = true)]
         maps: Option<PathBuf>,
         #[arg(long, default_value_t = 50, help = "Rows to show, 0 shows all")]
         limit: usize,
         #[arg(long, help = "Print JSON instead of a table")]
         json: bool,
+        #[command(flatten)]
+        source: Source,
     },
     #[command(about = "Save the keys of your own osu! OAuth application")]
     Login,
     #[command(about = "Delete the saved osu! OAuth keys")]
     Logout,
+    #[command(
+        about = "Dump every replay of the player with its beatmap and pp as JSON, for checks"
+    )]
+    Scan {
+        #[arg(long, help = "Write the JSON to this file instead of standard output")]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        source: Source,
+    },
+}
+
+const EXAMPLES: [(&str, &str); 5] = [
+    ("lost-scores", "lost plays on ranked maps"),
+    (
+        "lost-scores --all --sort date",
+        "with loved and unranked maps, newest first",
+    ),
+    (
+        "lost-scores --check-missing",
+        "also maps that are no longer in Songs",
+    ),
+    (
+        "lost-scores potential",
+        "your top 200 with the lost plays put back",
+    ),
+    ("lost-scores login", "save your osu! API keys, needed once"),
+];
+
+fn guide() -> String {
+    let mut text = String::from(
+        "Without a command, lists your lost plays on ranked maps, best first.\n\nExamples:\n",
+    );
+    for (command, what) in EXAMPLES {
+        text.push_str(&format!("  {command:<31}{what}\n"));
+    }
+    text.push_str("\nFiles:\n");
+    let files = [
+        ("settings", setup::config_file()),
+        ("API keys", setup::credentials_file()),
+        ("map data", setup::maps_file()),
+        ("map cache", setup::osu_cache_dir()),
+    ];
+    for (name, path) in files {
+        let path = path.map_or_else(
+            || "no folder found".to_owned(),
+            |path| report::printable(&path.display().to_string()),
+        );
+        text.push_str(&format!("  {name:<11}{path}\n"));
+    }
+    text.trim_end().to_owned()
 }
 
 #[derive(Serialize)]
@@ -145,30 +185,50 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     let mut timings = Timings::new();
-    let result = match cli.command {
-        Some(Command::Scan { output }) => {
-            dump_replays(&cli.source, output.as_deref(), &mut timings)
-        }
-        Some(Command::Potential { maps, limit, json }) => {
-            show_potential(&cli.source, maps.as_deref(), limit, json, &mut timings)
-        }
-        Some(Command::Login) => login(),
-        Some(Command::Logout) => logout(),
-        None => show_lost(&cli.source, &cli.view, &mut timings),
+    let (result, source) = match &cli.command {
+        Some(Command::Scan { output, source }) => (
+            dump_replays(source, output.as_deref(), &mut timings),
+            Some(source),
+        ),
+        Some(Command::Potential {
+            maps,
+            limit,
+            json,
+            source,
+        }) => (
+            show_potential(source, maps.as_deref(), *limit, *json, &mut timings),
+            Some(source),
+        ),
+        Some(Command::Login) => (login(), None),
+        Some(Command::Logout) => (logout(), None),
+        None => (
+            show_lost(&cli.source, &cli.view, &mut timings),
+            Some(&cli.source),
+        ),
     };
-    if cli.timings {
+    if source.is_some_and(|source| source.timings) {
         eprintln!("{}", timings.report());
     }
     result
+}
+
+fn saved_keys() -> Option<Credentials> {
+    keys::from_env().or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
 }
 
 fn connect(source: &Source) -> Option<Online> {
     if source.offline {
         return None;
     }
-    keys::from_env()
-        .or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
-        .map(Online::new)
+    saved_keys().map(Online::new)
+}
+
+fn api_hint(source: &Source) -> &'static str {
+    if source.offline && saved_keys().is_some() {
+        "run without --offline"
+    } else {
+        "run `lost-scores login` first"
+    }
 }
 
 fn read(
@@ -218,7 +278,8 @@ fn read(
                 checking = started.elapsed();
             }
             None => eprintln!(
-                "--check-missing needs the osu! API: run lost-scores login first; continuing without it"
+                "--check-missing needs the osu! API: {}; continuing without it",
+                api_hint(source)
             ),
         }
     }
@@ -253,7 +314,7 @@ fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -
 fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
     let (scan, _, _) = read(source, view.maps.as_deref(), api.as_mut(), timings)?;
-    let catalog = load_catalog(view.maps.as_deref(), &scan, api.as_mut(), timings)?;
+    let catalog = load_catalog(source, view.maps.as_deref(), &scan, api.as_mut(), timings)?;
     let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
     let show_all = view.all || catalog.is_empty();
@@ -290,6 +351,7 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
 }
 
 fn load_catalog(
+    source: &Source,
     maps: Option<&Path>,
     scan: &Scan,
     mut api: Option<&mut Online>,
@@ -306,8 +368,9 @@ fn load_catalog(
                 update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api, now)?;
             }
             None => eprintln!(
-                "{} maps have no status yet; after `lost-scores login` they are fetched from the osu! API",
-                wanted.len()
+                "{} maps have no status yet; to fetch them from the osu! API, {}",
+                wanted.len(),
+                api_hint(source)
             ),
         }
     }
@@ -315,9 +378,11 @@ fn load_catalog(
     if let Some(api) = api {
         let ids = maps::stale(&catalog, now);
         if !ids.is_empty() {
+            let bar = progress::bar("status refresh");
             let changed = timings.time("status refresh", || {
-                maps::refresh(&mut catalog, &ids, api, now, |_, _| {})
+                maps::refresh(&mut catalog, &ids, api, now, progress::track(&bar))
             });
+            bar.finish_and_clear();
             if let Some(path) = &catalog_path {
                 catalog.save(path)?;
             }
@@ -367,7 +432,7 @@ fn add_missing_maps(
         "{} maps missing from Songs could hold a lost play; each one not in the cache takes two requests at one per second",
         md5s.len()
     );
-    let terminal = io::stderr().is_terminal();
+    let bar = progress::bar("missing maps");
     let report = timings.time("missing maps", || {
         fetch_missing(
             &md5s,
@@ -375,16 +440,10 @@ fn add_missing_maps(
             &mut catalog,
             &cache_dir,
             api,
-            |done, _| {
-                if terminal {
-                    eprint!("\rmissing maps: {done}/{}", md5s.len());
-                }
-            },
+            progress::track(&bar),
         )
     });
-    if terminal {
-        eprintln!();
-    }
+    bar.finish_and_clear();
     if let Some(path) = &catalog_path {
         catalog.save(path)?;
     }
@@ -404,11 +463,11 @@ fn show_potential(
     timings: &mut Timings,
 ) -> Result<()> {
     let mut api = connect(source)
-        .context("the potential top needs the osu! API: run lost-scores login first")?;
+        .with_context(|| format!("the potential top needs the osu! API: {}", api_hint(source)))?;
     let (scan, _, player) = read(source, maps, Some(&mut api), timings)?;
     let player =
         player.context("the potential top needs the player's profile from the osu! API")?;
-    let catalog = load_catalog(maps, &scan, Some(&mut api), timings)?;
+    let catalog = load_catalog(source, maps, &scan, Some(&mut api), timings)?;
     let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let lost = potential::lost_plays(&found, &catalog);
     let scores: Vec<Score> = timings
@@ -466,12 +525,14 @@ fn update_catalog(
     now: i64,
 ) -> Result<()> {
     let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
-    let requests = with_id.div_ceil(50) + (wanted.len() - with_id);
+    let requests = with_id.div_ceil(maps::BATCH_SIZE) + (wanted.len() - with_id);
     eprintln!(
         "asking the osu! API about {} maps, about {requests} requests at one per second",
         wanted.len()
     );
-    let result = maps::fill(catalog, wanted, api, now, |_, _| {});
+    let bar = progress::bar("map statuses");
+    let result = maps::fill(catalog, wanted, api, now, progress::track(&bar));
+    bar.finish_and_clear();
     if let Some(path) = path {
         catalog.save(path)?;
     }
@@ -530,4 +591,16 @@ fn write_json(mut writer: impl Write, value: &impl Serialize) -> Result<()> {
     writeln!(writer)?;
     writer.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    #[test]
+    fn arguments_are_consistent() {
+        Cli::command().debug_assert();
+    }
 }
