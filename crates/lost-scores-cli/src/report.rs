@@ -1,5 +1,7 @@
 use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::{MapCatalog, MapStatus};
+use lost_scores_core::potential::{Origin, Play, Potential};
+use osu_api::Score;
 use serde::Serialize;
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -88,6 +90,124 @@ pub fn table(rows: &[LostRow], limit: usize, with_status: bool) -> String {
     lines.join("\n")
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+pub struct PotentialRow {
+    pub place: usize,
+    pub pp: f64,
+    pub weight: f64,
+    pub weighted: f64,
+    pub lost: bool,
+    pub beatmap_id: u32,
+    pub artist: String,
+    pub title: String,
+    pub version: String,
+    pub creator: String,
+    pub mods: String,
+    pub accuracy: f64,
+    pub played: String,
+}
+
+pub fn potential_rows(
+    potential: &Potential,
+    online: &[Score],
+    found: &[LostScore],
+    lost: &[(usize, Play)],
+) -> Vec<PotentialRow> {
+    potential
+        .top
+        .iter()
+        .enumerate()
+        .map(|(index, ranked)| {
+            let (lost, artist, title, version, creator, mods, played) = match ranked.origin {
+                Origin::Online(i) => {
+                    let score = &online[i];
+                    (
+                        false,
+                        score.beatmapset.artist.clone(),
+                        score.beatmapset.title.clone(),
+                        score.beatmap.version.clone(),
+                        score.beatmapset.creator.clone(),
+                        score.mods.concat(),
+                        score.created_at.get(..10).unwrap_or_default().to_owned(),
+                    )
+                }
+                Origin::Lost(i) => {
+                    let play = found[lost[i].0].play;
+                    let metadata = play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
+                    (
+                        true,
+                        metadata.map(|m| m.artist.clone()).unwrap_or_default(),
+                        metadata.map(|m| m.title.clone()).unwrap_or_default(),
+                        metadata.map(|m| m.version.clone()).unwrap_or_default(),
+                        metadata.map(|m| m.creator.clone()).unwrap_or_default(),
+                        play.header.mods.acronyms(),
+                        date(play.header.unix_time()),
+                    )
+                }
+            };
+            PotentialRow {
+                place: index + 1,
+                pp: ranked.play.pp,
+                weight: ranked.weight,
+                weighted: ranked.play.pp * ranked.weight,
+                lost,
+                beatmap_id: ranked.play.beatmap_id,
+                artist,
+                title,
+                version,
+                creator,
+                mods,
+                accuracy: ranked.play.accuracy,
+                played,
+            }
+        })
+        .collect()
+}
+
+pub fn potential_table(rows: &[PotentialRow], limit: usize) -> String {
+    let shown = if limit == 0 {
+        rows.len()
+    } else {
+        limit.min(rows.len())
+    };
+    let mut lines = vec![format!(
+        "{:>4}  {:>7}  {:>6}  {:>8}  {:<6}  {:>7}  {:<4}  beatmap",
+        "#", "pp", "weight", "weighted", "mods", "acc", ""
+    )];
+    for row in rows.iter().take(shown) {
+        let mods = if row.mods.is_empty() { "NM" } else { &row.mods };
+        lines.push(format!(
+            "{:>4}  {:>7.2}  {:>5.0}%  {:>8.2}  {:<6}  {:>6.2}%  {:<4}  {} - {} [{}]",
+            row.place,
+            row.pp,
+            row.weight * 100.0,
+            row.weighted,
+            mods,
+            row.accuracy,
+            if row.lost { "LOST" } else { "" },
+            printable(&row.artist),
+            printable(&row.title),
+            printable(&row.version)
+        ));
+    }
+    lines.join("\n")
+}
+
+pub fn thousands(value: f64) -> String {
+    let digits = format!("{:.0}", value.round());
+    let (sign, digits) = digits
+        .strip_prefix('-')
+        .map_or(("", digits.as_str()), |d| ("-", d));
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    format!("{sign}{grouped}")
+}
+
 pub fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
@@ -132,7 +252,10 @@ mod tests {
     use lost_scores_core::{LocalBeatmap, ScannedReplay};
     use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
-    use super::{LostRow, date, rows, table};
+    use lost_scores_core::potential::{Origin, Play, Potential, Ranked};
+    use osu_api::{Score, ScoreBeatmap, ScoreBeatmapset, ScoreStatistics};
+
+    use super::{LostRow, date, potential_rows, potential_table, rows, table, thousands};
 
     fn replay(name: &str, score: u32, pp: f64, unix_time: i64) -> ScannedReplay {
         ScannedReplay {
@@ -261,5 +384,108 @@ mod tests {
         };
         assert_eq!(data_lines(table(&all, 1, false)), 1);
         assert_eq!(data_lines(table(&all, 0, true)), 2);
+    }
+
+    fn score() -> Score {
+        Score {
+            id: 1,
+            pp: Some(400.0),
+            accuracy: 0.98,
+            mods: vec!["HD".into(), "DT".into()],
+            score: 1_000_000,
+            rank: "S".into(),
+            created_at: "2024-09-07T21:44:00Z".into(),
+            statistics: ScoreStatistics {
+                count_300: 100,
+                count_100: 2,
+                count_50: 0,
+                count_miss: 0,
+            },
+            beatmap: ScoreBeatmap {
+                id: 1,
+                version: "Expert".into(),
+                checksum: None,
+            },
+            beatmapset: ScoreBeatmapset {
+                id: 2,
+                artist: "SmokyThrill77".into(),
+                title: "Congrathalations!".into(),
+                creator: "Smoke".into(),
+            },
+        }
+    }
+
+    fn sample() -> (Potential, Vec<Score>, ScannedReplay) {
+        let lost_play = Play {
+            beatmap_id: 11,
+            pp: 300.0,
+            accuracy: 97.0,
+        };
+        let potential = Potential {
+            top: vec![
+                Ranked {
+                    origin: Origin::Online(0),
+                    play: Play {
+                        beatmap_id: 1,
+                        pp: 400.0,
+                        accuracy: 98.0,
+                    },
+                    weight: 1.0,
+                },
+                Ranked {
+                    origin: Origin::Lost(0),
+                    play: lost_play,
+                    weight: 0.95,
+                },
+            ],
+            pp: 0.0,
+            accuracy: 0.0,
+            lost_in_top: 1,
+        };
+        (
+            potential,
+            vec![score()],
+            replay("p", 1, 300.0, 1_700_000_000),
+        )
+    }
+
+    #[test]
+    fn potential_rows_carry_weight_and_lost_marks() {
+        let (potential, scores, played) = sample();
+        let found = [LostScore {
+            play: &played,
+            kept: &played,
+            status: MapStatus::Ranked,
+        }];
+        let lost = [(0, potential.top[1].play)];
+        let rows = potential_rows(&potential, &scores, &found, &lost);
+        assert_eq!(rows[0].weighted, rows[0].pp);
+        assert!((rows[1].weighted - rows[1].pp * 0.95).abs() < 1e-9);
+        assert!(!rows[0].lost);
+        assert!(rows[1].lost);
+        assert_eq!(rows[0].title, "Congrathalations!");
+        assert_eq!(rows[1].title, "B");
+    }
+
+    #[test]
+    fn potential_table_marks_lost_rows() {
+        let (potential, scores, played) = sample();
+        let found = [LostScore {
+            play: &played,
+            kept: &played,
+            status: MapStatus::Ranked,
+        }];
+        let lost = [(0, potential.top[1].play)];
+        let table = potential_table(&potential_rows(&potential, &scores, &found, &lost), 0);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(!lines[1].contains("LOST"));
+        assert!(lines[2].contains("LOST"));
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(8557.4), "8,557");
+        assert_eq!(thousands(1_234_567.6), "1,234,568");
+        assert_eq!(thousands(12.0), "12");
     }
 }

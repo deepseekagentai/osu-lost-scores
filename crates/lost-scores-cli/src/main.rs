@@ -16,12 +16,13 @@ use std::time::Instant;
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lost_scores_core::maps::{self, MapCatalog, Wanted};
+use lost_scores_core::potential::{self, Play};
 use lost_scores_core::{Scan, lost, pp};
-use osu_api::Credentials;
+use osu_api::{Credentials, Score};
 use serde::Serialize;
 
 use crate::dump::Dump;
-use crate::online::Online;
+use crate::online::{Online, Player};
 use crate::timings::Timings;
 
 #[derive(Parser)]
@@ -92,10 +93,30 @@ enum Command {
         #[arg(long, help = "Write the JSON to this file instead of standard output")]
         output: Option<PathBuf>,
     },
+    #[command(about = "Show your top 200 as it would be if ScoreV1 had kept your best plays")]
+    Potential {
+        #[arg(long, help = "Map catalog with statuses and ranked dates")]
+        maps: Option<PathBuf>,
+        #[arg(long, default_value_t = 50, help = "Rows to show, 0 shows all")]
+        limit: usize,
+        #[arg(long, help = "Print JSON instead of a table")]
+        json: bool,
+    },
     #[command(about = "Save the keys of your own osu! OAuth application")]
     Login,
     #[command(about = "Delete the saved osu! OAuth keys")]
     Logout,
+}
+
+#[derive(Serialize)]
+struct PotentialReport<'a> {
+    current_pp: f64,
+    potential_pp: f64,
+    current_accuracy: f64,
+    potential_accuracy: f64,
+    global_rank: Option<u32>,
+    lost_in_top: usize,
+    top: &'a [report::PotentialRow],
 }
 
 #[derive(Serialize)]
@@ -121,6 +142,9 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Scan { output }) => {
             dump_replays(&cli.source, output.as_deref(), &mut timings)
         }
+        Some(Command::Potential { maps, limit, json }) => {
+            show_potential(&cli.source, maps.as_deref(), limit, json, &mut timings)
+        }
         Some(Command::Login) => login(),
         Some(Command::Logout) => logout(),
         None => show_lost(&cli.source, &cli.view, &mut timings),
@@ -140,7 +164,11 @@ fn connect(source: &Source) -> Option<Online> {
         .map(Online::new)
 }
 
-fn read(source: &Source, api: Option<&mut Online>, timings: &mut Timings) -> Result<(Scan, usize)> {
+fn read(
+    source: &Source,
+    api: Option<&mut Online>,
+    timings: &mut Timings,
+) -> Result<(Scan, usize, Option<Player>)> {
     let osu_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?;
     let config = setup::read_user_config(&osu_dir);
     let player = match &source.player {
@@ -151,17 +179,18 @@ fn read(source: &Source, api: Option<&mut Online>, timings: &mut Timings) -> Res
         Some(dir) => dir.clone(),
         None => setup::songs_dir(&osu_dir, &config)?,
     };
-    let names = match api {
-        Some(api) => timings
-            .time("player lookup", || api.names(&player))
-            .unwrap_or_else(|error| {
+    let (names, found_player) = match api {
+        Some(api) => match timings.time("player lookup", || api.player(&player)) {
+            Ok(found) => (found.names.clone(), Some(found)),
+            Err(error) => {
                 eprintln!(
                     "could not look the player up on the osu! API: {}",
                     report::printable(&error.to_string())
                 );
-                vec![player.clone()]
-            }),
-        None => vec![player.clone()],
+                (vec![player.clone()], None)
+            }
+        },
+        None => (vec![player.clone()], None),
     };
     eprintln!(
         "osu!: {}",
@@ -182,12 +211,12 @@ fn read(source: &Source, api: Option<&mut Online>, timings: &mut Timings) -> Res
     if pp_failed > 0 {
         eprintln!("{pp_failed} beatmaps could not be loaded for pp");
     }
-    Ok((scan, pp_failed))
+    Ok((scan, pp_failed, found_player))
 }
 
 fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, pp_failed) = read(source, api.as_mut(), timings)?;
+    let (scan, pp_failed, _) = read(source, api.as_mut(), timings)?;
     let dump = Dump::new(&scan, pp_failed);
     eprintln!("{}", dump.stats);
     match output {
@@ -202,24 +231,8 @@ fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -
 
 fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, _) = read(source, api.as_mut(), timings)?;
-    let started = Instant::now();
-    let catalog_path = view.maps.clone().or_else(setup::maps_file);
-    let mut catalog = match &catalog_path {
-        Some(path) if path.is_file() => MapCatalog::load(path)?,
-        _ => MapCatalog::default(),
-    };
-    let wanted = maps::wanted(&scan.replays, &catalog);
-    if !wanted.is_empty() {
-        match api.as_mut() {
-            Some(api) => update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api)?,
-            None => eprintln!(
-                "{} maps have no status yet; after `lost-scores login` they are fetched from the osu! API",
-                wanted.len()
-            ),
-        }
-    }
-    timings.add("map catalog", started.elapsed());
+    let (scan, _, _) = read(source, api.as_mut(), timings)?;
+    let catalog = load_catalog(view.maps.as_deref(), &scan, api.as_mut(), timings)?;
     let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
     let show_all = view.all || catalog.is_empty();
@@ -252,6 +265,94 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
             found.len()
         );
     }
+    Ok(())
+}
+
+fn load_catalog(
+    maps: Option<&Path>,
+    scan: &Scan,
+    api: Option<&mut Online>,
+    timings: &mut Timings,
+) -> Result<MapCatalog> {
+    let started = Instant::now();
+    let catalog_path = maps.map(Path::to_path_buf).or_else(setup::maps_file);
+    let mut catalog = match &catalog_path {
+        Some(path) if path.is_file() => MapCatalog::load(path)?,
+        _ => MapCatalog::default(),
+    };
+    let wanted = maps::wanted(&scan.replays, &catalog);
+    if !wanted.is_empty() {
+        match api {
+            Some(api) => update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api)?,
+            None => eprintln!(
+                "{} maps have no status yet; after `lost-scores login` they are fetched from the osu! API",
+                wanted.len()
+            ),
+        }
+    }
+    timings.add("map catalog", started.elapsed());
+    Ok(catalog)
+}
+
+fn show_potential(
+    source: &Source,
+    maps: Option<&Path>,
+    limit: usize,
+    json: bool,
+    timings: &mut Timings,
+) -> Result<()> {
+    let mut api = connect(source)
+        .context("the potential top needs the osu! API: run lost-scores login first")?;
+    let (scan, _, player) = read(source, Some(&mut api), timings)?;
+    let player =
+        player.context("the potential top needs the player's profile from the osu! API")?;
+    let catalog = load_catalog(maps, &scan, Some(&mut api), timings)?;
+    let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
+    let lost = potential::lost_plays(&found, &catalog);
+    let scores: Vec<Score> = timings
+        .time("online top", || api.top(player.id))?
+        .into_iter()
+        .filter(|score| score.pp.is_some())
+        .collect();
+    let online: Vec<Play> = scores
+        .iter()
+        .map(|score| Play {
+            beatmap_id: score.beatmap.id,
+            pp: score.pp.unwrap_or_default(),
+            accuracy: score.accuracy * 100.0,
+        })
+        .collect();
+    let lost_only: Vec<Play> = lost.iter().map(|(_, play)| *play).collect();
+    let result = timings.time("potential top", || {
+        potential::potential(&online, &lost_only, player.pp)
+    });
+    let rows = report::potential_rows(&result, &scores, &found, &lost);
+    if json {
+        write_json(
+            io::stdout().lock(),
+            &PotentialReport {
+                current_pp: player.pp,
+                potential_pp: result.pp,
+                current_accuracy: player.accuracy,
+                potential_accuracy: result.accuracy,
+                global_rank: player.global_rank,
+                lost_in_top: result.lost_in_top,
+                top: &rows,
+            },
+        )?;
+    } else {
+        println!("{}", report::potential_table(&rows, limit));
+    }
+    eprintln!(
+        "{} → {}pp ({:+.1}), {:.2}% → {:.2}% ({:+.2}%), {} lost plays in the top 200",
+        report::thousands(player.pp),
+        report::thousands(result.pp),
+        result.pp - player.pp,
+        player.accuracy,
+        result.accuracy,
+        result.accuracy - player.accuracy,
+        result.lost_in_top
+    );
     Ok(())
 }
 

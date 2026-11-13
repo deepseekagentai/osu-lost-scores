@@ -1,10 +1,18 @@
 use lost_scores_core::maps::{FetchedMap, MapInfo, MapSource, MapStatus};
-use osu_api::{ApiError, Beatmap, Client, Credentials, Http};
+use osu_api::{ApiError, Beatmap, Client, Credentials, Http, Score};
 
 pub const USER_AGENT: &str = concat!("lost-scores/", env!("CARGO_PKG_VERSION"));
 
 pub struct Online {
     client: Client<Http>,
+}
+
+pub struct Player {
+    pub id: u32,
+    pub names: Vec<String>,
+    pub pp: f64,
+    pub accuracy: f64,
+    pub global_rank: Option<u32>,
 }
 
 impl Online {
@@ -18,9 +26,20 @@ impl Online {
         self.client.check()
     }
 
-    pub fn names(&mut self, player: &str) -> Result<Vec<String>, ApiError> {
-        let user = self.client.user(player)?;
-        Ok(all_names(player, user.username, user.previous_usernames))
+    pub fn player(&mut self, name: &str) -> Result<Player, ApiError> {
+        let user = self.client.user(name)?;
+        let statistics = user.statistics;
+        Ok(Player {
+            id: user.id,
+            names: all_names(name, user.username, user.previous_usernames),
+            pp: statistics.as_ref().map_or(0.0, |s| s.pp),
+            accuracy: statistics.as_ref().map_or(0.0, |s| s.hit_accuracy),
+            global_rank: statistics.and_then(|s| s.global_rank),
+        })
+    }
+
+    pub fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
+        self.client.top_plays(user_id)
     }
 }
 
