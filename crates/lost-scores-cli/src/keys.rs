@@ -1,9 +1,10 @@
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use lost_scores_core::files::write_private_atomic;
 use osu_api::Credentials;
 use serde::{Deserialize, Serialize};
 
@@ -38,26 +39,7 @@ pub fn save(path: &Path, credentials: &Credentials) -> Result<()> {
         client_id: credentials.client_id.clone(),
         client_secret: credentials.client_secret.clone(),
     })?;
-    write_private(path, &data).with_context(|| format!("cannot write {}", path.display()))
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(data)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
-    fs::File::create(path)?.write_all(data)
+    write_private_atomic(path, &data).with_context(|| format!("cannot write {}", path.display()))
 }
 
 pub fn delete(path: &Path) -> Result<bool> {

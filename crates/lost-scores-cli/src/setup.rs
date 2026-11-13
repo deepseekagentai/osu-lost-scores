@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use lost_scores_core::files::write_atomic;
 use serde::{Deserialize, Serialize};
 
 use crate::detect;
@@ -100,7 +101,7 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
-    fs::write(path, serde_json::to_vec_pretty(settings)?)
+    write_atomic(path, &serde_json::to_vec_pretty(settings)?)
         .with_context(|| format!("cannot write {}", path.display()))
 }
 

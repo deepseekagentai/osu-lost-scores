@@ -1,3 +1,4 @@
+pub mod files;
 pub mod lost;
 pub mod maps;
 pub mod missing;

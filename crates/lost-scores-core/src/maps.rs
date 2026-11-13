@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ScannedReplay;
+use crate::files::write_atomic;
 use crate::pp::reference_mod_bits;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -119,7 +120,7 @@ impl MapCatalog {
             path: path.to_path_buf(),
             source,
         })?;
-        fs::write(path, data).map_err(io)
+        write_atomic(path, &data).map_err(io)
     }
 
     pub fn insert(&mut self, md5: String, info: MapInfo) {
