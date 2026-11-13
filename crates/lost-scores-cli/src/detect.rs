@@ -295,6 +295,7 @@ mod tests {
         assert_eq!(command_from_wine_registry("[Software\\\\Wine] 1\n"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn windows_paths_map_into_the_prefix() {
         let prefix = Path::new("/p");
