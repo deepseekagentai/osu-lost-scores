@@ -7,6 +7,7 @@ use thiserror::Error;
 
 const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const API_URL: &str = "https://osu.ppy.sh/api/v2";
+const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,7 +204,20 @@ impl<T: Transport> Client<T> {
         Ok(())
     }
 
+    pub fn osu_file(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
+        Ok(self
+            .get_bytes(&format!("{FILE_URL}/{beatmap_id}"))?
+            .unwrap_or_default())
+    }
+
     fn get_json<D: DeserializeOwned>(&mut self, url: &str) -> Result<Option<D>, ApiError> {
+        match self.get_bytes(url)? {
+            Some(body) => parse(url, &body).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn get_bytes(&mut self, url: &str) -> Result<Option<Vec<u8>>, ApiError> {
         let mut renewed = false;
         let mut throttled = 0;
         loop {
@@ -217,7 +231,7 @@ impl<T: Transport> Client<T> {
             self.wait();
             let response = self.transport.get(url, &token)?;
             match response.status {
-                200 => return parse(url, &response.body).map(Some),
+                200 => return Ok(Some(response.body)),
                 404 => return Ok(None),
                 401 if !renewed => {
                     renewed = true;
@@ -608,6 +622,19 @@ mod tests {
                 hit_accuracy: 98.3758,
                 global_rank: Some(14856),
             })
+        );
+    }
+
+    #[test]
+    fn osu_file_returns_the_raw_bytes() {
+        let fake = Fake::default()
+            .answer(200, TOKEN)
+            .answer(200, "osu file format v14");
+        let mut api = client(fake);
+        assert_eq!(api.osu_file(5).unwrap(), b"osu file format v14");
+        assert_eq!(
+            api.transport.requests[1],
+            "GET https://osu.ppy.sh/osu/5 bearer=t1"
         );
     }
 }

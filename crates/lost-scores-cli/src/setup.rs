@@ -112,6 +112,10 @@ pub fn credentials_file() -> Option<PathBuf> {
     app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("credentials.json"))
 }
 
+pub fn osu_cache_dir() -> Option<PathBuf> {
+    app_dir(&["XDG_CACHE_HOME", "LOCALAPPDATA"], ".cache").map(|dir| dir.join("osu"))
+}
+
 pub fn maps_file() -> Option<PathBuf> {
     app_dir(&["XDG_DATA_HOME", "APPDATA"], ".local/share").map(|dir| dir.join("maps.json"))
 }

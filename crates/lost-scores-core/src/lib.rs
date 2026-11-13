@@ -1,5 +1,6 @@
 pub mod lost;
 pub mod maps;
+pub mod missing;
 pub mod potential;
 pub mod pp;
 mod scan;

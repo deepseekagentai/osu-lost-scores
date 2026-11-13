@@ -16,6 +16,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lost_scores_core::maps::{self, MapCatalog, Wanted};
+use lost_scores_core::missing::fetch_missing;
 use lost_scores_core::potential::{self, Play};
 use lost_scores_core::{Scan, lost, pp};
 use osu_api::{Credentials, Score};
@@ -64,6 +65,12 @@ struct Source {
     songs_dir: Option<PathBuf>,
     #[arg(long, global = true, help = "Do not use the osu! API")]
     offline: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Find lost plays on maps missing from Songs by downloading them (slow the first time)"
+    )]
+    check_missing: bool,
 }
 
 #[derive(Args)]
@@ -166,7 +173,8 @@ fn connect(source: &Source) -> Option<Online> {
 
 fn read(
     source: &Source,
-    api: Option<&mut Online>,
+    maps: Option<&Path>,
+    mut api: Option<&mut Online>,
     timings: &mut Timings,
 ) -> Result<(Scan, usize, Option<Player>)> {
     let osu_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?;
@@ -179,7 +187,7 @@ fn read(
         Some(dir) => dir.clone(),
         None => setup::songs_dir(&osu_dir, &config)?,
     };
-    let (names, found_player) = match api {
+    let (names, found_player) = match api.as_deref_mut() {
         Some(api) => match timings.time("player lookup", || api.player(&player)) {
             Ok(found) => (found.names.clone(), Some(found)),
             Err(error) => {
@@ -201,6 +209,14 @@ fn read(
     let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
     timings.add("songs index", scan.timings.songs);
     timings.add("replays", scan.timings.replays);
+    if source.check_missing {
+        match api {
+            Some(api) => add_missing_maps(&mut scan, maps, api, timings)?,
+            None => eprintln!(
+                "--check-missing needs the osu! API: run lost-scores login first; continuing without it"
+            ),
+        }
+    }
     let pp_failed = timings.time("pp", || pp::fill(&osu_dir, &mut scan.replays));
     let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
     eprintln!(
@@ -216,7 +232,7 @@ fn read(
 
 fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, pp_failed, _) = read(source, api.as_mut(), timings)?;
+    let (scan, pp_failed, _) = read(source, None, api.as_mut(), timings)?;
     let dump = Dump::new(&scan, pp_failed);
     eprintln!("{}", dump.stats);
     match output {
@@ -231,7 +247,7 @@ fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -
 
 fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, _, _) = read(source, api.as_mut(), timings)?;
+    let (scan, _, _) = read(source, view.maps.as_deref(), api.as_mut(), timings)?;
     let catalog = load_catalog(view.maps.as_deref(), &scan, api.as_mut(), timings)?;
     let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
@@ -275,11 +291,8 @@ fn load_catalog(
     timings: &mut Timings,
 ) -> Result<MapCatalog> {
     let started = Instant::now();
-    let catalog_path = maps.map(Path::to_path_buf).or_else(setup::maps_file);
-    let mut catalog = match &catalog_path {
-        Some(path) if path.is_file() => MapCatalog::load(path)?,
-        _ => MapCatalog::default(),
-    };
+    let catalog_path = catalog_file(maps);
+    let mut catalog = open_catalog(catalog_path.as_deref())?;
     let wanted = maps::wanted(&scan.replays, &catalog);
     if !wanted.is_empty() {
         match api {
@@ -294,6 +307,42 @@ fn load_catalog(
     Ok(catalog)
 }
 
+fn catalog_file(maps: Option<&Path>) -> Option<PathBuf> {
+    maps.map(Path::to_path_buf).or_else(setup::maps_file)
+}
+
+fn open_catalog(path: Option<&Path>) -> Result<MapCatalog> {
+    Ok(match path {
+        Some(path) if path.is_file() => MapCatalog::load(path)?,
+        _ => MapCatalog::default(),
+    })
+}
+
+fn add_missing_maps(
+    scan: &mut Scan,
+    maps: Option<&Path>,
+    api: &mut Online,
+    timings: &mut Timings,
+) -> Result<()> {
+    let cache_dir = setup::osu_cache_dir().context("cannot find a folder for the map cache")?;
+    let catalog_path = catalog_file(maps);
+    let mut catalog = open_catalog(catalog_path.as_deref())?;
+    let report = timings.time("missing maps", || {
+        fetch_missing(&mut scan.replays, &mut catalog, &cache_dir, api)
+    });
+    if let Some(path) = &catalog_path {
+        catalog.save(path)?;
+    }
+    let report = report?;
+    if report.maps > 0 {
+        eprintln!(
+            "{} maps missing from Songs looked up: {} from the cache, {} downloaded, {} not on the server, {} changed since the replay",
+            report.maps, report.cached, report.downloaded, report.not_found, report.mismatched
+        );
+    }
+    Ok(())
+}
+
 fn show_potential(
     source: &Source,
     maps: Option<&Path>,
@@ -303,7 +352,7 @@ fn show_potential(
 ) -> Result<()> {
     let mut api = connect(source)
         .context("the potential top needs the osu! API: run lost-scores login first")?;
-    let (scan, _, player) = read(source, Some(&mut api), timings)?;
+    let (scan, _, player) = read(source, maps, Some(&mut api), timings)?;
     let player =
         player.context("the potential top needs the player's profile from the osu! API")?;
     let catalog = load_catalog(maps, &scan, Some(&mut api), timings)?;

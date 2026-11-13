@@ -71,7 +71,7 @@ pub(crate) fn index_songs(osu_dir: &Path, songs_dir: &Path) -> Result<SongsIndex
     })
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     bytes
         .iter()

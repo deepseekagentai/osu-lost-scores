@@ -1,4 +1,5 @@
 use lost_scores_core::maps::{FetchedMap, MapInfo, MapSource, MapStatus};
+use lost_scores_core::missing::OsuFiles;
 use osu_api::{ApiError, Beatmap, Client, Credentials, Http, Score};
 
 pub const USER_AGENT: &str = concat!("lost-scores/", env!("CARGO_PKG_VERSION"));
@@ -57,6 +58,14 @@ impl MapSource for Online {
 
     fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
         Ok(self.client.lookup(md5)?.map(fetched))
+    }
+}
+
+impl OsuFiles for Online {
+    type Error = ApiError;
+
+    fn download(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
+        self.client.osu_file(beatmap_id)
     }
 }
 
