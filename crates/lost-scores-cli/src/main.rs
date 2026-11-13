@@ -125,7 +125,7 @@ fn read(source: &Source) -> Result<(Scan, usize)> {
     );
     eprintln!("player: {}", report::printable(&player));
     let started = Instant::now();
-    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &player)?;
+    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, std::slice::from_ref(&player))?;
     let pp_failed = pp::fill(&osu_dir, &mut scan.replays);
     let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
     eprintln!(

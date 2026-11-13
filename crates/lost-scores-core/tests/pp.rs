@@ -36,7 +36,7 @@ fn osu_folder() -> tempfile::TempDir {
 #[test]
 fn fills_pp_for_replays_with_a_local_beatmap() {
     let dir = osu_folder();
-    let mut report = scan(dir.path(), &dir.path().join("Songs"), "Lemon").unwrap();
+    let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     let failed = pp::fill(dir.path(), &mut report.replays);
     let pps: Vec<_> = report
         .replays
@@ -50,7 +50,7 @@ fn fills_pp_for_replays_with_a_local_beatmap() {
 #[test]
 fn beatmap_that_cannot_be_read_counts_as_a_failure() {
     let dir = osu_folder();
-    let mut report = scan(dir.path(), &dir.path().join("Songs"), "Lemon").unwrap();
+    let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     fs::remove_file(dir.path().join(SAMPLE_PATH)).unwrap();
     let failed = pp::fill(dir.path(), &mut report.replays);
     assert_eq!(failed, 1);

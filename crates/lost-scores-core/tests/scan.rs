@@ -73,7 +73,7 @@ fn beatmap_paths(report: &Scan) -> Vec<Option<&str>> {
 #[test]
 fn selects_the_players_standard_replays_in_time_order() {
     let dir = osu_folder();
-    let report = scan(dir.path(), &dir.path().join("Songs"), "LEMON").unwrap();
+    let report = scan(dir.path(), &dir.path().join("Songs"), &["LEMON".into()]).unwrap();
     let files: Vec<_> = report
         .replays
         .iter()
@@ -86,7 +86,7 @@ fn selects_the_players_standard_replays_in_time_order() {
 #[test]
 fn counts_every_skipped_replay() {
     let dir = osu_folder();
-    let report = scan(dir.path(), &dir.path().join("Songs"), "Lemon").unwrap();
+    let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     let unreadable: Vec<_> = report
         .unreadable_replays
         .iter()
@@ -108,7 +108,7 @@ fn counts_every_skipped_replay() {
 #[test]
 fn found_beatmap_carries_its_metadata() {
     let dir = osu_folder();
-    let report = scan(dir.path(), &dir.path().join("Songs"), "Lemon").unwrap();
+    let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     let beatmap = report
         .replays
         .iter()
@@ -128,7 +128,7 @@ fn duplicate_beatmaps_resolve_to_the_smallest_path() {
     ] {
         let dir = osu_folder();
         write(dir.path(), copy, BEATMAP_X);
-        let report = scan(dir.path(), &dir.path().join("Songs"), "Lemon").unwrap();
+        let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
         assert_eq!(beatmap_paths(&report), [None, Some(expected)], "{copy}");
         assert_eq!(report.beatmap_files, 3);
     }
@@ -143,7 +143,7 @@ fn missing_game_folders_are_errors() {
         &replay(0, "Lemon", MISSING_MD5, 0, TICKS),
     );
     assert_eq!(
-        scan(dir.path(), &dir.path().join("Songs"), "Lemon")
+        scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()])
             .unwrap_err()
             .path,
         dir.path().join("Songs")
@@ -151,9 +151,31 @@ fn missing_game_folders_are_errors() {
     write(dir.path(), BEATMAP_X_PATH, BEATMAP_X);
     fs::remove_dir_all(dir.path().join("Data")).unwrap();
     assert_eq!(
-        scan(dir.path(), &dir.path().join("Songs"), "Lemon")
+        scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()])
             .unwrap_err()
             .path,
         dir.path().join("Data").join("r")
     );
+}
+
+#[test]
+fn replays_under_a_previous_name_are_selected_too() {
+    let dir = osu_folder();
+    write(
+        dir.path(),
+        "Data/r/old.osr",
+        &replay(0, "Old Name", BEATMAP_X_MD5, 0, TICKS + 3),
+    );
+    let report = scan(
+        dir.path(),
+        &dir.path().join("Songs"),
+        &["Lemon".into(), "old name".into()],
+    )
+    .unwrap();
+    let files: Vec<_> = report
+        .replays
+        .iter()
+        .map(|r| r.file_name.as_str())
+        .collect();
+    assert_eq!(files, ["b.osr", "a.osr", "old.osr"]);
 }

@@ -53,7 +53,7 @@ pub struct ScanError {
     pub source: io::Error,
 }
 
-pub fn scan(osu_dir: &Path, songs_dir: &Path, player: &str) -> Result<Scan, ScanError> {
+pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan, ScanError> {
     let replay_paths = list_replays(&osu_dir.join("Data").join("r"))?;
     let songs = index_songs(osu_dir, songs_dir)?;
     let parsed: Vec<_> = replay_paths
@@ -68,7 +68,10 @@ pub fn scan(osu_dir: &Path, songs_dir: &Path, player: &str) -> Result<Scan, Scan
         })
         .collect();
 
-    let wanted = player.trim().to_lowercase();
+    let wanted: Vec<String> = players
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .collect();
     let mut report = Scan {
         replay_files: parsed.len(),
         unreadable_replays: Vec::new(),
@@ -85,7 +88,7 @@ pub fn scan(osu_dir: &Path, songs_dir: &Path, player: &str) -> Result<Scan, Scan
                 .unreadable_replays
                 .push(UnreadableReplay { file_name, error }),
             Ok(header) if header.mode != STANDARD_MODE => report.other_mode += 1,
-            Ok(header) if header.player_name.trim().to_lowercase() != wanted => {
+            Ok(header) if !wanted.contains(&header.player_name.trim().to_lowercase()) => {
                 report.other_player += 1
             }
             Ok(header) if !header.mods.is_ranked_in_standard() => report.unranked_mods += 1,
