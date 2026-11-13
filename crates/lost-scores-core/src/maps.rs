@@ -47,6 +47,8 @@ pub struct MapInfo {
     pub beatmap_id: Option<u32>,
     pub status: MapStatus,
     pub ranked_at: Option<i64>,
+    #[serde(default)]
+    pub outdated: bool,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +151,7 @@ pub trait MapSource {
 pub struct FillReport {
     pub by_id: usize,
     pub by_md5: usize,
+    pub outdated: usize,
     pub not_found: usize,
 }
 
@@ -195,25 +198,40 @@ pub fn fill<S: MapSource>(
     let mut ids: Vec<u32> = wanted.iter().filter_map(|item| item.beatmap_id).collect();
     ids.sort_unstable();
     ids.dedup();
-    let by_checksum: HashMap<String, MapInfo> = if ids.is_empty() {
-        HashMap::new()
+    let fetched = if ids.is_empty() {
+        Vec::new()
     } else {
-        source
-            .batch(&ids)?
-            .into_iter()
-            .filter_map(|fetched| Some((fetched.checksum?, fetched.info)))
-            .collect()
+        source.batch(&ids)?
     };
+    let by_checksum: HashMap<&str, &MapInfo> = fetched
+        .iter()
+        .filter_map(|map| Some((map.checksum.as_deref()?, &map.info)))
+        .collect();
+    let known_ids: HashMap<u32, &MapInfo> = fetched
+        .iter()
+        .filter_map(|map| Some((map.info.beatmap_id?, &map.info)))
+        .collect();
     for item in wanted {
-        if let Some(info) = by_checksum.get(&item.md5) {
-            catalog.insert(item.md5.clone(), info.clone());
+        if let Some(info) = by_checksum.get(item.md5.as_str()) {
+            catalog.insert(item.md5.clone(), (*info).clone());
             report.by_id += 1;
             continue;
         }
-        match source.lookup(&item.md5)? {
-            Some(found) => {
-                catalog.insert(item.md5.clone(), found.info);
-                report.by_md5 += 1;
+        if let Some(found) = source.lookup(&item.md5)? {
+            catalog.insert(item.md5.clone(), found.info);
+            report.by_md5 += 1;
+            continue;
+        }
+        match item.beatmap_id.and_then(|id| known_ids.get(&id)) {
+            Some(info) => {
+                catalog.insert(
+                    item.md5.clone(),
+                    MapInfo {
+                        outdated: true,
+                        ..(*info).clone()
+                    },
+                );
+                report.outdated += 1;
             }
             None => {
                 catalog.insert(
@@ -222,6 +240,7 @@ pub fn fill<S: MapSource>(
                         beatmap_id: None,
                         status: MapStatus::Unknown,
                         ranked_at: None,
+                        outdated: false,
                     },
                 );
                 report.not_found += 1;
@@ -267,7 +286,8 @@ mod tests {
             Some(&MapInfo {
                 beatmap_id: Some(11),
                 status: MapStatus::Ranked,
-                ranked_at: Some(1557000000)
+                ranked_at: Some(1557000000),
+                outdated: false,
             })
         );
         assert_eq!(catalog.get("cccc").unwrap().status, MapStatus::Unknown);
@@ -344,6 +364,7 @@ mod tests {
             beatmap_id: Some(id),
             status,
             ranked_at: Some(1_400_000_000),
+            outdated: false,
         }
     }
 
@@ -457,6 +478,7 @@ mod tests {
             FillReport {
                 by_id: 1,
                 by_md5: 1,
+                outdated: 0,
                 not_found: 1
             }
         );
@@ -465,6 +487,32 @@ mod tests {
         assert_eq!(catalog.get("a"), Some(&info(11, MapStatus::Ranked)));
         assert_eq!(catalog.get("b"), Some(&info(222, MapStatus::Loved)));
         assert_eq!(catalog.get("c").unwrap().status, MapStatus::Unknown);
+    }
+
+    #[test]
+    fn old_version_of_a_known_map_keeps_the_map_status() {
+        let mut source = FakeSource {
+            batch: vec![FetchedMap {
+                checksum: Some("current version".into()),
+                info: info(33, MapStatus::Ranked),
+            }],
+            ..FakeSource::default()
+        };
+        let wanted = [Wanted {
+            md5: "old version".into(),
+            beatmap_id: Some(33),
+        }];
+        let mut catalog = MapCatalog::default();
+        let report = fill(&mut catalog, &wanted, &mut source).unwrap();
+        assert_eq!(report.outdated, 1);
+        assert_eq!(source.lookup_calls, ["old version"]);
+        assert_eq!(
+            catalog.get("old version"),
+            Some(&MapInfo {
+                outdated: true,
+                ..info(33, MapStatus::Ranked)
+            })
+        );
     }
 
     #[test]
