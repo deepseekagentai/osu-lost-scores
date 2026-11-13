@@ -21,6 +21,8 @@ pub struct Stats {
     beatmap_files: usize,
     unreadable_beatmaps: usize,
     selected_with_beatmap: usize,
+    with_pp: usize,
+    pp_failed_beatmaps: usize,
 }
 
 #[derive(Serialize)]
@@ -42,6 +44,7 @@ struct Replay<'a> {
     max_combo: u16,
     perfect: bool,
     mods: u32,
+    pp: Option<f64>,
     beatmap: Option<Beatmap<'a>>,
 }
 
@@ -56,8 +59,8 @@ struct Beatmap<'a> {
     creator: &'a str,
 }
 
-impl<'a> From<&'a Scan> for Dump<'a> {
-    fn from(scan: &'a Scan) -> Self {
+impl<'a> Dump<'a> {
+    pub fn new(scan: &'a Scan, pp_failed_beatmaps: usize) -> Self {
         Self {
             stats: Stats {
                 replay_files: scan.replay_files,
@@ -73,6 +76,12 @@ impl<'a> From<&'a Scan> for Dump<'a> {
                     .iter()
                     .filter(|replay| replay.beatmap.is_some())
                     .count(),
+                with_pp: scan
+                    .replays
+                    .iter()
+                    .filter(|replay| replay.pp.is_some())
+                    .count(),
+                pp_failed_beatmaps,
             },
             unreadable_replays: scan
                 .unreadable_replays
@@ -102,6 +111,7 @@ impl<'a> From<&'a ScannedReplay> for Replay<'a> {
             max_combo: header.max_combo,
             perfect: header.perfect,
             mods: header.mods.bits(),
+            pp: replay.pp,
             beatmap: replay.beatmap.as_ref().map(Beatmap::from),
         }
     }
@@ -141,8 +151,12 @@ impl fmt::Display for Stats {
         )?;
         write!(
             f,
-            "beatmap files: {} ({} unreadable); {} selected replays have a local beatmap",
-            self.beatmap_files, self.unreadable_beatmaps, self.selected_with_beatmap
+            "beatmap files: {} ({} unreadable); {} selected replays have a local beatmap, {} with pp ({} beatmaps failed to load)",
+            self.beatmap_files,
+            self.unreadable_beatmaps,
+            self.selected_with_beatmap,
+            self.with_pp,
+            self.pp_failed_beatmaps
         )
     }
 }
@@ -206,15 +220,17 @@ mod tests {
                     file_name: "a.osr".into(),
                     header: header("aaaa", 638_657_110_200_000_000),
                     beatmap: Some(beatmap),
+                    pp: Some(4.5),
                 },
                 ScannedReplay {
                     file_name: "b.osr".into(),
                     header: header("bbbb", 638_657_110_210_000_000),
                     beatmap: None,
+                    pp: None,
                 },
             ],
         };
-        serde_json::to_value(Dump::from(&scan)).unwrap()
+        serde_json::to_value(Dump::new(&scan, 2)).unwrap()
     }
 
     #[test]
@@ -231,6 +247,8 @@ mod tests {
                 "beatmap_files": 7,
                 "unreadable_beatmaps": 1,
                 "selected_with_beatmap": 1,
+                "with_pp": 1,
+                "pp_failed_beatmaps": 2,
             })
         );
     }
@@ -252,6 +270,7 @@ mod tests {
                 "max_combo": 106,
                 "perfect": false,
                 "mods": 72,
+                "pp": 4.5,
                 "beatmap": {
                     "path": "Songs/1 A - B/x.osu",
                     "beatmap_id": 11,
@@ -265,6 +284,7 @@ mod tests {
         );
         assert_eq!(value["replays"][1]["file"], "b.osr");
         assert_eq!(value["replays"][1]["beatmap"], Value::Null);
+        assert_eq!(value["replays"][1]["pp"], Value::Null);
         assert_eq!(value["unreadable_replays"][0]["file"], "f.osr");
     }
 }

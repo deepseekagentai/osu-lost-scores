@@ -43,8 +43,9 @@ fn main() -> Result<()> {
 }
 
 fn scan(osu_dir: &Path, player: &str, output: Option<&Path>) -> Result<()> {
-    let report = lost_scores_core::scan(osu_dir, player)?;
-    let dump = Dump::from(&report);
+    let mut report = lost_scores_core::scan(osu_dir, player)?;
+    let failed = lost_scores_core::pp::fill(osu_dir, &mut report.replays);
+    let dump = Dump::new(&report, failed);
     eprintln!("{}", dump.stats);
     match output {
         Some(path) => {
