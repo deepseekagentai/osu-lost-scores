@@ -316,7 +316,7 @@ fn load_catalog(
         let ids = maps::stale(&catalog, now);
         if !ids.is_empty() {
             let changed = timings.time("status refresh", || {
-                maps::refresh(&mut catalog, &ids, api, now)
+                maps::refresh(&mut catalog, &ids, api, now, |_, _| {})
             });
             if let Some(path) = &catalog_path {
                 catalog.save(path)?;
@@ -375,7 +375,7 @@ fn add_missing_maps(
             &mut catalog,
             &cache_dir,
             api,
-            |done| {
+            |done, _| {
                 if terminal {
                     eprint!("\rmissing maps: {done}/{}", md5s.len());
                 }
@@ -471,7 +471,7 @@ fn update_catalog(
         "asking the osu! API about {} maps, about {requests} requests at one per second",
         wanted.len()
     );
-    let result = maps::fill(catalog, wanted, api, now);
+    let result = maps::fill(catalog, wanted, api, now, |_, _| {});
     if let Some(path) = path {
         catalog.save(path)?;
     }

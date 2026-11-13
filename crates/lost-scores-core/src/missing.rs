@@ -54,7 +54,7 @@ pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
     catalog: &mut MapCatalog,
     cache_dir: &Path,
     source: &mut S,
-    mut progress: impl FnMut(usize),
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<MissingReport, MissingError<E>> {
     let mut report = MissingReport::default();
     for (done, md5) in md5s.iter().enumerate() {
@@ -71,7 +71,7 @@ pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
         if let Some(bytes) = bytes {
             attach(replays, md5, &path, &bytes);
         }
-        progress(done + 1);
+        progress(done + 1, md5s.len());
     }
     Ok(report)
 }
@@ -240,7 +240,7 @@ mod tests {
         fake: &mut Fake,
     ) -> MissingReport {
         let md5s: Vec<String> = md5s.iter().map(|md5| md5.to_string()).collect();
-        fetch_missing(&md5s, replays, catalog, cache, fake, |_| {}).unwrap()
+        fetch_missing(&md5s, replays, catalog, cache, fake, |_, _| {}).unwrap()
     }
 
     #[test]
@@ -393,9 +393,9 @@ mod tests {
             &mut MapCatalog::default(),
             cache.path(),
             &mut fake,
-            |count| done.push(count),
+            |count, total| done.push((count, total)),
         )
         .unwrap();
-        assert_eq!(done, [1, 2]);
+        assert_eq!(done, [(1, 2), (2, 2)]);
     }
 }

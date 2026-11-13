@@ -201,21 +201,29 @@ pub fn wanted(replays: &[ScannedReplay], catalog: &MapCatalog) -> Vec<Wanted> {
     wanted
 }
 
+pub const BATCH_SIZE: usize = 50;
+
 pub fn fill<S: MapSource>(
     catalog: &mut MapCatalog,
     wanted: &[Wanted],
     source: &mut S,
     now: i64,
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<FillReport, S::Error> {
     let mut report = FillReport::default();
     let mut ids: Vec<u32> = wanted.iter().filter_map(|item| item.beatmap_id).collect();
     ids.sort_unstable();
     ids.dedup();
-    let fetched = if ids.is_empty() {
-        Vec::new()
-    } else {
-        source.batch(&ids)?
-    };
+    let batches = ids.len().div_ceil(BATCH_SIZE);
+    let without_id = wanted
+        .iter()
+        .filter(|item| item.beatmap_id.is_none())
+        .count();
+    let mut fetched = Vec::new();
+    for (done, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
+        fetched.extend(source.batch(chunk)?);
+        progress(done + 1, batches + without_id);
+    }
     let by_checksum: HashMap<&str, &MapInfo> = fetched
         .iter()
         .filter_map(|map| Some((map.checksum.as_deref()?, &map.info)))
@@ -224,6 +232,11 @@ pub fn fill<S: MapSource>(
         .iter()
         .filter_map(|map| Some((map.info.beatmap_id?, &map.info)))
         .collect();
+    let lookups = wanted
+        .iter()
+        .filter(|item| !by_checksum.contains_key(item.md5.as_str()))
+        .count();
+    let mut done = batches;
     for item in wanted {
         if let Some(info) = by_checksum.get(item.md5.as_str()) {
             catalog.insert(
@@ -236,7 +249,10 @@ pub fn fill<S: MapSource>(
             report.by_id += 1;
             continue;
         }
-        if let Some(found) = source.lookup(&item.md5)? {
+        let found = source.lookup(&item.md5)?;
+        done += 1;
+        progress(done, batches + lookups);
+        if let Some(found) = found {
             catalog.insert(
                 item.md5.clone(),
                 MapInfo {
@@ -295,8 +311,14 @@ pub fn refresh<S: MapSource>(
     ids: &[u32],
     source: &mut S,
     now: i64,
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<usize, S::Error> {
-    let fetched = source.batch(ids)?;
+    let batches = ids.len().div_ceil(BATCH_SIZE);
+    let mut fetched = Vec::new();
+    for (done, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
+        fetched.extend(source.batch(chunk)?);
+        progress(done + 1, batches);
+    }
     let by_id: HashMap<u32, &MapInfo> = fetched
         .iter()
         .filter_map(|map| Some((map.info.beatmap_id?, &map.info)))
@@ -542,7 +564,7 @@ mod tests {
             },
         ];
         let mut catalog = MapCatalog::default();
-        let report = fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
+        let report = fill(&mut catalog, &wanted, &mut source, NOW, |_, _| {}).unwrap();
         assert_eq!(
             report,
             FillReport {
@@ -585,7 +607,7 @@ mod tests {
             beatmap_id: Some(33),
         }];
         let mut catalog = MapCatalog::default();
-        let report = fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
+        let report = fill(&mut catalog, &wanted, &mut source, NOW, |_, _| {}).unwrap();
         assert_eq!(report.outdated, 1);
         assert_eq!(source.lookup_calls, ["old version"]);
         assert_eq!(
@@ -677,7 +699,10 @@ mod tests {
             }],
             ..FakeSource::default()
         };
-        assert_eq!(refresh(&mut catalog, &[5], &mut source, NOW).unwrap(), 1);
+        assert_eq!(
+            refresh(&mut catalog, &[5], &mut source, NOW, |_, _| {}).unwrap(),
+            1
+        );
         let info = catalog.get("m").unwrap();
         assert_eq!(
             (info.status, info.ranked_at, info.checked_at),
@@ -699,7 +724,78 @@ mod tests {
             md5: "a".into(),
             beatmap_id: Some(11),
         }];
-        fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
+        fill(&mut catalog, &wanted, &mut source, NOW, |_, _| {}).unwrap();
         assert_eq!(catalog.get("a").unwrap().checked_at, Some(NOW));
+    }
+
+    fn wanted_ids(count: u32) -> Vec<Wanted> {
+        (1..=count)
+            .map(|id| Wanted {
+                md5: format!("m{id}"),
+                beatmap_id: Some(id),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fill_asks_for_at_most_50_maps_per_request() {
+        let mut source = FakeSource::default();
+        let mut catalog = MapCatalog::default();
+        fill(&mut catalog, &wanted_ids(51), &mut source, NOW, |_, _| {}).unwrap();
+        let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [50, 1]);
+    }
+
+    #[test]
+    fn fill_reports_progress_after_every_request() {
+        let mut source = FakeSource {
+            batch: vec![FetchedMap {
+                checksum: Some("a".into()),
+                info: info(11, MapStatus::Ranked),
+            }],
+            ..FakeSource::default()
+        };
+        let wanted = [
+            Wanted {
+                md5: "a".into(),
+                beatmap_id: Some(11),
+            },
+            Wanted {
+                md5: "b".into(),
+                beatmap_id: Some(22),
+            },
+            Wanted {
+                md5: "c".into(),
+                beatmap_id: None,
+            },
+        ];
+        let mut steps = Vec::new();
+        fill(
+            &mut MapCatalog::default(),
+            &wanted,
+            &mut source,
+            NOW,
+            |done, total| steps.push((done, total)),
+        )
+        .unwrap();
+        assert_eq!(steps, [(1, 2), (2, 3), (3, 3)]);
+    }
+
+    #[test]
+    fn refresh_asks_for_at_most_50_maps_per_request_and_reports_each() {
+        let mut catalog = MapCatalog::default();
+        for id in 1..=51 {
+            catalog.insert(format!("m{id}"), entry(id, MapStatus::Graveyard, None));
+        }
+        let ids: Vec<u32> = (1..=51).collect();
+        let mut source = FakeSource::default();
+        let mut steps = Vec::new();
+        refresh(&mut catalog, &ids, &mut source, NOW, |done, total| {
+            steps.push((done, total))
+        })
+        .unwrap();
+        let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [50, 1]);
+        assert_eq!(steps, [(1, 2), (2, 2)]);
     }
 }
