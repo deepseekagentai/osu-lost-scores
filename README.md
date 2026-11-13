@@ -6,6 +6,14 @@ Until October 2024 the osu!stable server kept one play per beatmap and mod combi
 
 This is a Rust rewrite of the original Python desktop app. It is in early development and not usable yet.
 
+## Command line
+
+So far the command line tool only lists the replays the analysis will use, with their local beatmaps:
+
+    cargo run --release -- scan --osu-dir <osu! folder> --player <name> --output replays.json
+
+It reads `Data/r` and `Songs` and never writes to the osu! folder.
+
 ## License
 
 [MIT](LICENSE)
