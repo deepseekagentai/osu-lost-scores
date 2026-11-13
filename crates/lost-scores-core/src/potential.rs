@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::lost::LostScore;
+use crate::maps::MapCatalog;
+use crate::pp::rounded_accuracy;
+
 pub const TOP_SIZE: usize = 200;
 pub const WEIGHT: f64 = 0.95;
 
@@ -101,13 +105,152 @@ pub fn potential(online: &[Play], lost: &[Play], current_pp: f64) -> Potential {
     }
 }
 
+pub fn lost_plays(found: &[LostScore], catalog: &MapCatalog) -> Vec<(usize, Play)> {
+    found
+        .iter()
+        .enumerate()
+        .filter(|(_, lost)| lost.status.gives_pp())
+        .filter_map(|(index, lost)| {
+            let beatmap_id = catalog
+                .get(&lost.play.header.beatmap_md5)
+                .and_then(|info| info.beatmap_id)
+                .or_else(|| {
+                    lost.play
+                        .beatmap
+                        .as_ref()
+                        .and_then(|beatmap| beatmap.metadata.beatmap_id)
+                })?;
+            Some((
+                index,
+                Play {
+                    beatmap_id,
+                    pp: lost.play.pp?,
+                    accuracy: rounded_accuracy(&lost.play.header),
+                },
+            ))
+        })
+        .collect()
+}
+
 fn weights() -> impl Iterator<Item = f64> {
     (0..).map(|place| WEIGHT.powi(place))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
+
     use super::*;
+    use crate::lost::LostScore;
+    use crate::maps::{MapCatalog, MapInfo, MapStatus};
+    use crate::{LocalBeatmap, ScannedReplay};
+
+    fn replay(md5: &str, local_id: Option<u32>) -> ScannedReplay {
+        ScannedReplay {
+            file_name: format!("{md5}.osr"),
+            header: ReplayHeader {
+                mode: 0,
+                version: 20190906,
+                beatmap_md5: md5.into(),
+                player_name: "Lemon".into(),
+                replay_md5: String::new(),
+                count_300: 90,
+                count_100: 10,
+                count_50: 0,
+                count_geki: 0,
+                count_katu: 0,
+                count_miss: 0,
+                score: 1_000_000,
+                max_combo: 100,
+                perfect: false,
+                mods: Mods::from_bits(0),
+                timestamp_ticks: 0,
+            },
+            beatmap: Some(LocalBeatmap {
+                path: PathBuf::from("Songs").join(md5),
+                metadata: BeatmapMetadata {
+                    beatmap_id: local_id,
+                    ..BeatmapMetadata::default()
+                },
+            }),
+            pp: Some(300.0),
+        }
+    }
+
+    fn catalog(entries: &[(&str, Option<u32>, MapStatus)]) -> MapCatalog {
+        let mut catalog = MapCatalog::default();
+        for (md5, beatmap_id, status) in entries {
+            catalog.insert(
+                (*md5).into(),
+                MapInfo {
+                    beatmap_id: *beatmap_id,
+                    status: *status,
+                    ranked_at: None,
+                    outdated: false,
+                },
+            );
+        }
+        catalog
+    }
+
+    fn lost<'a>(replay: &'a ScannedReplay, status: MapStatus) -> LostScore<'a> {
+        LostScore {
+            play: replay,
+            kept: replay,
+            status,
+        }
+    }
+
+    #[test]
+    fn only_maps_that_give_pp_enter() {
+        let statuses = [
+            MapStatus::Ranked,
+            MapStatus::Approved,
+            MapStatus::Loved,
+            MapStatus::Graveyard,
+            MapStatus::Unknown,
+        ];
+        let replays: Vec<ScannedReplay> = (0..statuses.len())
+            .map(|i| replay(&format!("m{i}"), Some(100 + i as u32)))
+            .collect();
+        let found: Vec<LostScore> = replays
+            .iter()
+            .zip(statuses)
+            .map(|(replay, status)| lost(replay, status))
+            .collect();
+        let indices: Vec<usize> = lost_plays(&found, &MapCatalog::default())
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(indices, [0, 1]);
+    }
+
+    #[test]
+    fn beatmap_id_comes_from_the_catalog_then_the_local_file() {
+        let replays = [replay("a", Some(9)), replay("b", Some(9))];
+        let found = [
+            lost(&replays[0], MapStatus::Ranked),
+            lost(&replays[1], MapStatus::Ranked),
+        ];
+        let catalog = catalog(&[
+            ("a", Some(7), MapStatus::Ranked),
+            ("b", None, MapStatus::Ranked),
+        ]);
+        let ids: Vec<u32> = lost_plays(&found, &catalog)
+            .into_iter()
+            .map(|(_, play)| play.beatmap_id)
+            .collect();
+        assert_eq!(ids, [7, 9]);
+    }
+
+    #[test]
+    fn plays_without_a_beatmap_id_are_skipped() {
+        let replays = [replay("a", None)];
+        let found = [lost(&replays[0], MapStatus::Ranked)];
+        assert!(lost_plays(&found, &MapCatalog::default()).is_empty());
+    }
 
     fn p(beatmap_id: u32, pp: f64, accuracy: f64) -> Play {
         Play {
