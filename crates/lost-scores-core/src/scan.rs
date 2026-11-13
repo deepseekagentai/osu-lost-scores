@@ -53,9 +53,9 @@ pub struct ScanError {
     pub source: io::Error,
 }
 
-pub fn scan(osu_dir: &Path, player: &str) -> Result<Scan, ScanError> {
+pub fn scan(osu_dir: &Path, songs_dir: &Path, player: &str) -> Result<Scan, ScanError> {
     let replay_paths = list_replays(&osu_dir.join("Data").join("r"))?;
-    let songs = index_songs(osu_dir)?;
+    let songs = index_songs(osu_dir, songs_dir)?;
     let parsed: Vec<_> = replay_paths
         .into_par_iter()
         .map(|path| {

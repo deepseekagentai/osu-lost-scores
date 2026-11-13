@@ -22,11 +22,10 @@ pub(crate) struct SongsIndex {
     pub(crate) unreadable: usize,
 }
 
-pub(crate) fn index_songs(osu_dir: &Path) -> Result<SongsIndex, ScanError> {
-    let songs_dir = osu_dir.join("Songs");
+pub(crate) fn index_songs(osu_dir: &Path, songs_dir: &Path) -> Result<SongsIndex, ScanError> {
     let mut paths = Vec::new();
     let mut unreadable = 0;
-    for entry in WalkDir::new(&songs_dir) {
+    for entry in WalkDir::new(songs_dir) {
         match entry {
             Ok(entry) => {
                 if !entry.file_type().is_dir()
@@ -37,7 +36,7 @@ pub(crate) fn index_songs(osu_dir: &Path) -> Result<SongsIndex, ScanError> {
             }
             Err(error) if error.depth() == 0 => {
                 return Err(ScanError {
-                    path: songs_dir,
+                    path: songs_dir.to_path_buf(),
                     source: error.into(),
                 });
             }
