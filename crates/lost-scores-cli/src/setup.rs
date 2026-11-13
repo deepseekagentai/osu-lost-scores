@@ -108,6 +108,10 @@ pub fn config_file() -> Option<PathBuf> {
     app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("config.json"))
 }
 
+pub fn credentials_file() -> Option<PathBuf> {
+    app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("credentials.json"))
+}
+
 pub fn maps_file() -> Option<PathBuf> {
     app_dir(&["XDG_DATA_HOME", "APPDATA"], ".local/share").map(|dir| dir.join("maps.json"))
 }

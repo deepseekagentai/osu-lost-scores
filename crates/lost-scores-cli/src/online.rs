@@ -1,0 +1,113 @@
+use lost_scores_core::maps::{FetchedMap, MapInfo, MapSource, MapStatus};
+use osu_api::{ApiError, Beatmap, Client, Credentials, Http};
+
+pub const USER_AGENT: &str = concat!("lost-scores/", env!("CARGO_PKG_VERSION"));
+
+pub struct Online {
+    client: Client<Http>,
+}
+
+impl Online {
+    pub fn new(credentials: Credentials) -> Self {
+        Self {
+            client: Client::new(Http::new(USER_AGENT), credentials),
+        }
+    }
+
+    pub fn check(&mut self) -> Result<(), ApiError> {
+        self.client.check()
+    }
+
+    pub fn names(&mut self, player: &str) -> Result<Vec<String>, ApiError> {
+        let user = self.client.user(player)?;
+        Ok(all_names(player, user.username, user.previous_usernames))
+    }
+}
+
+impl MapSource for Online {
+    type Error = ApiError;
+
+    fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ApiError> {
+        Ok(self
+            .client
+            .beatmaps(ids)?
+            .into_iter()
+            .map(fetched)
+            .collect())
+    }
+
+    fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
+        Ok(self.client.lookup(md5)?.map(fetched))
+    }
+}
+
+fn all_names(player: &str, current: String, previous: Vec<String>) -> Vec<String> {
+    let mut names = vec![player.to_owned()];
+    for name in std::iter::once(current).chain(previous) {
+        if !names
+            .iter()
+            .any(|known| known.to_lowercase() == name.to_lowercase())
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn fetched(beatmap: Beatmap) -> FetchedMap {
+    let ranked_at = beatmap
+        .beatmapset
+        .as_ref()
+        .and_then(|set| set.ranked_date.as_deref())
+        .and_then(osu_api::unix_time);
+    FetchedMap {
+        checksum: beatmap.checksum,
+        info: MapInfo {
+            beatmap_id: Some(beatmap.id),
+            status: MapStatus::from_name(&beatmap.status),
+            ranked_at,
+            outdated: false,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lost_scores_core::maps::{FetchedMap, MapInfo, MapStatus};
+    use osu_api::{Beatmap, Beatmapset};
+
+    use super::{all_names, fetched};
+
+    #[test]
+    fn api_beatmap_becomes_a_catalog_entry() {
+        let beatmap = Beatmap {
+            id: 402752,
+            checksum: Some("dd00049a".into()),
+            status: "loved".into(),
+            beatmapset: Some(Beatmapset {
+                status: "loved".into(),
+                ranked_date: Some("2014-08-05T13:02:24Z".into()),
+            }),
+        };
+        assert_eq!(
+            fetched(beatmap),
+            FetchedMap {
+                checksum: Some("dd00049a".into()),
+                info: MapInfo {
+                    beatmap_id: Some(402752),
+                    status: MapStatus::Loved,
+                    ranked_at: Some(1_407_243_744),
+                    outdated: false,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn player_names_include_the_current_and_previous_ones_once() {
+        assert_eq!(
+            all_names("lemon", "Lemon".into(), vec!["Old".into(), "old".into()]),
+            ["lemon", "Old"]
+        );
+    }
+}

@@ -1,5 +1,7 @@
 mod detect;
 mod dump;
+mod keys;
+mod online;
 mod report;
 mod setup;
 
@@ -10,13 +12,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use lost_scores_core::maps::MapCatalog;
+use lost_scores_core::maps::{self, MapCatalog, Wanted};
 use lost_scores_core::{Scan, lost, pp};
+use osu_api::Credentials;
 use serde::Serialize;
 
 use crate::dump::Dump;
+use crate::online::Online;
 
 #[derive(Parser)]
 #[command(
@@ -53,6 +57,8 @@ struct Source {
         help = "Songs folder; read from the osu! config by default"
     )]
     songs_dir: Option<PathBuf>,
+    #[arg(long, global = true, help = "Do not use the osu! API")]
+    offline: bool,
 }
 
 #[derive(Args)]
@@ -82,6 +88,10 @@ enum Command {
         #[arg(long, help = "Write the JSON to this file instead of standard output")]
         output: Option<PathBuf>,
     },
+    #[command(about = "Save the keys of your own osu! OAuth application")]
+    Login,
+    #[command(about = "Delete the saved osu! OAuth keys")]
+    Logout,
 }
 
 #[derive(Serialize)]
@@ -104,11 +114,22 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Scan { output }) => dump_replays(&cli.source, output.as_deref()),
+        Some(Command::Login) => login(),
+        Some(Command::Logout) => logout(),
         None => show_lost(&cli.source, &cli.view),
     }
 }
 
-fn read(source: &Source) -> Result<(Scan, usize)> {
+fn connect(source: &Source) -> Option<Online> {
+    if source.offline {
+        return None;
+    }
+    keys::from_env()
+        .or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
+        .map(Online::new)
+}
+
+fn read(source: &Source, api: Option<&mut Online>) -> Result<(Scan, usize)> {
     let osu_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?;
     let config = setup::read_user_config(&osu_dir);
     let player = match &source.player {
@@ -119,13 +140,23 @@ fn read(source: &Source) -> Result<(Scan, usize)> {
         Some(dir) => dir.clone(),
         None => setup::songs_dir(&osu_dir, &config)?,
     };
+    let names = match api {
+        Some(api) => api.names(&player).unwrap_or_else(|error| {
+            eprintln!(
+                "could not look the player up on the osu! API: {}",
+                report::printable(&error.to_string())
+            );
+            vec![player.clone()]
+        }),
+        None => vec![player.clone()],
+    };
     eprintln!(
         "osu!: {}",
         report::printable(&osu_dir.display().to_string())
     );
-    eprintln!("player: {}", report::printable(&player));
+    eprintln!("player: {}", report::printable(&names.join(", ")));
     let started = Instant::now();
-    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, std::slice::from_ref(&player))?;
+    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
     let pp_failed = pp::fill(&osu_dir, &mut scan.replays);
     let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
     eprintln!(
@@ -140,7 +171,8 @@ fn read(source: &Source) -> Result<(Scan, usize)> {
 }
 
 fn dump_replays(source: &Source, output: Option<&Path>) -> Result<()> {
-    let (scan, pp_failed) = read(source)?;
+    let mut api = connect(source);
+    let (scan, pp_failed) = read(source, api.as_mut())?;
     let dump = Dump::new(&scan, pp_failed);
     eprintln!("{}", dump.stats);
     match output {
@@ -154,8 +186,23 @@ fn dump_replays(source: &Source, output: Option<&Path>) -> Result<()> {
 }
 
 fn show_lost(source: &Source, view: &View) -> Result<()> {
-    let (scan, _) = read(source)?;
-    let catalog = load_catalog(view.maps.as_deref())?;
+    let mut api = connect(source);
+    let (scan, _) = read(source, api.as_mut())?;
+    let catalog_path = view.maps.clone().or_else(setup::maps_file);
+    let mut catalog = match &catalog_path {
+        Some(path) if path.is_file() => MapCatalog::load(path)?,
+        _ => MapCatalog::default(),
+    };
+    let wanted = maps::wanted(&scan.replays, &catalog);
+    if !wanted.is_empty() {
+        match api.as_mut() {
+            Some(api) => update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api)?,
+            None => eprintln!(
+                "{} maps have no status yet; after `lost-scores login` they are fetched from the osu! API",
+                wanted.len()
+            ),
+        }
+    }
     let found = lost::find(&scan.replays, &catalog);
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
     let show_all = view.all || catalog.is_empty();
@@ -191,14 +238,70 @@ fn show_lost(source: &Source, view: &View) -> Result<()> {
     Ok(())
 }
 
-fn load_catalog(path: Option<&Path>) -> Result<MapCatalog> {
+fn update_catalog(
+    catalog: &mut MapCatalog,
+    path: Option<&Path>,
+    wanted: &[Wanted],
+    api: &mut Online,
+) -> Result<()> {
+    let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
+    let requests = with_id.div_ceil(50) + (wanted.len() - with_id);
+    eprintln!(
+        "asking the osu! API about {} maps, about {requests} requests at one per second",
+        wanted.len()
+    );
+    let result = maps::fill(catalog, wanted, api);
     if let Some(path) = path {
-        return Ok(MapCatalog::load(path)?);
+        catalog.save(path)?;
     }
-    match setup::maps_file().filter(|path| path.is_file()) {
-        Some(path) => Ok(MapCatalog::load(&path)?),
-        None => Ok(MapCatalog::default()),
+    let report = result?;
+    eprintln!(
+        "{} maps found by id, {} by md5, {} played on an older version, {} not on the server",
+        report.by_id, report.by_md5, report.outdated, report.not_found
+    );
+    Ok(())
+}
+
+fn login() -> Result<()> {
+    let path = setup::credentials_file().context("cannot find a folder for the settings")?;
+    eprintln!(
+        "Create an OAuth application at https://osu.ppy.sh/home/account/edit (OAuth section, any name, callback URL http://localhost) and paste its keys."
+    );
+    eprint!("Client ID: ");
+    io::stderr().flush()?;
+    let mut client_id = String::new();
+    io::stdin().read_line(&mut client_id)?;
+    let client_secret = rpassword::prompt_password("Client secret: ")?;
+    let credentials = Credentials {
+        client_id: client_id.trim().to_owned(),
+        client_secret: client_secret.trim().to_owned(),
+    };
+    ensure!(
+        !credentials.client_id.is_empty() && !credentials.client_secret.is_empty(),
+        "both the client ID and the client secret are needed"
+    );
+    Online::new(credentials.clone())
+        .check()
+        .context("the osu! API did not accept these keys")?;
+    keys::save(&path, &credentials)?;
+    eprintln!(
+        "keys checked and saved to {}",
+        report::printable(&path.display().to_string())
+    );
+    Ok(())
+}
+
+fn logout() -> Result<()> {
+    let path = setup::credentials_file().context("cannot find a folder for the settings")?;
+    if keys::delete(&path)? {
+        eprintln!(
+            "keys deleted from {}",
+            report::printable(&path.display().to_string())
+        );
+    } else {
+        eprintln!("no saved keys");
     }
+    Ok(())
 }
 
 fn write_json(mut writer: impl Write, value: &impl Serialize) -> Result<()> {
