@@ -239,11 +239,11 @@ pub fn resolve_osu_dir(arg: Option<&Path>) -> Result<PathBuf> {
                     "osu! folder not found, pass --osu-dir <path> once and it will be remembered"
                 ),
                 many => bail!(
-                    "several osu! folders found, pick one with --osu-dir:\n{}",
+                    "several osu! folders found, pick one with --osu-dir: {}",
                     many.iter()
-                        .map(|dir| format!("  {}", dir.display()))
+                        .map(|dir| dir.display().to_string())
                         .collect::<Vec<_>>()
-                        .join("\n")
+                        .join(", ")
                 ),
             }
         }

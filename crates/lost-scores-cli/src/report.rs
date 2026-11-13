@@ -80,12 +80,16 @@ pub fn table(rows: &[LostRow], limit: usize, with_status: bool) -> String {
             mods,
             row.played,
             status_column(label(row.status)),
-            row.artist,
-            row.title,
-            row.version
+            printable(&row.artist),
+            printable(&row.title),
+            printable(&row.version)
         ));
     }
     lines.join("\n")
+}
+
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 fn label(status: MapStatus) -> &'static str {
@@ -207,6 +211,29 @@ mod tests {
                 version: "x".into(),
                 file: "p.osr".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_terminal() {
+        let mut evil = replay("e.osr", 1, 300.0, 1_700_000_000);
+        if let Some(beatmap) = evil.beatmap.as_mut() {
+            beatmap.metadata.title = "Evil\u{1b}]52;c;ZXZpbA==\u{7}Title\u{9b}2J".into();
+        }
+        let kept = replay("k.osr", 2, 200.0, 1_700_000_000);
+        let lost = [LostScore {
+            play: &evil,
+            kept: &kept,
+            status: MapStatus::Ranked,
+        }];
+        let text = table(&rows(&lost, &MapCatalog::default()), 0, false);
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("A - Evil]52;c;ZXZpbA==Title2J [x]"),
+            "{text:?}"
         );
     }
 

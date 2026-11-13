@@ -6,6 +6,7 @@ use std::cmp::Reverse;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -89,8 +90,17 @@ struct LostReport<'a> {
     lost: &'a [report::LostRow],
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {}", report::printable(&format!("{err:#}")));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Scan { output }) => dump_replays(&cli.source, output.as_deref()),
         None => show_lost(&cli.source, &cli.view),
@@ -108,8 +118,11 @@ fn read(source: &Source) -> Result<(Scan, usize)> {
         Some(dir) => dir.clone(),
         None => setup::songs_dir(&osu_dir, &config)?,
     };
-    eprintln!("osu!: {}", osu_dir.display());
-    eprintln!("player: {player}");
+    eprintln!(
+        "osu!: {}",
+        report::printable(&osu_dir.display().to_string())
+    );
+    eprintln!("player: {}", report::printable(&player));
     let started = Instant::now();
     let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &player)?;
     let pp_failed = pp::fill(&osu_dir, &mut scan.replays);
