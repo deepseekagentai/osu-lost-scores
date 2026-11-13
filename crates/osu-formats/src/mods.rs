@@ -24,6 +24,21 @@ const RANKED_IN_STANDARD: u32 = NO_FAIL
     | SPUN_OUT
     | PERFECT;
 
+const ACRONYMS: [(u32, &str); 12] = [
+    (NO_FAIL, "NF"),
+    (EASY, "EZ"),
+    (TOUCH_DEVICE, "TD"),
+    (HIDDEN, "HD"),
+    (HARD_ROCK, "HR"),
+    (SUDDEN_DEATH, "SD"),
+    (DOUBLE_TIME, "DT"),
+    (HALF_TIME, "HT"),
+    (NIGHTCORE, "NC"),
+    (FLASHLIGHT, "FL"),
+    (SPUN_OUT, "SO"),
+    (PERFECT, "PF"),
+];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Mods(u32);
 
@@ -39,11 +54,40 @@ impl Mods {
     pub const fn is_ranked_in_standard(self) -> bool {
         self.0 & !RANKED_IN_STANDARD == 0
     }
+
+    pub fn acronyms(self) -> String {
+        let mut bits = self.0;
+        if bits & NIGHTCORE != 0 {
+            bits &= !DOUBLE_TIME;
+        }
+        if bits & PERFECT != 0 {
+            bits &= !SUDDEN_DEATH;
+        }
+        ACRONYMS
+            .iter()
+            .filter(|(bit, _)| bits & bit != 0)
+            .map(|(_, name)| *name)
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Mods;
+
+    #[test]
+    fn acronyms_follow_bit_order_and_hide_implied_mods() {
+        for (bits, expected) in [
+            (0, ""),
+            (HD | DT, "HDDT"),
+            (HD | DT | NC, "HDNC"),
+            (SD | PF, "PF"),
+            (EZ | HD | HT | FL, "EZHDHTFL"),
+            (NF | TD | SO, "NFTDSO"),
+        ] {
+            assert_eq!(Mods::from_bits(bits).acronyms(), expected, "{bits}");
+        }
+    }
 
     const NF: u32 = 1;
     const EZ: u32 = 2;
