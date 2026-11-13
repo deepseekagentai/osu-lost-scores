@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use common::{Replay, TICKS, write};
@@ -63,11 +64,11 @@ fn osu_folder() -> TempDir {
     dir
 }
 
-fn beatmap_paths(report: &Scan) -> Vec<Option<&str>> {
+fn beatmap_paths(report: &Scan) -> Vec<Option<&Path>> {
     report
         .replays
         .iter()
-        .map(|replay| replay.beatmap.as_ref().map(|b| b.path.to_str().unwrap()))
+        .map(|replay| replay.beatmap.as_ref().map(|b| b.path.as_path()))
         .collect()
 }
 
@@ -81,7 +82,10 @@ fn selects_the_players_standard_replays_in_time_order() {
         .map(|r| r.file_name.as_str())
         .collect();
     assert_eq!(files, ["b.osr", "a.osr"]);
-    assert_eq!(beatmap_paths(&report), [None, Some(BEATMAP_X_PATH)]);
+    assert_eq!(
+        beatmap_paths(&report),
+        [None, Some(Path::new(BEATMAP_X_PATH))]
+    );
 }
 
 #[test]
@@ -130,7 +134,11 @@ fn duplicate_beatmaps_resolve_to_the_smallest_path() {
         let dir = osu_folder();
         write(dir.path(), copy, BEATMAP_X);
         let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
-        assert_eq!(beatmap_paths(&report), [None, Some(expected)], "{copy}");
+        assert_eq!(
+            beatmap_paths(&report),
+            [None, Some(Path::new(expected))],
+            "{copy}"
+        );
         assert_eq!(report.beatmap_files, 3);
     }
 }
