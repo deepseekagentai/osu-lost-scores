@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,6 +6,8 @@ use md5::{Digest, Md5};
 use osu_formats::BeatmapMetadata;
 use thiserror::Error;
 
+use crate::files::write_atomic;
+use crate::lost;
 use crate::maps::{MapCatalog, MapInfo, MapSource, MapStatus};
 use crate::songs::hex;
 use crate::{LocalBeatmap, ScannedReplay};
@@ -34,79 +35,102 @@ pub enum MissingError<E> {
     Cache { path: PathBuf, source: io::Error },
 }
 
+pub fn missing_maps(replays: &[ScannedReplay], catalog: &MapCatalog) -> Vec<String> {
+    let without_file = replays.iter().filter(|replay| replay.beatmap.is_none());
+    lost::candidate_maps(without_file)
+        .into_iter()
+        .filter(|md5| {
+            !catalog
+                .get(md5)
+                .is_some_and(|info| info.status == MapStatus::Unknown && info.beatmap_id.is_none())
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
+    md5s: &[String],
     replays: &mut [ScannedReplay],
     catalog: &mut MapCatalog,
     cache_dir: &Path,
     source: &mut S,
+    mut progress: impl FnMut(usize),
 ) -> Result<MissingReport, MissingError<E>> {
-    let mut by_md5: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (index, replay) in replays.iter().enumerate() {
-        if replay.beatmap.is_none() {
-            by_md5
-                .entry(replay.header.beatmap_md5.clone())
-                .or_default()
-                .push(index);
-        }
-    }
     let mut report = MissingReport::default();
-    for (md5, indices) in by_md5 {
-        let gone = catalog
-            .get(&md5)
-            .is_some_and(|info| info.status == MapStatus::Unknown && info.beatmap_id.is_none());
-        if gone {
-            continue;
-        }
+    for (done, md5) in md5s.iter().enumerate() {
         report.maps += 1;
         let path = cache_dir.join(format!("{md5}.osu"));
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => {
+        let cached = fs::read(&path).ok().filter(|bytes| md5_hex(bytes) == *md5);
+        let bytes = match cached {
+            Some(bytes) => {
                 report.cached += 1;
-                bytes
+                Some(bytes)
             }
-            Err(_) => {
-                let found = source.lookup(&md5).map_err(MissingError::Source)?;
-                let Some(beatmap_id) = found.as_ref().and_then(|map| map.info.beatmap_id) else {
-                    catalog.insert(
-                        md5,
-                        MapInfo {
-                            beatmap_id: None,
-                            status: MapStatus::Unknown,
-                            ranked_at: None,
-                            outdated: false,
-                            checked_at: None,
-                        },
-                    );
-                    report.not_found += 1;
-                    continue;
-                };
-                if let Some(found) = found {
-                    catalog.insert(md5.clone(), found.info);
-                }
-                let bytes = source.download(beatmap_id).map_err(MissingError::Source)?;
-                if hex(Md5::digest(&bytes).as_slice()) != md5 {
-                    report.mismatched += 1;
-                    continue;
-                }
-                fs::create_dir_all(cache_dir)
-                    .and_then(|()| fs::write(&path, &bytes))
-                    .map_err(|source| MissingError::Cache {
-                        path: path.clone(),
-                        source,
-                    })?;
-                report.downloaded += 1;
-                bytes
-            }
+            None => download(md5, &path, catalog, source, &mut report)?,
         };
-        let metadata = BeatmapMetadata::parse(&bytes);
-        for index in indices {
-            replays[index].beatmap = Some(LocalBeatmap {
-                path: path.clone(),
-                metadata: metadata.clone(),
-            });
+        if let Some(bytes) = bytes {
+            attach(replays, md5, &path, &bytes);
         }
+        progress(done + 1);
     }
     Ok(report)
+}
+
+fn download<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
+    md5: &str,
+    path: &Path,
+    catalog: &mut MapCatalog,
+    source: &mut S,
+    report: &mut MissingReport,
+) -> Result<Option<Vec<u8>>, MissingError<E>> {
+    let found = source.lookup(md5).map_err(MissingError::Source)?;
+    let Some((beatmap_id, found)) = found.and_then(|map| Some((map.info.beatmap_id?, map))) else {
+        catalog.insert(
+            md5.to_owned(),
+            MapInfo {
+                beatmap_id: None,
+                status: MapStatus::Unknown,
+                ranked_at: None,
+                outdated: false,
+                checked_at: None,
+            },
+        );
+        report.not_found += 1;
+        return Ok(None);
+    };
+    catalog.insert(md5.to_owned(), found.info);
+    let bytes = source.download(beatmap_id).map_err(MissingError::Source)?;
+    if md5_hex(&bytes) != md5 {
+        report.mismatched += 1;
+        return Ok(None);
+    }
+    let cache_error = |source| MissingError::Cache {
+        path: path.to_path_buf(),
+        source,
+    };
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(cache_error)?;
+    }
+    write_atomic(path, &bytes).map_err(cache_error)?;
+    report.downloaded += 1;
+    Ok(Some(bytes))
+}
+
+fn attach(replays: &mut [ScannedReplay], md5: &str, path: &Path, bytes: &[u8]) {
+    let metadata = BeatmapMetadata::parse(bytes);
+    let missing = replays
+        .iter_mut()
+        .filter(|replay| replay.beatmap.is_none() && replay.header.beatmap_md5 == md5);
+    for replay in missing {
+        replay.beatmap = Some(LocalBeatmap {
+            path: path.to_path_buf(),
+            metadata: metadata.clone(),
+        });
+    }
+}
+
+fn md5_hex(bytes: &[u8]) -> String {
+    hex(Md5::digest(bytes).as_slice())
 }
 
 #[cfg(test)]
@@ -115,12 +139,13 @@ mod tests {
     use std::fs;
 
     use md5::{Digest, Md5};
-    use osu_formats::{Mods, ReplayHeader};
+    use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
     use super::*;
-    use crate::ScannedReplay;
+    use crate::lost::SCORE_V1_END;
     use crate::maps::{FetchedMap, MapCatalog, MapInfo, MapSource, MapStatus};
     use crate::songs::hex;
+    use crate::{LocalBeatmap, ScannedReplay};
 
     const MAP: &[u8] = b"osu file format v14\r\n\r\n[Metadata]\r\nTitle:T\r\nArtist:A\r\nCreator:c\r\nVersion:v\r\nBeatmapID:5\r\nBeatmapSetID:1\r\n";
 
@@ -192,6 +217,63 @@ mod tests {
         }
     }
 
+    fn scored(md5: &str, score: u32) -> ScannedReplay {
+        let mut replay = replay(md5);
+        replay.header.score = score;
+        replay
+    }
+
+    fn in_songs(md5: &str, score: u32) -> ScannedReplay {
+        let mut replay = scored(md5, score);
+        replay.beatmap = Some(LocalBeatmap {
+            path: format!("Songs/{md5}.osu").into(),
+            metadata: BeatmapMetadata::default(),
+        });
+        replay
+    }
+
+    fn fetch(
+        md5s: &[&str],
+        replays: &mut [ScannedReplay],
+        catalog: &mut MapCatalog,
+        cache: &Path,
+        fake: &mut Fake,
+    ) -> MissingReport {
+        let md5s: Vec<String> = md5s.iter().map(|md5| md5.to_string()).collect();
+        fetch_missing(&md5s, replays, catalog, cache, fake, |_| {}).unwrap()
+    }
+
+    #[test]
+    fn only_maps_that_can_hold_a_lost_play_are_looked_up() {
+        let mut hidden = scored("other_mods", 900_000);
+        hidden.header.mods = Mods::from_bits(8);
+        let mut late = scored("late", 900_000);
+        late.header.timestamp_ticks = (SCORE_V1_END + 1) * 10_000_000 + 621_355_968_000_000_000;
+        let replays = [
+            replay("single"),
+            replay("pair"),
+            scored("pair", 900_000),
+            replay("same_score"),
+            replay("same_score"),
+            replay("other_mods"),
+            hidden,
+            replay("late"),
+            late,
+        ];
+        assert_eq!(missing_maps(&replays, &MapCatalog::default()), ["pair"]);
+    }
+
+    #[test]
+    fn maps_in_songs_are_not_looked_up() {
+        let replays = [
+            in_songs("local", 1_000_000),
+            in_songs("local", 900_000),
+            replay("missing"),
+            scored("missing", 900_000),
+        ];
+        assert_eq!(missing_maps(&replays, &MapCatalog::default()), ["missing"]);
+    }
+
     #[test]
     fn downloads_the_map_of_a_replay_missing_from_songs() {
         let cache = tempfile::tempdir().unwrap();
@@ -200,13 +282,13 @@ mod tests {
         fake.maps.insert(md5.clone(), 5);
         fake.files.insert(5, MAP.to_vec());
         let mut replays = [replay(&md5)];
-        let report = fetch_missing(
+        let report = fetch(
+            &[&md5],
             &mut replays,
             &mut MapCatalog::default(),
             cache.path(),
             &mut fake,
-        )
-        .unwrap();
+        );
         let path = cache.path().join(format!("{md5}.osu"));
         let beatmap = replays[0].beatmap.as_ref().unwrap();
         assert_eq!(beatmap.path, path);
@@ -222,16 +304,38 @@ mod tests {
         fs::write(cache.path().join(format!("{md5}.osu")), MAP).unwrap();
         let mut fake = Fake::default();
         let mut replays = [replay(&md5)];
-        let report = fetch_missing(
+        let report = fetch(
+            &[&md5],
             &mut replays,
             &mut MapCatalog::default(),
             cache.path(),
             &mut fake,
-        )
-        .unwrap();
+        );
         assert!(fake.calls.is_empty());
         assert_eq!(report.cached, 1);
         assert!(replays[0].beatmap.is_some());
+    }
+
+    #[test]
+    fn a_damaged_cached_file_is_downloaded_again() {
+        let cache = tempfile::tempdir().unwrap();
+        let md5 = md5_of(MAP);
+        let path = cache.path().join(format!("{md5}.osu"));
+        fs::write(&path, &MAP[..20]).unwrap();
+        let mut fake = Fake::default();
+        fake.maps.insert(md5.clone(), 5);
+        fake.files.insert(5, MAP.to_vec());
+        let mut replays = [replay(&md5)];
+        let report = fetch(
+            &[&md5],
+            &mut replays,
+            &mut MapCatalog::default(),
+            cache.path(),
+            &mut fake,
+        );
+        assert_eq!((report.cached, report.downloaded), (0, 1));
+        assert_eq!(fs::read(&path).unwrap(), MAP);
+        assert_eq!(replays[0].beatmap.as_ref().unwrap().metadata.title, "T");
     }
 
     #[test]
@@ -239,13 +343,19 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let mut fake = Fake::default();
         let mut catalog = MapCatalog::default();
-        let report =
-            fetch_missing(&mut [replay("gone")], &mut catalog, cache.path(), &mut fake).unwrap();
+        let mut replays = [replay("gone"), scored("gone", 900_000)];
+        assert_eq!(missing_maps(&replays, &catalog), ["gone"]);
+        let report = fetch(
+            &["gone"],
+            &mut replays,
+            &mut catalog,
+            cache.path(),
+            &mut fake,
+        );
         assert_eq!(report.not_found, 1);
         let info = catalog.get("gone").unwrap();
         assert_eq!((info.beatmap_id, info.status), (None, MapStatus::Unknown));
-        fetch_missing(&mut [replay("gone")], &mut catalog, cache.path(), &mut fake).unwrap();
-        assert_eq!(fake.calls, ["lookup gone"]);
+        assert!(missing_maps(&replays, &catalog).is_empty());
     }
 
     #[test]
@@ -256,15 +366,36 @@ mod tests {
         fake.maps.insert(md5.clone(), 5);
         fake.files.insert(5, b"osu file format v14\r\n".to_vec());
         let mut replays = [replay(&md5)];
-        let report = fetch_missing(
+        let report = fetch(
+            &[&md5],
             &mut replays,
             &mut MapCatalog::default(),
             cache.path(),
             &mut fake,
-        )
-        .unwrap();
+        );
         assert!(replays[0].beatmap.is_none());
         assert_eq!(report.mismatched, 1);
         assert!(!cache.path().join(format!("{md5}.osu")).exists());
+    }
+
+    #[test]
+    fn progress_is_reported_for_every_map() {
+        let cache = tempfile::tempdir().unwrap();
+        let md5 = md5_of(MAP);
+        let mut fake = Fake::default();
+        fake.maps.insert(md5.clone(), 5);
+        fake.files.insert(5, MAP.to_vec());
+        let mut replays = [replay(&md5), replay("gone")];
+        let mut done = Vec::new();
+        fetch_missing(
+            &[md5, "gone".into()],
+            &mut replays,
+            &mut MapCatalog::default(),
+            cache.path(),
+            &mut fake,
+            |count| done.push(count),
+        )
+        .unwrap();
+        assert_eq!(done, [1, 2]);
     }
 }

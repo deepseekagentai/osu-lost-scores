@@ -8,15 +8,15 @@ mod timings;
 
 use std::cmp::Reverse;
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lost_scores_core::maps::{self, MapCatalog, Wanted};
-use lost_scores_core::missing::fetch_missing;
+use lost_scores_core::missing::{fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
 use lost_scores_core::{Scan, lost, pp};
 use osu_api::{Credentials, Score};
@@ -209,9 +209,14 @@ fn read(
     let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
     timings.add("songs index", scan.timings.songs);
     timings.add("replays", scan.timings.replays);
+    let mut checking = Duration::ZERO;
     if source.check_missing {
         match api {
-            Some(api) => add_missing_maps(&mut scan, maps, api, timings)?,
+            Some(api) => {
+                let started = Instant::now();
+                add_missing_maps(&mut scan, maps, api, timings)?;
+                checking = started.elapsed();
+            }
             None => eprintln!(
                 "--check-missing needs the osu! API: run lost-scores login first; continuing without it"
             ),
@@ -222,7 +227,7 @@ fn read(
     eprintln!(
         "{} replays read in {:.1} s, {with_pp} of the player's have a local beatmap and pp",
         scan.replay_files,
-        started.elapsed().as_secs_f64()
+        (started.elapsed() - checking).as_secs_f64()
     );
     if pp_failed > 0 {
         eprintln!("{pp_failed} beatmaps could not be loaded for pp");
@@ -354,19 +359,40 @@ fn add_missing_maps(
     let cache_dir = setup::osu_cache_dir().context("cannot find a folder for the map cache")?;
     let catalog_path = catalog_file(maps);
     let mut catalog = open_catalog(catalog_path.as_deref())?;
+    let md5s = missing_maps(&scan.replays, &catalog);
+    if md5s.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "{} maps missing from Songs could hold a lost play; each one not in the cache takes two requests at one per second",
+        md5s.len()
+    );
+    let terminal = io::stderr().is_terminal();
     let report = timings.time("missing maps", || {
-        fetch_missing(&mut scan.replays, &mut catalog, &cache_dir, api)
+        fetch_missing(
+            &md5s,
+            &mut scan.replays,
+            &mut catalog,
+            &cache_dir,
+            api,
+            |done| {
+                if terminal {
+                    eprint!("\rmissing maps: {done}/{}", md5s.len());
+                }
+            },
+        )
     });
+    if terminal {
+        eprintln!();
+    }
     if let Some(path) = &catalog_path {
         catalog.save(path)?;
     }
     let report = report?;
-    if report.maps > 0 {
-        eprintln!(
-            "{} maps missing from Songs looked up: {} from the cache, {} downloaded, {} not on the server, {} changed since the replay",
-            report.maps, report.cached, report.downloaded, report.not_found, report.mismatched
-        );
-    }
+    eprintln!(
+        "{} maps missing from Songs looked up: {} from the cache, {} downloaded, {} not on the server, {} changed since the replay",
+        report.maps, report.cached, report.downloaded, report.not_found, report.mismatched
+    );
     Ok(())
 }
 

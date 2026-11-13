@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ptr;
 
 use crate::ScannedReplay;
@@ -84,6 +84,25 @@ pub fn find<'a>(replays: &'a [ScannedReplay], catalog: &MapCatalog) -> Vec<LostS
     lost
 }
 
+pub fn candidate_maps<'a>(
+    replays: impl IntoIterator<Item = &'a ScannedReplay>,
+) -> BTreeSet<&'a str> {
+    let mut first_score: HashMap<(&str, u32), u32> = HashMap::new();
+    let mut candidates = BTreeSet::new();
+    for replay in replays {
+        if replay.header.unix_time() >= SCORE_V1_END {
+            continue;
+        }
+        let md5 = replay.header.beatmap_md5.as_str();
+        let group = (md5, reference_mod_bits(replay.header.mods));
+        let first = *first_score.entry(group).or_insert(replay.header.score);
+        if first != replay.header.score {
+            candidates.insert(md5);
+        }
+    }
+    candidates
+}
+
 type Play<'a> = (&'a ScannedReplay, f64);
 
 fn pp_of(replay: &ScannedReplay) -> f64 {
@@ -120,7 +139,7 @@ mod tests {
 
     use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
-    use super::{SCORE_V1_END, find};
+    use super::{SCORE_V1_END, candidate_maps, find};
     use crate::maps::MapCatalog;
     use crate::{LocalBeatmap, ScannedReplay};
 
@@ -166,8 +185,10 @@ mod tests {
     }
 
     fn lost_names(replays: &[ScannedReplay], catalog: &MapCatalog) -> Vec<(String, String)> {
+        let candidates = candidate_maps(replays);
         find(replays, catalog)
             .into_iter()
+            .inspect(|lost| assert!(candidates.contains(lost.play.header.beatmap_md5.as_str())))
             .map(|lost| (lost.play.file_name.clone(), lost.kept.file_name.clone()))
             .collect()
     }
