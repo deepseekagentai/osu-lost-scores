@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use osu_formats::{ReplayError, ReplayHeader};
 use rayon::prelude::*;
@@ -22,6 +23,13 @@ pub struct Scan {
     pub beatmap_files: usize,
     pub unreadable_beatmaps: usize,
     pub replays: Vec<ScannedReplay>,
+    pub timings: ScanTimings,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ScanTimings {
+    pub songs: Duration,
+    pub replays: Duration,
 }
 
 #[derive(Debug)]
@@ -54,8 +62,13 @@ pub struct ScanError {
 }
 
 pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan, ScanError> {
+    let started = Instant::now();
     let replay_paths = list_replays(&osu_dir.join("Data").join("r"))?;
+    let listed = started.elapsed();
+    let started = Instant::now();
     let songs = index_songs(osu_dir, songs_dir)?;
+    let songs_took = started.elapsed();
+    let started = Instant::now();
     let parsed: Vec<_> = replay_paths
         .into_par_iter()
         .map(|path| {
@@ -81,6 +94,7 @@ pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan
         beatmap_files: songs.files,
         unreadable_beatmaps: songs.unreadable,
         replays: Vec::new(),
+        timings: ScanTimings::default(),
     };
     for (file_name, header) in parsed {
         match header {
@@ -109,6 +123,10 @@ pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan
     report
         .unreadable_replays
         .sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    report.timings = ScanTimings {
+        songs: songs_took,
+        replays: listed + started.elapsed(),
+    };
     Ok(report)
 }
 

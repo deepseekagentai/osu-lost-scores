@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::time::Duration;
 
 use common::{Replay, TICKS, write};
 use lost_scores_core::{Scan, scan};
@@ -178,4 +179,12 @@ fn replays_under_a_previous_name_are_selected_too() {
         .map(|r| r.file_name.as_str())
         .collect();
     assert_eq!(files, ["b.osr", "a.osr", "old.osr"]);
+}
+
+#[test]
+fn reports_how_long_the_songs_index_and_the_replays_took() {
+    let dir = osu_folder();
+    let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
+    assert!(report.timings.songs > Duration::ZERO);
+    assert!(report.timings.replays > Duration::ZERO);
 }

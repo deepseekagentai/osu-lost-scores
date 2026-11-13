@@ -4,6 +4,7 @@ mod keys;
 mod online;
 mod report;
 mod setup;
+mod timings;
 
 use std::cmp::Reverse;
 use std::fs::File;
@@ -21,6 +22,7 @@ use serde::Serialize;
 
 use crate::dump::Dump;
 use crate::online::Online;
+use crate::timings::Timings;
 
 #[derive(Parser)]
 #[command(
@@ -35,6 +37,8 @@ struct Cli {
     source: Source,
     #[command(flatten)]
     view: View,
+    #[arg(long, global = true, help = "Print how long each step took")]
+    timings: bool,
 }
 
 #[derive(Args)]
@@ -112,12 +116,19 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    match cli.command {
-        Some(Command::Scan { output }) => dump_replays(&cli.source, output.as_deref()),
+    let mut timings = Timings::new();
+    let result = match cli.command {
+        Some(Command::Scan { output }) => {
+            dump_replays(&cli.source, output.as_deref(), &mut timings)
+        }
         Some(Command::Login) => login(),
         Some(Command::Logout) => logout(),
-        None => show_lost(&cli.source, &cli.view),
+        None => show_lost(&cli.source, &cli.view, &mut timings),
+    };
+    if cli.timings {
+        eprintln!("{}", timings.report());
     }
+    result
 }
 
 fn connect(source: &Source) -> Option<Online> {
@@ -129,7 +140,7 @@ fn connect(source: &Source) -> Option<Online> {
         .map(Online::new)
 }
 
-fn read(source: &Source, api: Option<&mut Online>) -> Result<(Scan, usize)> {
+fn read(source: &Source, api: Option<&mut Online>, timings: &mut Timings) -> Result<(Scan, usize)> {
     let osu_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?;
     let config = setup::read_user_config(&osu_dir);
     let player = match &source.player {
@@ -141,13 +152,15 @@ fn read(source: &Source, api: Option<&mut Online>) -> Result<(Scan, usize)> {
         None => setup::songs_dir(&osu_dir, &config)?,
     };
     let names = match api {
-        Some(api) => api.names(&player).unwrap_or_else(|error| {
-            eprintln!(
-                "could not look the player up on the osu! API: {}",
-                report::printable(&error.to_string())
-            );
-            vec![player.clone()]
-        }),
+        Some(api) => timings
+            .time("player lookup", || api.names(&player))
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "could not look the player up on the osu! API: {}",
+                    report::printable(&error.to_string())
+                );
+                vec![player.clone()]
+            }),
         None => vec![player.clone()],
     };
     eprintln!(
@@ -157,7 +170,9 @@ fn read(source: &Source, api: Option<&mut Online>) -> Result<(Scan, usize)> {
     eprintln!("player: {}", report::printable(&names.join(", ")));
     let started = Instant::now();
     let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
-    let pp_failed = pp::fill(&osu_dir, &mut scan.replays);
+    timings.add("songs index", scan.timings.songs);
+    timings.add("replays", scan.timings.replays);
+    let pp_failed = timings.time("pp", || pp::fill(&osu_dir, &mut scan.replays));
     let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
     eprintln!(
         "{} replays read in {:.1} s, {with_pp} of the player's have a local beatmap and pp",
@@ -170,9 +185,9 @@ fn read(source: &Source, api: Option<&mut Online>) -> Result<(Scan, usize)> {
     Ok((scan, pp_failed))
 }
 
-fn dump_replays(source: &Source, output: Option<&Path>) -> Result<()> {
+fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, pp_failed) = read(source, api.as_mut())?;
+    let (scan, pp_failed) = read(source, api.as_mut(), timings)?;
     let dump = Dump::new(&scan, pp_failed);
     eprintln!("{}", dump.stats);
     match output {
@@ -185,9 +200,10 @@ fn dump_replays(source: &Source, output: Option<&Path>) -> Result<()> {
     }
 }
 
-fn show_lost(source: &Source, view: &View) -> Result<()> {
+fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> {
     let mut api = connect(source);
-    let (scan, _) = read(source, api.as_mut())?;
+    let (scan, _) = read(source, api.as_mut(), timings)?;
+    let started = Instant::now();
     let catalog_path = view.maps.clone().or_else(setup::maps_file);
     let mut catalog = match &catalog_path {
         Some(path) if path.is_file() => MapCatalog::load(path)?,
@@ -203,7 +219,8 @@ fn show_lost(source: &Source, view: &View) -> Result<()> {
             ),
         }
     }
-    let found = lost::find(&scan.replays, &catalog);
+    timings.add("map catalog", started.elapsed());
+    let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
     let show_all = view.all || catalog.is_empty();
     let mut rows = report::rows(&found, &catalog);

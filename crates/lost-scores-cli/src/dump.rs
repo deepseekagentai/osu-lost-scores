@@ -215,6 +215,7 @@ mod tests {
             unranked_mods: 2,
             beatmap_files: 7,
             unreadable_beatmaps: 1,
+            timings: Default::default(),
             replays: vec![
                 ScannedReplay {
                     file_name: "a.osr".into(),
