@@ -1,3 +1,4 @@
+mod detect;
 mod dump;
 mod report;
 mod setup;
