@@ -189,6 +189,7 @@ mod tests {
                     status: *status,
                     ranked_at: None,
                     outdated: false,
+                    checked_at: None,
                 },
             );
         }

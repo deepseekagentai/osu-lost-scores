@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -287,16 +287,19 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
 fn load_catalog(
     maps: Option<&Path>,
     scan: &Scan,
-    api: Option<&mut Online>,
+    mut api: Option<&mut Online>,
     timings: &mut Timings,
 ) -> Result<MapCatalog> {
     let started = Instant::now();
+    let now = unix_now();
     let catalog_path = catalog_file(maps);
     let mut catalog = open_catalog(catalog_path.as_deref())?;
     let wanted = maps::wanted(&scan.replays, &catalog);
     if !wanted.is_empty() {
-        match api {
-            Some(api) => update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api)?,
+        match api.as_deref_mut() {
+            Some(api) => {
+                update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api, now)?;
+            }
             None => eprintln!(
                 "{} maps have no status yet; after `lost-scores login` they are fetched from the osu! API",
                 wanted.len()
@@ -304,7 +307,31 @@ fn load_catalog(
         }
     }
     timings.add("map catalog", started.elapsed());
+    if let Some(api) = api {
+        let ids = maps::stale(&catalog, now);
+        if !ids.is_empty() {
+            let changed = timings.time("status refresh", || {
+                maps::refresh(&mut catalog, &ids, api, now)
+            });
+            if let Some(path) = &catalog_path {
+                catalog.save(path)?;
+            }
+            eprintln!(
+                "asked again about {} maps whose status can change, {} changed",
+                ids.len(),
+                changed?
+            );
+        }
+    }
     Ok(catalog)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 fn catalog_file(maps: Option<&Path>) -> Option<PathBuf> {
@@ -410,6 +437,7 @@ fn update_catalog(
     path: Option<&Path>,
     wanted: &[Wanted],
     api: &mut Online,
+    now: i64,
 ) -> Result<()> {
     let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
     let requests = with_id.div_ceil(50) + (wanted.len() - with_id);
@@ -417,7 +445,7 @@ fn update_catalog(
         "asking the osu! API about {} maps, about {requests} requests at one per second",
         wanted.len()
     );
-    let result = maps::fill(catalog, wanted, api);
+    let result = maps::fill(catalog, wanted, api, now);
     if let Some(path) = path {
         catalog.save(path)?;
     }

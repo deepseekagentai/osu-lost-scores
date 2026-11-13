@@ -95,6 +95,7 @@ fn fetched(beatmap: Beatmap) -> FetchedMap {
             status: MapStatus::from_name(&beatmap.status),
             ranked_at,
             outdated: false,
+            checked_at: None,
         },
     }
 }
@@ -126,6 +127,7 @@ mod tests {
                     status: MapStatus::Loved,
                     ranked_at: Some(1_407_243_744),
                     outdated: false,
+                    checked_at: None,
                 },
             }
         );

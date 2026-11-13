@@ -23,9 +23,18 @@ pub enum MapStatus {
     Unknown,
 }
 
+pub const RECHECK_AFTER: i64 = 7 * 24 * 60 * 60;
+
 impl MapStatus {
     pub const fn gives_pp(self) -> bool {
         matches!(self, Self::Ranked | Self::Approved)
+    }
+
+    pub const fn can_change(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::Qualified | Self::Wip | Self::Graveyard
+        )
     }
 
     pub fn from_name(name: &str) -> Self {
@@ -49,6 +58,8 @@ pub struct MapInfo {
     pub ranked_at: Option<i64>,
     #[serde(default)]
     pub outdated: bool,
+    #[serde(default)]
+    pub checked_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +204,7 @@ pub fn fill<S: MapSource>(
     catalog: &mut MapCatalog,
     wanted: &[Wanted],
     source: &mut S,
+    now: i64,
 ) -> Result<FillReport, S::Error> {
     let mut report = FillReport::default();
     let mut ids: Vec<u32> = wanted.iter().filter_map(|item| item.beatmap_id).collect();
@@ -213,12 +225,24 @@ pub fn fill<S: MapSource>(
         .collect();
     for item in wanted {
         if let Some(info) = by_checksum.get(item.md5.as_str()) {
-            catalog.insert(item.md5.clone(), (*info).clone());
+            catalog.insert(
+                item.md5.clone(),
+                MapInfo {
+                    checked_at: Some(now),
+                    ..(*info).clone()
+                },
+            );
             report.by_id += 1;
             continue;
         }
         if let Some(found) = source.lookup(&item.md5)? {
-            catalog.insert(item.md5.clone(), found.info);
+            catalog.insert(
+                item.md5.clone(),
+                MapInfo {
+                    checked_at: Some(now),
+                    ..found.info
+                },
+            );
             report.by_md5 += 1;
             continue;
         }
@@ -228,6 +252,7 @@ pub fn fill<S: MapSource>(
                     item.md5.clone(),
                     MapInfo {
                         outdated: true,
+                        checked_at: Some(now),
                         ..(*info).clone()
                     },
                 );
@@ -241,6 +266,7 @@ pub fn fill<S: MapSource>(
                         status: MapStatus::Unknown,
                         ranked_at: None,
                         outdated: false,
+                        checked_at: Some(now),
                     },
                 );
                 report.not_found += 1;
@@ -248,6 +274,47 @@ pub fn fill<S: MapSource>(
         }
     }
     Ok(report)
+}
+
+pub fn stale(catalog: &MapCatalog, now: i64) -> Vec<u32> {
+    let mut ids: Vec<u32> = catalog
+        .maps
+        .values()
+        .filter(|info| info.status.can_change())
+        .filter(|info| info.checked_at.is_none_or(|at| now - at > RECHECK_AFTER))
+        .filter_map(|info| info.beatmap_id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+pub fn refresh<S: MapSource>(
+    catalog: &mut MapCatalog,
+    ids: &[u32],
+    source: &mut S,
+    now: i64,
+) -> Result<usize, S::Error> {
+    let fetched = source.batch(ids)?;
+    let by_id: HashMap<u32, &MapInfo> = fetched
+        .iter()
+        .filter_map(|map| Some((map.info.beatmap_id?, &map.info)))
+        .collect();
+    let mut changed = 0;
+    for info in catalog.maps.values_mut() {
+        let Some(id) = info.beatmap_id.filter(|id| ids.contains(id)) else {
+            continue;
+        };
+        if let Some(found) = by_id.get(&id) {
+            if info.status != found.status {
+                changed += 1;
+            }
+            info.status = found.status;
+            info.ranked_at = found.ranked_at;
+        }
+        info.checked_at = Some(now);
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -260,8 +327,8 @@ mod tests {
     use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
     use super::{
-        CatalogError, FetchedMap, FillReport, MapCatalog, MapInfo, MapSource, MapStatus, Wanted,
-        fill, wanted,
+        CatalogError, FetchedMap, FillReport, MapCatalog, MapInfo, MapSource, MapStatus,
+        RECHECK_AFTER, Wanted, fill, refresh, stale, wanted,
     };
     use crate::{LocalBeatmap, ScannedReplay};
 
@@ -288,6 +355,7 @@ mod tests {
                 status: MapStatus::Ranked,
                 ranked_at: Some(1557000000),
                 outdated: false,
+                checked_at: None,
             })
         );
         assert_eq!(catalog.get("cccc").unwrap().status, MapStatus::Unknown);
@@ -365,6 +433,7 @@ mod tests {
             status,
             ranked_at: Some(1_400_000_000),
             outdated: false,
+            checked_at: None,
         }
     }
 
@@ -472,7 +541,7 @@ mod tests {
             },
         ];
         let mut catalog = MapCatalog::default();
-        let report = fill(&mut catalog, &wanted, &mut source).unwrap();
+        let report = fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
         assert_eq!(
             report,
             FillReport {
@@ -484,8 +553,20 @@ mod tests {
         );
         assert_eq!(source.batch_calls, [vec![11, 22]]);
         assert_eq!(source.lookup_calls, ["b", "c"]);
-        assert_eq!(catalog.get("a"), Some(&info(11, MapStatus::Ranked)));
-        assert_eq!(catalog.get("b"), Some(&info(222, MapStatus::Loved)));
+        assert_eq!(
+            catalog.get("a"),
+            Some(&MapInfo {
+                checked_at: Some(NOW),
+                ..info(11, MapStatus::Ranked)
+            })
+        );
+        assert_eq!(
+            catalog.get("b"),
+            Some(&MapInfo {
+                checked_at: Some(NOW),
+                ..info(222, MapStatus::Loved)
+            })
+        );
         assert_eq!(catalog.get("c").unwrap().status, MapStatus::Unknown);
     }
 
@@ -503,13 +584,14 @@ mod tests {
             beatmap_id: Some(33),
         }];
         let mut catalog = MapCatalog::default();
-        let report = fill(&mut catalog, &wanted, &mut source).unwrap();
+        let report = fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
         assert_eq!(report.outdated, 1);
         assert_eq!(source.lookup_calls, ["old version"]);
         assert_eq!(
             catalog.get("old version"),
             Some(&MapInfo {
                 outdated: true,
+                checked_at: Some(NOW),
                 ..info(33, MapStatus::Ranked)
             })
         );
@@ -525,5 +607,98 @@ mod tests {
         let loaded = MapCatalog::load(&path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded.get("a"), Some(&info(11, MapStatus::Ranked)));
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn entry(id: u32, status: MapStatus, checked_at: Option<i64>) -> MapInfo {
+        MapInfo {
+            beatmap_id: Some(id),
+            status,
+            ranked_at: None,
+            outdated: false,
+            checked_at,
+        }
+    }
+
+    #[test]
+    fn final_and_unknown_statuses_are_never_stale() {
+        let mut catalog = MapCatalog::default();
+        let statuses = [
+            MapStatus::Ranked,
+            MapStatus::Approved,
+            MapStatus::Loved,
+            MapStatus::Unknown,
+        ];
+        for (id, status) in (1..).zip(statuses) {
+            catalog.insert(format!("m{id}"), entry(id, status, None));
+        }
+        assert!(stale(&catalog, NOW).is_empty());
+    }
+
+    #[test]
+    fn a_catalog_without_checked_at_counts_as_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("maps.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"maps":{"m":{"beatmap_id":5,"status":"graveyard","ranked_at":null}}}"#,
+        )
+        .unwrap();
+        assert_eq!(stale(&MapCatalog::load(&path).unwrap(), NOW), [5]);
+    }
+
+    #[test]
+    fn a_week_old_check_is_stale_and_a_day_old_one_is_not() {
+        let mut catalog = MapCatalog::default();
+        catalog.insert(
+            "old".into(),
+            entry(1, MapStatus::Graveyard, Some(NOW - RECHECK_AFTER - 1)),
+        );
+        catalog.insert(
+            "new".into(),
+            entry(2, MapStatus::Graveyard, Some(NOW - 86_400)),
+        );
+        assert_eq!(stale(&catalog, NOW), [1]);
+    }
+
+    #[test]
+    fn refresh_updates_status_and_ranked_date() {
+        let mut catalog = MapCatalog::default();
+        catalog.insert("m".into(), entry(5, MapStatus::Graveyard, None));
+        let mut source = FakeSource {
+            batch: vec![FetchedMap {
+                checksum: Some("m".into()),
+                info: MapInfo {
+                    ranked_at: Some(1_700_000_000),
+                    ..entry(5, MapStatus::Ranked, None)
+                },
+            }],
+            ..FakeSource::default()
+        };
+        assert_eq!(refresh(&mut catalog, &[5], &mut source, NOW).unwrap(), 1);
+        let info = catalog.get("m").unwrap();
+        assert_eq!(
+            (info.status, info.ranked_at, info.checked_at),
+            (MapStatus::Ranked, Some(1_700_000_000), Some(NOW))
+        );
+    }
+
+    #[test]
+    fn fill_records_when_it_checked() {
+        let mut source = FakeSource {
+            batch: vec![FetchedMap {
+                checksum: Some("a".into()),
+                info: info(11, MapStatus::Ranked),
+            }],
+            ..FakeSource::default()
+        };
+        let mut catalog = MapCatalog::default();
+        let wanted = [Wanted {
+            md5: "a".into(),
+            beatmap_id: Some(11),
+        }];
+        fill(&mut catalog, &wanted, &mut source, NOW).unwrap();
+        assert_eq!(catalog.get("a").unwrap().checked_at, Some(NOW));
     }
 }

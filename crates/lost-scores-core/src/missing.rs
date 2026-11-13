@@ -74,6 +74,7 @@ pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
                             status: MapStatus::Unknown,
                             ranked_at: None,
                             outdated: false,
+                            checked_at: None,
                         },
                     );
                     report.not_found += 1;
@@ -150,6 +151,7 @@ mod tests {
                     status: MapStatus::Ranked,
                     ranked_at: None,
                     outdated: false,
+                    checked_at: None,
                 },
             }))
         }
