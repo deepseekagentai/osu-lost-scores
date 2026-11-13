@@ -54,13 +54,61 @@ pub struct Beatmap {
     pub beatmapset: Option<Beatmapset>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct User {
     pub id: u32,
     pub username: String,
     #[serde(default)]
     pub previous_usernames: Vec<String>,
+    #[serde(default)]
+    pub statistics: Option<UserStatistics>,
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct UserStatistics {
+    pub pp: f64,
+    pub hit_accuracy: f64,
+    pub global_rank: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ScoreStatistics {
+    pub count_300: u32,
+    pub count_100: u32,
+    pub count_50: u32,
+    pub count_miss: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ScoreBeatmap {
+    pub id: u32,
+    pub version: String,
+    pub checksum: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ScoreBeatmapset {
+    pub id: u32,
+    pub artist: String,
+    pub title: String,
+    pub creator: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Score {
+    pub id: u64,
+    pub pp: Option<f64>,
+    pub accuracy: f64,
+    pub mods: Vec<String>,
+    pub score: u64,
+    pub rank: String,
+    pub created_at: String,
+    pub statistics: ScoreStatistics,
+    pub beatmap: ScoreBeatmap,
+    pub beatmapset: ScoreBeatmapset,
+}
+
+pub const BEST_PAGE: u32 = 100;
 
 pub struct Client<T> {
     transport: T,
@@ -113,6 +161,26 @@ impl<T: Transport> Client<T> {
         let url = format!("{API_URL}/users/{}/osu?key=username", encode(name));
         self.get_json(&url)?
             .ok_or(ApiError::Status { status: 404, url })
+    }
+
+    pub fn best_scores(&mut self, user_id: u32, offset: u32) -> Result<Vec<Score>, ApiError> {
+        let url = format!(
+            "{API_URL}/users/{user_id}/scores/best?mode=osu&limit={BEST_PAGE}&offset={offset}"
+        );
+        Ok(self.get_json(&url)?.unwrap_or_default())
+    }
+
+    pub fn top_plays(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
+        let mut plays = Vec::new();
+        for offset in [0, BEST_PAGE] {
+            let page = self.best_scores(user_id, offset)?;
+            let short = page.len() < BEST_PAGE as usize;
+            plays.extend(page);
+            if short {
+                break;
+            }
+        }
+        Ok(plays)
     }
 
     fn renew_token(&mut self) -> Result<(), ApiError> {
@@ -305,7 +373,10 @@ mod tests {
     use std::collections::VecDeque;
     use std::time::Duration;
 
-    use super::{ApiError, Client, Credentials, Response, Transport, User, unix_time};
+    use super::{
+        ApiError, Client, Credentials, Response, Score, ScoreBeatmap, ScoreBeatmapset,
+        ScoreStatistics, Transport, User, UserStatistics, unix_time,
+    };
 
     #[derive(Default)]
     struct Fake {
@@ -438,6 +509,7 @@ mod tests {
                 id: 42,
                 username: "New Name".into(),
                 previous_usernames: vec!["Old".into()],
+                statistics: None,
             }
         );
         assert_eq!(
@@ -457,5 +529,85 @@ mod tests {
         ] {
             assert_eq!(unix_time(iso), expected, "{iso}");
         }
+    }
+
+    fn score_json(id: u64) -> String {
+        format!(
+            r#"{{"id":{id},"pp":412.3,"accuracy":0.9865,"mods":["HD","DT"],"score":52083331,"rank":"A","created_at":"2024-09-03T23:39:00Z","statistics":{{"count_300":900,"count_100":20,"count_50":1,"count_miss":2,"count_geki":0,"count_katu":0}},"beatmap":{{"id":4633040,"version":"Extra","checksum":"abc","status":"ranked"}},"beatmapset":{{"id":2190501,"artist":"Drop","title":"Granat","creator":"Sotarks","status":"ranked"}},"weight":{{"percentage":100,"pp":412.3}}}}"#
+        )
+    }
+
+    #[test]
+    fn best_scores_asks_one_page_of_100() {
+        let fake = Fake::default()
+            .answer(200, TOKEN)
+            .answer(200, &format!("[{}]", score_json(4680387838)));
+        let mut api = client(fake);
+        let scores = api.best_scores(7, 100).unwrap();
+        assert_eq!(
+            api.transport.requests[1],
+            "GET https://osu.ppy.sh/api/v2/users/7/scores/best?mode=osu&limit=100&offset=100 bearer=t1"
+        );
+        assert_eq!(
+            scores,
+            vec![Score {
+                id: 4680387838,
+                pp: Some(412.3),
+                accuracy: 0.9865,
+                mods: vec!["HD".into(), "DT".into()],
+                score: 52083331,
+                rank: "A".into(),
+                created_at: "2024-09-03T23:39:00Z".into(),
+                statistics: ScoreStatistics {
+                    count_300: 900,
+                    count_100: 20,
+                    count_50: 1,
+                    count_miss: 2,
+                },
+                beatmap: ScoreBeatmap {
+                    id: 4633040,
+                    version: "Extra".into(),
+                    checksum: Some("abc".into()),
+                },
+                beatmapset: ScoreBeatmapset {
+                    id: 2190501,
+                    artist: "Drop".into(),
+                    title: "Granat".into(),
+                    creator: "Sotarks".into(),
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn a_player_without_scores_gets_an_empty_page() {
+        let fake = Fake::default().answer(200, TOKEN).answer(200, "[]");
+        assert_eq!(client(fake).best_scores(7, 0).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn top_plays_stops_after_a_short_page() {
+        let fake = Fake::default()
+            .answer(200, TOKEN)
+            .answer(200, &format!("[{}]", score_json(1)));
+        let mut api = client(fake);
+        assert_eq!(api.top_plays(7).unwrap().len(), 1);
+        assert_eq!(api.transport.requests.len(), 2);
+    }
+
+    #[test]
+    fn user_carries_pp_accuracy_and_rank() {
+        let fake = Fake::default().answer(200, TOKEN).answer(
+            200,
+            r#"{"id":42,"username":"Name","statistics":{"pp":8557.1,"hit_accuracy":98.3758,"global_rank":14856,"play_count":1}}"#,
+        );
+        assert_eq!(
+            client(fake).user("Name").unwrap().statistics,
+            Some(UserStatistics {
+                pp: 8557.1,
+                hit_accuracy: 98.3758,
+                global_rank: Some(14856),
+            })
+        );
     }
 }
