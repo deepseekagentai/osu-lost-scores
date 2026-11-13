@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use osu_formats::ReplayHeader;
+use osu_formats::{Mods, ReplayHeader};
 use rayon::prelude::*;
 use rosu_pp::any::HitResultPriority;
 use rosu_pp::{Beatmap, Difficulty, Performance};
@@ -9,6 +9,10 @@ use rosu_pp::{Beatmap, Difficulty, Performance};
 use crate::ScannedReplay;
 
 const TOUCH_DEVICE: u32 = 1 << 2;
+
+pub(crate) const fn reference_mod_bits(mods: Mods) -> u32 {
+    mods.bits() & !TOUCH_DEVICE
+}
 
 pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
     let view: &[ScannedReplay] = replays;
@@ -68,7 +72,7 @@ pub fn performance(map: &Beatmap, header: &ReplayHeader) -> f64 {
         .hitresult_priority(HitResultPriority::BestCase)
         .difficulty(
             Difficulty::new()
-                .mods(header.mods.bits() & !TOUCH_DEVICE)
+                .mods(reference_mod_bits(header.mods))
                 .lazer(false),
         )
         .calculate()

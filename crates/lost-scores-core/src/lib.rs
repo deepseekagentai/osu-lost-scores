@@ -1,3 +1,4 @@
+pub mod lost;
 pub mod maps;
 pub mod pp;
 mod scan;
