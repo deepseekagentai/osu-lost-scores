@@ -3,7 +3,7 @@ use std::path::Path;
 
 use osu_formats::{Mods, ReplayHeader};
 use rayon::prelude::*;
-use rosu_pp::any::HitResultPriority;
+use rosu_pp::any::DifficultyAttributes;
 use rosu_pp::{Beatmap, Difficulty, Performance};
 
 use crate::ScannedReplay;
@@ -26,10 +26,17 @@ pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
         .into_par_iter()
         .map(|(path, indices)| {
             let map = Beatmap::from_path(osu_dir.join(path)).ok()?;
+            let mut by_mods: HashMap<u32, DifficultyAttributes> = HashMap::new();
             Some(
                 indices
                     .into_iter()
-                    .map(|index| (index, performance(&map, &view[index].header)))
+                    .map(|index| {
+                        let header = &view[index].header;
+                        let attrs = by_mods
+                            .entry(header.mods.bits())
+                            .or_insert_with(|| difficulty(&map, header.mods));
+                        (index, scored(Performance::new(attrs.clone()), header))
+                    })
                     .collect(),
             )
         })
@@ -48,7 +55,7 @@ pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
     failed
 }
 
-pub fn rounded_accuracy(header: &ReplayHeader) -> f64 {
+pub fn accuracy(header: &ReplayHeader) -> f64 {
     let [n300, n100, n50, misses] = [
         header.count_300,
         header.count_100,
@@ -60,21 +67,30 @@ pub fn rounded_accuracy(header: &ReplayHeader) -> f64 {
     if hits == 0 {
         return 100.0;
     }
-    let accuracy = f64::from(300 * n300 + 100 * n100 + 50 * n50) / f64::from(300 * hits) * 100.0;
-    format!("{accuracy:.2}").parse().unwrap_or(accuracy)
+    f64::from(300 * n300 + 100 * n100 + 50 * n50) / f64::from(300 * hits) * 100.0
 }
 
 pub fn performance(map: &Beatmap, header: &ReplayHeader) -> f64 {
-    Performance::new(map)
-        .accuracy(rounded_accuracy(header))
-        .combo(u32::from(header.max_combo))
+    scored(Performance::new(map), header)
+}
+
+fn difficulty(map: &Beatmap, mods: Mods) -> DifficultyAttributes {
+    Difficulty::new()
+        .mods(mods.bits())
+        .lazer(false)
+        .calculate(map)
+}
+
+fn scored(performance: Performance<'_>, header: &ReplayHeader) -> f64 {
+    performance
+        .mods(header.mods.bits())
+        .lazer(false)
+        .n300(u32::from(header.count_300))
+        .n100(u32::from(header.count_100))
+        .n50(u32::from(header.count_50))
         .misses(u32::from(header.count_miss))
-        .hitresult_priority(HitResultPriority::BestCase)
-        .difficulty(
-            Difficulty::new()
-                .mods(reference_mod_bits(header.mods))
-                .lazer(false),
-        )
+        .combo(u32::from(header.max_combo))
+        .legacy_total_score(header.score)
         .calculate()
         .pp()
 }
@@ -84,7 +100,7 @@ mod tests {
     use osu_formats::{Mods, ReplayHeader};
     use rosu_pp::Beatmap;
 
-    use super::{performance, rounded_accuracy};
+    use super::{accuracy, performance};
 
     const HD: u32 = 8;
     const HR: u32 = 16;
@@ -93,7 +109,7 @@ mod tests {
 
     const SAMPLE_MAP: &[u8] = include_bytes!("../tests/fixtures/sample.osu");
 
-    fn header(counts: [u16; 4], max_combo: u16, mods: u32) -> ReplayHeader {
+    fn header(counts: [u16; 4], max_combo: u16, mods: u32, score: u32) -> ReplayHeader {
         ReplayHeader {
             mode: 0,
             version: 20190906,
@@ -106,7 +122,7 @@ mod tests {
             count_geki: 0,
             count_katu: 0,
             count_miss: counts[3],
-            score: 0,
+            score,
             max_combo,
             perfect: false,
             mods: Mods::from_bits(mods),
@@ -115,30 +131,29 @@ mod tests {
     }
 
     #[test]
-    fn accuracy_is_rounded_to_hundredths_like_python() {
+    fn accuracy_uses_the_exact_hit_counts() {
         for (counts, expected) in [
-            ([557, 160, 64, 125], 68.54),
-            ([0, 11, 5, 0], 28.12),
+            ([557, 160, 64, 125], 186_300.0 / 271_800.0 * 100.0),
+            ([0, 11, 5, 0], 28.125),
             ([300, 0, 0, 0], 100.0),
             ([0, 0, 0, 0], 100.0),
         ] {
-            assert_eq!(
-                rounded_accuracy(&header(counts, 0, 0)),
-                expected,
-                "{counts:?}"
-            );
+            assert_eq!(accuracy(&header(counts, 0, 0, 0)), expected, "{counts:?}");
         }
     }
 
     #[test]
-    fn performance_matches_the_reference_calculator() {
+    fn performance_matches_the_official_calculator() {
         let map = Beatmap::from_bytes(SAMPLE_MAP).unwrap();
-        for (counts, combo, mods, expected) in [
-            ([6, 1, 0, 0], 8, HD | DT | TD, 4.8957636184902515),
-            ([5, 1, 0, 1], 4, HR, 0.8099663083271696),
+        for (counts, combo, mods, score, expected) in [
+            ([6, 1, 0, 0], 8, HD | DT | TD, 3500, 3.1759738646211635),
+            ([5, 1, 0, 1], 4, HR, 1200, 0.5514316150578498),
         ] {
-            let pp = performance(&map, &header(counts, combo, mods));
-            assert_eq!(pp, expected, "{counts:?} {mods}");
+            let pp = performance(&map, &header(counts, combo, mods, score));
+            assert!(
+                (pp - expected).abs() <= 1e-9 * expected,
+                "{counts:?} {mods}: {pp} against {expected}"
+            );
         }
     }
 }

@@ -38,12 +38,14 @@ fn fills_pp_for_replays_with_a_local_beatmap() {
     let dir = osu_folder();
     let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     let failed = pp::fill(dir.path(), &mut report.replays);
-    let pps: Vec<_> = report
-        .replays
-        .iter()
-        .map(|r| (r.file_name.as_str(), r.pp))
-        .collect();
-    assert_eq!(pps, [("a.osr", Some(4.8957636184902515)), ("b.osr", None)]);
+    let [played, missing] = [0, 1].map(|index| &report.replays[index]);
+    assert_eq!(
+        (played.file_name.as_str(), missing.file_name.as_str()),
+        ("a.osr", "b.osr")
+    );
+    let pp = played.pp.unwrap();
+    assert!((pp - 3.706795722216496).abs() <= 1e-9 * pp, "{pp}");
+    assert_eq!(missing.pp, None);
     assert_eq!(failed, 0);
 }
 

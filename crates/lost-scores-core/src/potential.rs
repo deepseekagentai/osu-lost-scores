@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::lost::LostScore;
 use crate::maps::MapCatalog;
-use crate::pp::rounded_accuracy;
+use crate::pp::accuracy;
 
 pub const TOP_SIZE: usize = 200;
 pub const WEIGHT: f64 = 0.95;
@@ -125,7 +125,7 @@ pub fn lost_plays(found: &[LostScore], catalog: &MapCatalog) -> Vec<(usize, Play
                 Play {
                     beatmap_id,
                     pp: lost.play.pp?,
-                    accuracy: rounded_accuracy(&lost.play.header),
+                    accuracy: accuracy(&lost.play.header),
                 },
             ))
         })
