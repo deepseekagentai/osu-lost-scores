@@ -29,6 +29,7 @@ pub struct ScannedReplay {
     pub file_name: String,
     pub header: ReplayHeader,
     pub beatmap: Option<LocalBeatmap>,
+    pub pp: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -94,6 +95,7 @@ pub fn scan(osu_dir: &Path, player: &str) -> Result<Scan, ScanError> {
                     file_name,
                     header,
                     beatmap,
+                    pp: None,
                 });
             }
         }

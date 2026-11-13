@@ -1,3 +1,4 @@
+pub mod pp;
 mod scan;
 mod songs;
 

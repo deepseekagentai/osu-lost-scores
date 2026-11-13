@@ -1,10 +1,11 @@
-use std::fs;
-use std::path::Path;
+mod common;
 
+use std::fs;
+
+use common::{Replay, TICKS, write};
 use lost_scores_core::{Scan, scan};
 use tempfile::TempDir;
 
-const TICKS: i64 = 638_657_110_200_000_000;
 const RELAX: u32 = 128;
 const BEATMAP_X: &[u8] = b"osu file format v14\r\n\r\n[Metadata]\r\nTitle:B\r\nArtist:A\r\nCreator:m\r\nVersion:x\r\nBeatmapID:11\r\nBeatmapSetID:1\r\n";
 const BEATMAP_X_MD5: &str = "de7522578ee5be024c63a06eba14e2f6";
@@ -13,28 +14,16 @@ const BEATMAP_Y: &[u8] = b"osu file format v14\r\n\r\n[Metadata]\r\nTitle:D\r\nA
 const MISSING_MD5: &str = "ffffffffffffffffffffffffffffffff";
 
 fn replay(mode: u8, player: &str, beatmap_md5: &str, mods: u32, ticks: i64) -> Vec<u8> {
-    let mut out = vec![mode];
-    out.extend(20190906i32.to_le_bytes());
-    for text in [beatmap_md5, player, "fedcba9876543210fedcba9876543210"] {
-        out.extend([0x0b, u8::try_from(text.len()).unwrap()]);
-        out.extend(text.as_bytes());
+    Replay {
+        mode,
+        player,
+        beatmap_md5,
+        counts: [300, 20, 1, 2],
+        max_combo: 500,
+        mods,
+        ticks,
     }
-    for count in [300u16, 20, 1, 0, 0, 2] {
-        out.extend(count.to_le_bytes());
-    }
-    out.extend(1_000_000u32.to_le_bytes());
-    out.extend(500u16.to_le_bytes());
-    out.push(0);
-    out.extend(mods.to_le_bytes());
-    out.push(0x00);
-    out.extend(ticks.to_le_bytes());
-    out
-}
-
-fn write(root: &Path, relative: &str, data: &[u8]) {
-    let path = root.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, data).unwrap();
+    .bytes()
 }
 
 fn osu_folder() -> TempDir {
