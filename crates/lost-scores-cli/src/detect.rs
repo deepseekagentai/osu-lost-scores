@@ -208,7 +208,7 @@ mod tests {
 
     use super::{
         Places, candidates, command_from_reg_query, command_from_wine_registry, exe_from_command,
-        find_osu_dirs, is_osu_dir, windows_path_in_prefix,
+        find_osu_dirs, is_osu_dir,
     };
 
     fn osu_folder(root: &Path) {
@@ -298,6 +298,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn windows_paths_map_into_the_prefix() {
+        use super::windows_path_in_prefix;
+
         let prefix = Path::new("/p");
         assert_eq!(
             windows_path_in_prefix(prefix, r"C:\Games\osu!\osu!.exe"),
