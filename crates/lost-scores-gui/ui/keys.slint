@@ -57,12 +57,20 @@ component TextField inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
             if root.text == "": Text {
+                x: 0;
+                width: parent.width;
+                horizontal-alignment: left;
                 text: root.placeholder;
                 color: T.logts;
                 font-size: 14px;
                 vertical-alignment: center;
             }
             input := TextInput {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: left;
                 text <=> root.text;
                 enabled: root.enabled;
                 color: T.ftext;
@@ -177,6 +185,7 @@ export component KeysSheet inherits Rectangle {
             HorizontalLayout {
                 spacing: 10px;
                 SecondaryButton {
+                    width: 120px;
                     text: "Cancel";
                     enabled: !State.keys-busy;
                     clicked => {

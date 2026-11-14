@@ -3,6 +3,7 @@ import { State } from "state.slint";
 import { HoverBox, GhostIconButton } from "widgets.slint";
 import { AccountCard } from "account.slint";
 import { LogBox } from "log.slint";
+import { StartScan, ProgressBar, StatusLine } from "controls.slint";
 import { KeysSheet } from "keys.slint";
 import { ConfirmSheet } from "confirm.slint";
 
@@ -41,6 +42,11 @@ export component MainWindow inherits Window {
         width: root.width;
         height: 440px;
         background: @linear-gradient(180deg, #1d1c2200 10%, T.bg 100%);
+    }
+    TouchArea {
+        clicked => {
+            State.outside-clicks += 1;
+        }
     }
     HorizontalLayout {
         Rectangle { horizontal-stretch: 1; }
@@ -130,15 +136,12 @@ export component MainWindow inherits Window {
             }
             Rectangle { height: 18px; }
             AccountCard { }
+            Rectangle { height: 22px; }
+            StartScan { }
             Rectangle { height: 14px; }
-            Text {
-                text: State.status;
-                color: T.ftext;
-                font-size: 14.5px;
-                font-italic: true;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
+            ProgressBar { }
+            Rectangle { height: 10px; }
+            StatusLine { }
             if !root.compact: Rectangle { height: 20px; }
             if !root.compact: Text {
                 text: "Log";

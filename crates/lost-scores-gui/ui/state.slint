@@ -7,6 +7,7 @@ export global State {
     in-out property <string> osu-dir;
     in-out property <bool> busy;
     in-out property <string> status;
+    in-out property <float> progress;
     in-out property <[LogEntry]> log;
 
     in-out property <bool> connected;
@@ -20,6 +21,12 @@ export global State {
     in-out property <string> acc-potential;
     in-out property <string> rank;
 
+
+    in-out property <bool> include-all;
+    in-out property <bool> check-missing;
+    in-out property <bool> show-lost;
+    in-out property <int> scores-to-show: 10;
+    in-out property <int> outside-clicks;
 
     in-out property <bool> keys-open;
     in-out property <string> keys-user;
@@ -42,4 +49,8 @@ export global State {
     callback ask-logout();
     callback cancel-logout();
     callback confirm-logout();
+    callback set-include-all(bool);
+    callback set-check-missing(bool);
+    callback set-show-lost(bool);
+    callback commit-scores(string);
 }

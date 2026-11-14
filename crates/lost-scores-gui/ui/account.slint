@@ -1,6 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, IconButton, PrimaryButton, SecondaryButton, Stat } from "widgets.slint";
+import { HoverBox, IconButton, PrimaryButton, SecondaryButton, Stat, Toggle, ScoresBox } from "widgets.slint";
 import { TipArea } from "widgets.slint";
 
 component StatValue inherits HorizontalLayout {
@@ -160,12 +160,66 @@ component Profile inherits HorizontalLayout {
                 StatValue { now: State.rank; }
             }
         }
+        HorizontalLayout {
+            spacing: 10px;
+            Toggle {
+                icon-off: @image-url("../assets/i-check.svg");
+                icon-on: @image-url("../assets/i-xmark.svg");
+                tip: "Include unranked and loved beatmaps";
+                on: State.include-all;
+                enabled: !State.busy;
+                toggled(value) => {
+                    State.set-include-all(value);
+                }
+            }
+            Toggle {
+                icon-off: @image-url("../assets/i-mag-x.svg");
+                icon-on: @image-url("../assets/i-mag.svg");
+                tip: "Check missing beatmap IDs (may take a long time)";
+                on: State.check-missing;
+                enabled: !State.busy;
+                toggled(value) => {
+                    State.set-check-missing(value);
+                }
+            }
+            Toggle {
+                icon-off: @image-url("../assets/i-eye-slash.svg");
+                icon-on: @image-url("../assets/i-eye.svg");
+                tip: "Ensure at least one lost score is visible in the top plays image";
+                on: State.show-lost;
+                enabled: !State.busy;
+                toggled(value) => {
+                    State.set-show-lost(value);
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Scores to show:";
+                color: T.k2;
+                font-size: 13px;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+            ScoresBox {
+                value: State.scores-to-show;
+                outside: State.outside-clicks;
+                enabled: !State.busy;
+                commit(text) => {
+                    State.commit-scores(text);
+                }
+            }
+        }
     }
 }
 
 export component AccountCard inherits HoverBox {
+    preferred-height: inner.preferred-height;
     border-radius: 12px;
     background: T.card;
-    if !State.connected: Connect { }
-    if State.connected: Profile { }
+    inner := VerticalLayout {
+        if !State.connected: Connect { }
+        if State.connected: Profile { }
+    }
 }

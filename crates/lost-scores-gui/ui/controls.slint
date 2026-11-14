@@ -1,0 +1,36 @@
+import { T } from "theme.slint";
+import { State } from "state.slint";
+import { PrimaryButton } from "widgets.slint";
+
+export component StartScan inherits PrimaryButton {
+    text: "Start Scan";
+    enabled: !State.busy;
+    clicked => {
+        State.start-scan();
+    }
+}
+
+export component ProgressBar inherits Rectangle {
+    height: 20px;
+    border-radius: 8px;
+    background: T.track;
+    clip: true;
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width * State.progress;
+        height: parent.height;
+        border-radius: 7px;
+        background: @linear-gradient(110deg, T.acc 0%, T.acc2 100%);
+        animate width { duration: 500ms; easing: cubic-bezier(0.215, 0.61, 0.355, 1); }
+    }
+}
+
+export component StatusLine inherits Text {
+    text: State.status;
+    color: T.ftext;
+    font-size: 14.5px;
+    font-italic: true;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}

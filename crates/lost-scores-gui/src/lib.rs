@@ -2,6 +2,8 @@ pub mod account;
 pub mod app;
 pub mod avatar;
 pub mod log;
+pub mod scan;
+pub mod worker;
 
 use std::path::Path;
 

@@ -7,7 +7,7 @@ component LogLine inherits HorizontalLayout {
     in property <string> message;
     spacing: 6px;
     alignment: start;
-    Text {
+    if root.time != "": Text {
         text: root.time;
         color: T.logts;
         font-size: 12.5px;

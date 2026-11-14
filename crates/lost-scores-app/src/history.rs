@@ -59,10 +59,14 @@ pub fn save(dir: &Path, scan: &SavedScan) -> Result<PathBuf> {
             }
         }
     }
+    replace(&folder, scan)?;
+    Ok(folder)
+}
+
+pub fn replace(folder: &Path, scan: &SavedScan) -> Result<()> {
     let file = folder.join(FILE);
     write_atomic(&file, &serde_json::to_vec(scan)?)
-        .with_context(|| format!("cannot write {}", file.display()))?;
-    Ok(folder)
+        .with_context(|| format!("cannot write {}", file.display()))
 }
 
 pub fn list(dir: &Path) -> Vec<ScanEntry> {
@@ -102,7 +106,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{SavedScan, VERSION, list, load, save};
+    use super::{SavedScan, VERSION, list, load, replace, save};
     use crate::pipeline::PotentialResult;
     use crate::rows::{Hits, LostRow, OnlineRow, PotentialRow};
 
@@ -237,6 +241,17 @@ mod tests {
         });
         let folder = save(dir.path(), &saved).unwrap();
         assert_eq!(load(&folder).unwrap(), saved);
+    }
+
+    #[test]
+    fn a_replaced_scan_keeps_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = save(dir.path(), &scan(1_700_000_000)).unwrap();
+        let mut changed = scan(1_700_000_000);
+        changed.lost_total = 99;
+        replace(&folder, &changed).unwrap();
+        assert_eq!(load(&folder).unwrap().lost_total, 99);
+        assert_eq!(list(dir.path()).len(), 1);
     }
 
     #[test]

@@ -1,13 +1,18 @@
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use lost_scores_app::online::Online;
 use lost_scores_app::pipeline::Api;
-use lost_scores_app::{cache, keys, setup};
+use lost_scores_app::pipeline::Source;
+use lost_scores_app::rows::thousands;
+use lost_scores_app::setup::Settings;
+use lost_scores_app::{cache, history, keys, setup};
 use osu_api::Credentials;
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -15,7 +20,9 @@ use crate::account::{
     Field, KeysError, ProfileTexts, check_fields, profile_texts, username_from_input,
 };
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
-use crate::log::{clock_now, stamp};
+use crate::log::{clock_now, split, stamp};
+use crate::scan::{NEEDS_KEYS, Phase, ScanState};
+use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
 
 const START_MESSAGE: &str =
@@ -30,6 +37,34 @@ struct Session {
     credentials: RefCell<Option<Credentials>>,
     avatar: RefCell<Option<Vec<u8>>>,
     rendered: Cell<u32>,
+    scan: RefCell<ScanState>,
+    shown: Cell<usize>,
+    refreshing: Cell<bool>,
+    counts: Cell<(usize, usize)>,
+    closed: Arc<AtomicBool>,
+}
+
+struct LoopSink {
+    weak: Weak<MainWindow>,
+    closed: Arc<AtomicBool>,
+}
+
+impl Sink for LoopSink {
+    fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Relaxed)
+    }
+
+    fn send(&self, message: Message) -> bool {
+        self.is_open()
+            && self
+                .weak
+                .upgrade_in_event_loop(move |_| {
+                    if let Some(app) = SESSION.with(|slot| slot.borrow().clone()) {
+                        app.handle(message);
+                    }
+                })
+                .is_ok()
+    }
 }
 
 struct Profile {
@@ -49,6 +84,16 @@ pub fn run() -> Result<()> {
         credentials: RefCell::new(None),
         avatar: RefCell::new(None),
         rendered: Cell::new(0),
+        scan: RefCell::new(ScanState::default()),
+        shown: Cell::new(0),
+        refreshing: Cell::new(false),
+        counts: Cell::new((0, 0)),
+        closed: Arc::new(AtomicBool::new(false)),
+    });
+    let closed = session.closed.clone();
+    window.window().on_close_requested(move || {
+        closed.store(true, Ordering::Relaxed);
+        slint::CloseRequestResponse::HideWindow
     });
     session.setup(&window);
     SESSION.with(|slot| *slot.borrow_mut() = Some(session.clone()));
@@ -59,8 +104,16 @@ pub fn run() -> Result<()> {
         Duration::from_millis(500),
         move || watcher.refresh_avatar(),
     );
+    if std::env::var_os("LOST_SCORES_GUI_AUTOSTART").is_some() {
+        let starter = session.clone();
+        slint::Timer::single_shot(Duration::from_secs(2), move || starter.start_scan());
+    }
     window.run()?;
     Ok(())
+}
+
+fn clamped_scores(count: u16) -> u16 {
+    count.clamp(*setup::SCORES_TO_SHOW.start(), *setup::SCORES_TO_SHOW.end())
 }
 
 fn stored_credentials() -> Option<Credentials> {
@@ -73,17 +126,25 @@ fn config_player() -> Option<String> {
 }
 
 fn saved_player() -> Option<String> {
+    load_settings().player
+}
+
+fn update_settings(change: impl FnOnce(&mut Settings)) {
+    if let Some(path) = setup::config_file() {
+        let mut settings = setup::load_settings(&path);
+        change(&mut settings);
+        let _ = setup::save_settings(&path, &settings);
+    }
+}
+
+fn load_settings() -> Settings {
     setup::config_file()
         .map(|path| setup::load_settings(&path))
-        .and_then(|settings| settings.player)
+        .unwrap_or_default()
 }
 
 fn save_player(name: &str) {
-    if let Some(path) = setup::config_file() {
-        let mut settings = setup::load_settings(&path);
-        settings.player = Some(name.to_owned());
-        let _ = setup::save_settings(&path, &settings);
-    }
+    update_settings(|settings| settings.player = Some(name.to_owned()));
 }
 
 impl Session {
@@ -94,6 +155,11 @@ impl Session {
             Ok(dir) => state.set_osu_dir(show_path(&dir).into()),
             Err(_) => state.set_status(START_MESSAGE.into()),
         }
+        let settings = load_settings();
+        state.set_include_all(settings.include_all);
+        state.set_check_missing(settings.check_missing);
+        state.set_show_lost(settings.show_lost_in_top_image);
+        state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
         self.bind(&state);
         *self.credentials.borrow_mut() = stored_credentials();
         let name = saved_player().or_else(config_player);
@@ -122,6 +188,33 @@ impl Session {
         state.on_cancel_logout(move || session.window.global::<State>().set_confirm_open(false));
         let session = self.clone();
         state.on_confirm_logout(move || session.log_out());
+        let session = self.clone();
+        state.on_set_include_all(move |value| {
+            session.window.global::<State>().set_include_all(value);
+            update_settings(|settings| settings.include_all = value);
+        });
+        let session = self.clone();
+        state.on_set_check_missing(move |value| {
+            session.window.global::<State>().set_check_missing(value);
+            update_settings(|settings| settings.check_missing = value);
+        });
+        let session = self.clone();
+        state.on_set_show_lost(move |value| {
+            session.window.global::<State>().set_show_lost(value);
+            update_settings(|settings| settings.show_lost_in_top_image = value);
+        });
+        let session = self.clone();
+        state.on_commit_scores(move |text| {
+            if let Some(count) = setup::parse_scores_to_show(&text) {
+                session
+                    .window
+                    .global::<State>()
+                    .set_scores_to_show(i32::from(count));
+                update_settings(|settings| settings.scores_to_show = count);
+            }
+        });
+        let session = self.clone();
+        state.on_start_scan(move || session.start_scan());
     }
 
     fn log(&self, text: &str) {
@@ -280,6 +373,126 @@ impl Session {
             self.rendered.set(pixels);
             trace(&format!("avatar rendered at {pixels} px"));
         }
+    }
+
+    fn busy(&self) -> bool {
+        self.scan.borrow().phase == Phase::Scanning || self.refreshing.get()
+    }
+
+    fn start_scan(self: &Rc<Self>) {
+        let state = self.window.global::<State>();
+        let credentials = self.credentials.borrow().clone();
+        let connected = credentials.is_some() && state.get_connected();
+        if !connected {
+            state.set_status(NEEDS_KEYS.into());
+            return;
+        }
+        if self.refreshing.get() || !self.scan.borrow().can_start(connected) {
+            return;
+        }
+        let Some(credentials) = credentials else {
+            return;
+        };
+        let Some(scans_dir) = history::scans_dir() else {
+            state.set_status("Operation failed".into());
+            self.log("Error: cannot find a folder for the scan history");
+            return;
+        };
+        let settings = load_settings();
+        let osu_dir = state.get_osu_dir().to_string();
+        let job = Job {
+            source: Source {
+                osu_dir: (!osu_dir.is_empty()).then(|| PathBuf::from(osu_dir)),
+                player: Some(state.get_user_name().to_string()),
+                songs_dir: None,
+                check_missing: settings.check_missing,
+                maps: None,
+            },
+            scans_dir,
+            include_all: settings.include_all,
+        };
+        self.scan.borrow_mut().start();
+        self.sync();
+        let sink = LoopSink {
+            weak: self.weak.clone(),
+            closed: self.closed.clone(),
+        };
+        thread::spawn(move || {
+            let mut api = Online::new(credentials);
+            worker::run(&job, &mut api, &sink);
+        });
+    }
+
+    fn sync(&self) {
+        let state = self.window.global::<State>();
+        let scan = self.scan.borrow();
+        state.set_status(scan.status.clone().into());
+        state.set_progress(scan.progress);
+        state.set_busy(self.busy());
+        for line in &scan.log[self.shown.get()..] {
+            trace(&format!("log: {line}"));
+            let (time, text) = split(line);
+            self.log.push(LogEntry {
+                time: time.into(),
+                text: text.into(),
+            });
+        }
+        self.shown.set(scan.log.len());
+        if scan.phase != Phase::Scanning {
+            trace(&format!("status: {}", scan.status));
+        }
+    }
+
+    fn handle(&self, message: Message) {
+        match message {
+            Message::Event(event) => self.scan.borrow_mut().apply(&event, clock_now()),
+            Message::Saving => self.scan.borrow_mut().saving(),
+            Message::Finished(done) => {
+                self.refreshing.set(true);
+                self.counts
+                    .set((done.scan.lost_total, done.scan.lost_ranked));
+                self.scan
+                    .borrow_mut()
+                    .finish(done.scan.lost_total, done.scan.lost_ranked);
+                self.show_results(&done.scan);
+            }
+            Message::Refreshed(updated) => {
+                self.refreshing.set(false);
+                if let Some(done) = updated {
+                    self.counts
+                        .set((done.scan.lost_total, done.scan.lost_ranked));
+                    self.show_results(&done.scan);
+                }
+                let (total, ranked) = self.counts.get();
+                self.scan.borrow_mut().finish(total, ranked);
+            }
+            Message::Failed(error) => {
+                self.refreshing.set(false);
+                self.scan.borrow_mut().fail(&error);
+            }
+        }
+        self.sync();
+    }
+
+    fn show_results(&self, scan: &history::SavedScan) {
+        let Some(potential) = &scan.potential else {
+            return;
+        };
+        let state = self.window.global::<State>();
+        state.set_perf_now(thousands(potential.current_pp).into());
+        state.set_perf_potential(thousands(potential.potential_pp).into());
+        state.set_acc_now(format!("{:.2}%", potential.current_accuracy).into());
+        state.set_acc_potential(format!("{:.2}%", potential.potential_accuracy).into());
+        state.set_rank(
+            potential
+                .global_rank
+                .map_or_else(
+                    || "unranked".to_owned(),
+                    |rank| format!("#{}", thousands(f64::from(rank))),
+                )
+                .into(),
+        );
+        state.set_stats_ready(true);
     }
 
     fn log_out(&self) {
