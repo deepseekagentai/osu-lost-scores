@@ -349,6 +349,40 @@ mod tests {
     }
 
     #[test]
+    fn switching_modes_fades_the_content_and_slides_the_thumb() {
+        let window = images_window(650.0, &["Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(false);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        let tabs = || {
+            ElementHandle::find_by_element_type_name(&window, "Tab")
+                .filter(|tab| tab.accessible_label().as_deref() == Some("Lost Scores"))
+                .count()
+        };
+        let thumb_x = || {
+            ElementHandle::find_by_element_type_name(&window, "ModeThumb")
+                .next()
+                .unwrap()
+                .absolute_position()
+                .x
+        };
+        assert_eq!(tabs(), 1);
+        let table_x = thumb_x();
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(60));
+        assert_eq!(tabs(), 1, "the table stays while it fades out");
+        let middle = thumb_x();
+        assert!(
+            middle < table_x,
+            "the thumb is moving: {middle} vs {table_x}"
+        );
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        assert_eq!(tabs(), 0, "the pictures replaced the table");
+        let images_x = thumb_x();
+        assert!(images_x < middle, "{images_x} vs {middle}");
+    }
+
+    #[test]
     fn a_click_anywhere_on_the_switch_flips_the_mode() {
         let window = images_window(650.0, &["Lost Scores"]);
         let state = window.global::<State>();
