@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use lost_scores_app::rows::thousands;
+use lost_scores_app::rows::{thousands, weight_percent};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 use slint::{Color, Model, ModelNotify, ModelRc, ModelTracker, VecModel};
@@ -60,7 +60,7 @@ pub fn beatmap_link(id: Option<u32>) -> String {
 }
 
 pub fn weighted_text(weight: f64, weighted: f64) -> String {
-    format!("{:.0}% · {weighted:.1}", weight * 100.0)
+    format!("{} · {weighted:.1}", weight_percent(weight))
 }
 
 pub fn lost_text(pp: f64, kept: f64) -> String {
@@ -269,6 +269,8 @@ mod tests {
     #[test]
     fn sub_texts_follow_the_spec() {
         assert_eq!(weighted_text(0.95, 440.84), "95% · 440.8");
+        assert_eq!(weighted_text(0.95_f64.powi(104), 1.9), "0.48% · 1.9");
+        assert_eq!(weighted_text(0.95_f64.powi(199), 0.0), "<0.01% · 0.0");
         assert_eq!(lost_text(411.87, 400.0), "-11.9pp");
         assert_eq!(beatmap_link(Some(77)), "b/77");
         assert_eq!(beatmap_link(None), "");

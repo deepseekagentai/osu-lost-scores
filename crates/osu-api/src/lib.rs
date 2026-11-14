@@ -643,6 +643,19 @@ mod tests {
     }
 
     #[test]
+    fn top_plays_asks_again_after_a_full_page_and_accepts_an_empty_one() {
+        let page = vec![score_json(1); super::BEST_PAGE as usize].join(",");
+        let fake = Fake::default()
+            .answer(200, TOKEN)
+            .answer(200, &format!("[{page}]"))
+            .answer(200, "[]");
+        let mut api = client(fake);
+        assert_eq!(api.top_plays(7).unwrap().len(), super::BEST_PAGE as usize);
+        assert_eq!(api.transport.requests.len(), 3);
+        assert!(api.transport.requests[2].contains("offset=100"));
+    }
+
+    #[test]
     fn user_carries_pp_accuracy_and_rank() {
         let fake = Fake::default().answer(200, TOKEN).answer(
             200,

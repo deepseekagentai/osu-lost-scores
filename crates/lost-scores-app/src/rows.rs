@@ -53,18 +53,18 @@ pub struct LostRow {
 
 pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
     lost.iter()
-        .map(|lost| {
-            let header = &lost.play.header;
-            let metadata = lost.play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
+        .map(|score| {
+            let header = &score.play.header;
+            let metadata = score.play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
             LostRow {
-                pp: lost.play.pp.unwrap_or_default(),
-                kept_pp: lost.kept.pp.unwrap_or_default(),
+                pp: score.play.pp.unwrap_or_default(),
+                kept_pp: score.kept.pp.unwrap_or_default(),
                 score: header.score,
-                kept_score: lost.kept.header.score,
+                kept_score: score.kept.header.score,
                 mods: header.mods.acronyms(),
                 unix_time: header.unix_time(),
                 played: date(header.unix_time()),
-                status: lost.status,
+                status: score.status,
                 beatmap_md5: header.beatmap_md5.clone(),
                 beatmap_id: catalog
                     .get(&header.beatmap_md5)
@@ -74,7 +74,7 @@ pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
                 artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
                 title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                 version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
-                file: lost.play.file_name.clone(),
+                file: score.play.file_name.clone(),
                 creator: metadata.map(|m| m.creator.clone()).unwrap_or_default(),
                 hits: Hits::of(header),
                 accuracy: accuracy(header),
@@ -282,6 +282,17 @@ pub fn potential_rows(
         .collect()
 }
 
+pub fn weight_percent(weight: f64) -> String {
+    let percent = weight * 100.0;
+    if percent >= 1.0 {
+        format!("{percent:.0}%")
+    } else if percent >= 0.01 {
+        format!("{percent:.2}%")
+    } else {
+        "<0.01%".to_owned()
+    }
+}
+
 pub fn mod_acronyms(mods: &str) -> Vec<String> {
     let letters: Vec<char> = mods.chars().collect();
     letters
@@ -341,7 +352,10 @@ mod tests {
 
     use lost_scores_core::grade::Grade;
 
-    use super::{Hits, LostRow, date, mod_acronyms, online_rows, potential_rows, rows, thousands};
+    use super::{
+        Hits, LostRow, date, mod_acronyms, online_rows, potential_rows, rows, thousands,
+        weight_percent,
+    };
 
     fn replay(name: &str, score: u32, pp: f64, unix_time: i64) -> ScannedReplay {
         ScannedReplay {
@@ -635,6 +649,19 @@ mod tests {
         assert_eq!(mod_acronyms("HR"), ["HR"]);
         assert!(mod_acronyms("NM").is_empty());
         assert!(mod_acronyms("").is_empty());
+    }
+
+    #[test]
+    fn weights_below_a_percent_keep_their_decimals() {
+        for (weight, expected) in [
+            (1.0, "100%"),
+            (0.95, "95%"),
+            (0.95_f64.powi(89), "1%"),
+            (0.95_f64.powi(104), "0.48%"),
+            (0.95_f64.powi(199), "<0.01%"),
+        ] {
+            assert_eq!(weight_percent(weight), expected, "{weight}");
+        }
     }
 
     #[test]

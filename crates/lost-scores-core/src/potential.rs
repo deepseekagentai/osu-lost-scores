@@ -283,6 +283,16 @@ mod tests {
     }
 
     #[test]
+    fn a_stronger_repeat_online_play_wins_over_the_first_one_and_a_lost_play() {
+        let online = [p(1, 300.0, 98.0), p(1, 350.0, 99.0)];
+        let result = potential(&online, &[p(1, 320.0, 97.0)], 0.0);
+        assert_eq!(result.top.len(), 1);
+        assert_eq!(result.top[0].origin, Origin::Online(1));
+        assert!(close(result.top[0].play.pp, 350.0));
+        assert_eq!(result.lost_in_top, 0);
+    }
+
+    #[test]
     fn ties_keep_the_order_of_first_appearance() {
         let online = [p(10, 200.0, 0.0), p(11, 300.0, 0.0), p(12, 200.0, 0.0)];
         let result = potential(&online, &[p(13, 200.0, 0.0)], 0.0);

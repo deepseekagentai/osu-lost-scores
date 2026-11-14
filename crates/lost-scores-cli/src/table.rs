@@ -1,4 +1,4 @@
-use lost_scores_app::rows::{LostRow, PotentialRow, printable};
+use lost_scores_app::rows::{LostRow, PotentialRow, printable, weight_percent};
 use lost_scores_core::maps::MapStatus;
 
 pub fn table(rows: &[LostRow], limit: usize, with_status: bool) -> String {
@@ -54,10 +54,10 @@ pub fn potential_table(rows: &[PotentialRow], limit: usize) -> String {
     for row in rows.iter().take(shown) {
         let mods = if row.mods.is_empty() { "NM" } else { &row.mods };
         lines.push(format!(
-            "{:>4}  {:>7.2}  {:>5.0}%  {:>8.2}  {:<6}  {:>6.2}%  {:<4}  {} - {} [{}]",
+            "{:>4}  {:>7.2}  {:>6}  {:>8.2}  {:<6}  {:>6.2}%  {:<4}  {} - {} [{}]",
             row.place,
             row.pp,
-            row.weight * 100.0,
+            weight_percent(row.weight),
             row.weighted,
             mods,
             row.accuracy,
@@ -177,6 +177,19 @@ mod tests {
         };
         assert_eq!(data_lines(table(&all, 1, false)), 1);
         assert_eq!(data_lines(table(&all, 0, true)), 2);
+    }
+
+    #[test]
+    fn deep_places_show_a_small_weight_not_zero() {
+        let mut deep = potential_row(105, false);
+        deep.weight = 0.95_f64.powi(104);
+        let mut deepest = potential_row(200, false);
+        deepest.weight = 0.95_f64.powi(199);
+        let table = potential_table(&[deep, deepest], 0);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[1].contains(" 0.48%"), "{}", lines[1]);
+        assert!(lines[2].contains("<0.01%"), "{}", lines[2]);
+        assert_eq!(lines[1].len(), lines[2].len());
     }
 
     #[test]
