@@ -148,6 +148,55 @@ mod tests {
         assert_eq!(older.get(), 1);
     }
 
+    fn header_window(width: f32) -> MainWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(width, 800.0));
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_has_images(true);
+        let weak = window.as_weak();
+        state.on_open_share(move || {
+            let window = weak.upgrade().unwrap();
+            let state = window.global::<State>();
+            state.set_share_images(ModelRc::new(VecModel::from(vec![SharedString::from(
+                "Lost Scores",
+            )])));
+            state.set_share_open(true);
+        });
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        window
+    }
+
+    const SHARE_TIP: &str = "Share the images of this scan";
+
+    #[test]
+    fn the_narrow_header_has_one_share_button() {
+        let window = header_window(650.0);
+        let count = ElementHandle::find_by_accessible_label(&window, SHARE_TIP).count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn the_share_popup_opens_by_its_button_in_two_columns() {
+        let window = header_window(1600.0);
+        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, SHARE_TIP).collect();
+        assert_eq!(buttons.len(), 1);
+        let button_x = buttons[0].absolute_position().x;
+        buttons[0].mock_single_click(PointerEventButton::Left);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        let copy = ElementHandle::find_by_accessible_label(&window, "Copy image")
+            .next()
+            .unwrap();
+        let copy_x = copy.absolute_position().x;
+        assert!(
+            copy_x > button_x && copy_x < button_x + 392.0,
+            "button {button_x}, copy {copy_x}"
+        );
+    }
+
     #[test]
     fn the_share_popup_has_a_row_for_each_image() {
         i_slint_backend_testing::init_no_event_loop();

@@ -734,3 +734,85 @@ fn render_walkthrough2_snapshots() {
     state.set_scans_open(true);
     draw(&surface, &dir.join("w18-scan-list.png"));
 }
+
+const SHARE_CLICKS: [(f32, f32, f32); 2] = [(650.0, 477.0, 45.0), (1600.0, 1053.0, 45.0)];
+
+fn click(surface: &Rc<MinimalSoftwareWindow>, x: f32, y: f32) {
+    let position = slint::LogicalPosition::new(x, y);
+    surface.dispatch_event(WindowEvent::PointerMoved { position });
+    surface.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    surface.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+}
+
+#[test]
+#[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
+fn render_share_snapshots() {
+    let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
+    let state = window.global::<State>();
+    state.set_osu_dir("/home/player/games/osu!".into());
+    connect_sample(&state);
+    let scan = mods_scan();
+    let results = Results::new(&scan);
+    state.set_mods_width(lost_scores_gui::view::mods_width(
+        results.table.borrow().rows(Tab::Lost),
+    ));
+    results.present(&state, &scan, Tab::Lost);
+    state.set_show_results(true);
+    let labels = [
+        "14 November 2026 \u{b7} 09:32",
+        "13 November 2026 \u{b7} 21:05",
+        "12 November 2026 \u{b7} 18:40",
+    ];
+    state.set_scans(ModelRc::new(VecModel::from(
+        labels.map(slint::SharedString::from).to_vec(),
+    )));
+    state.set_scan_selected(0);
+    state.set_scan_date(labels[0].into());
+    state.set_has_images(true);
+    let images: Vec<slint::SharedString> = ["Lost Scores", "Potential Top", "Badge"]
+        .map(slint::SharedString::from)
+        .to_vec();
+    state.set_share_images(ModelRc::new(VecModel::from(images)));
+    let weak = window.as_weak();
+    state.on_open_share(move || {
+        weak.upgrade()
+            .unwrap()
+            .global::<State>()
+            .set_share_open(true);
+    });
+
+    for (width, x, y) in SHARE_CLICKS {
+        let height = 800.0;
+        draw_sized(
+            &surface,
+            (width, height),
+            &dir.join(format!("s{width}-header.png")),
+        );
+        click(&surface, x, y);
+        draw_sized(
+            &surface,
+            (width, height),
+            &dir.join(format!("s{width}-share-popup.png")),
+        );
+        state.set_share_open(false);
+    }
+
+    state.set_scans_open(true);
+    draw_sized(&surface, LOGICAL, &dir.join("s650-scan-list.png"));
+}
