@@ -555,3 +555,30 @@ fn potential_refuses_a_player_the_api_gave_no_statistics_for() {
     .expect_err("potential must not invent a zero");
     assert!(error.to_string().contains("no statistics"), "{error}");
 }
+
+#[test]
+fn read_maps_scan_progress_to_the_songs_replays_and_pp_steps() {
+    let dir = osu_folder();
+    let mut events = Vec::new();
+    read(
+        &source(dir, None),
+        None,
+        "",
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    let last = |wanted: Step| {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Progress { step, done, total } if *step == wanted => Some((*done, *total)),
+                _ => None,
+            })
+            .next_back()
+    };
+    assert_eq!(last(Step::Songs), Some((1, 1)));
+    assert_eq!(last(Step::Replays), Some((2, 2)));
+    assert_eq!(last(Step::Pp), Some((2, 2)));
+    assert_eq!(last(Step::MissingMaps), None);
+}
