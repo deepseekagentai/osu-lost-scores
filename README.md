@@ -46,7 +46,7 @@ It copies `kz.lemon4ik.LostScores.desktop` and the lemon icons into `$XDG_DATA_H
 - [Font Awesome Free](https://fontawesome.com) (CC BY 4.0), the icons.
 - [Fredoka](https://fonts.google.com/specimen/Fredoka) (OFL 1.1, the licence is in `crates/lost-scores-gui/assets/OFL.txt`).
 - [Slint](https://slint.dev) (GPLv3, or the royalty-free licence with attribution), the window toolkit.
-- [osu-web](https://github.com/ppy/osu-web) by ppy (AGPL-3.0), the grade and mod icons.
+- [osu-web](https://github.com/ppy/osu-web) artwork © ppy Pty Ltd (AGPL-3.0), the grade and mod icons.
 
 ## License
 
