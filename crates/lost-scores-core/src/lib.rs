@@ -1,4 +1,5 @@
 pub mod files;
+pub mod grade;
 pub mod lost;
 pub mod maps;
 pub mod missing;

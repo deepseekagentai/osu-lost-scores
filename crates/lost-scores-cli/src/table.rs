@@ -85,7 +85,8 @@ fn label(status: MapStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use lost_scores_app::rows::{LostRow, PotentialRow};
+    use lost_scores_app::rows::{Hits, LostRow, PotentialRow};
+    use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
     use super::{potential_table, table};
@@ -106,6 +107,16 @@ mod tests {
             title: title.into(),
             version: "x".into(),
             file: "p.osr".into(),
+            creator: "m".into(),
+            hits: Hits {
+                n300: 100,
+                n100: 0,
+                n50: 0,
+                misses: 0,
+            },
+            accuracy: 100.0,
+            grade: Grade::X,
+            max_combo: 100,
         }
     }
 
@@ -124,6 +135,16 @@ mod tests {
             mods: String::new(),
             accuracy: 98.0,
             played: "2023-11-14".into(),
+            hits: Hits {
+                n300: 100,
+                n100: 0,
+                n50: 0,
+                misses: 0,
+            },
+            score: 1,
+            grade: Grade::X,
+            status: MapStatus::Ranked,
+            kept_pp: None,
         }
     }
 

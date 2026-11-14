@@ -1,10 +1,32 @@
+use lost_scores_core::grade::{Grade, grade};
 use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::{MapCatalog, MapStatus};
-use lost_scores_core::potential::{Origin, Play, Potential};
+use lost_scores_core::potential::{Origin, Play, Potential, WEIGHT};
+use lost_scores_core::pp::accuracy;
 use osu_api::Score;
-use serde::Serialize;
+use osu_formats::ReplayHeader;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hits {
+    pub n300: u32,
+    pub n100: u32,
+    pub n50: u32,
+    pub misses: u32,
+}
+
+impl Hits {
+    fn of(header: &ReplayHeader) -> Self {
+        Self {
+            n300: header.count_300.into(),
+            n100: header.count_100.into(),
+            n50: header.count_50.into(),
+            misses: header.count_miss.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LostRow {
     pub pp: f64,
     pub kept_pp: f64,
@@ -20,6 +42,11 @@ pub struct LostRow {
     pub title: String,
     pub version: String,
     pub file: String,
+    pub creator: String,
+    pub hits: Hits,
+    pub accuracy: f64,
+    pub grade: Grade,
+    pub max_combo: u32,
 }
 
 pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
@@ -45,12 +72,17 @@ pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
                 title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                 version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
                 file: lost.play.file_name.clone(),
+                creator: metadata.map(|m| m.creator.clone()).unwrap_or_default(),
+                hits: Hits::of(header),
+                accuracy: accuracy(header),
+                grade: grade(header),
+                max_combo: header.max_combo.into(),
             }
         })
         .collect()
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PotentialRow {
     pub place: usize,
     pub pp: f64,
@@ -65,6 +97,90 @@ pub struct PotentialRow {
     pub mods: String,
     pub accuracy: f64,
     pub played: String,
+    pub hits: Hits,
+    pub score: u64,
+    pub grade: Grade,
+    pub status: MapStatus,
+    pub kept_pp: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OnlineRow {
+    pub place: usize,
+    pub pp: f64,
+    pub weight: f64,
+    pub weighted: f64,
+    pub beatmap_id: u32,
+    pub artist: String,
+    pub title: String,
+    pub version: String,
+    pub creator: String,
+    pub mods: String,
+    pub accuracy: f64,
+    pub grade: Grade,
+    pub hits: Hits,
+    pub score: u64,
+    pub played: String,
+}
+
+fn api_hits(score: &Score) -> Hits {
+    Hits {
+        n300: score.statistics.count_300,
+        n100: score.statistics.count_100,
+        n50: score.statistics.count_50,
+        misses: score.statistics.count_miss,
+    }
+}
+
+fn api_grade(score: &Score) -> Grade {
+    Grade::from_rank(&score.rank).unwrap_or(Grade::D)
+}
+
+fn api_date(score: &Score) -> String {
+    score.created_at.get(..10).unwrap_or_default().to_owned()
+}
+
+pub fn online_rows(online: &[Score]) -> Vec<OnlineRow> {
+    online
+        .iter()
+        .enumerate()
+        .map(|(index, score)| {
+            let pp = score.pp.unwrap_or_default();
+            let weight = WEIGHT.powi(i32::try_from(index).unwrap_or(i32::MAX));
+            OnlineRow {
+                place: index + 1,
+                pp,
+                weight,
+                weighted: pp * weight,
+                beatmap_id: score.beatmap.id,
+                artist: score.beatmapset.artist.clone(),
+                title: score.beatmapset.title.clone(),
+                version: score.beatmap.version.clone(),
+                creator: score.beatmapset.creator.clone(),
+                mods: score.mods.concat(),
+                accuracy: score.accuracy * 100.0,
+                grade: api_grade(score),
+                hits: api_hits(score),
+                score: score.score,
+                played: api_date(score),
+            }
+        })
+        .collect()
+}
+
+struct Details {
+    lost: bool,
+    artist: String,
+    title: String,
+    version: String,
+    creator: String,
+    mods: String,
+    played: String,
+    hits: Hits,
+    score: u64,
+    grade: Grade,
+    status: MapStatus,
+    kept_pp: Option<f64>,
 }
 
 pub fn potential_rows(
@@ -78,31 +194,42 @@ pub fn potential_rows(
         .iter()
         .enumerate()
         .map(|(index, ranked)| {
-            let (lost, artist, title, version, creator, mods, played) = match ranked.origin {
+            let details = match ranked.origin {
                 Origin::Online(i) => {
                     let score = &online[i];
-                    (
-                        false,
-                        score.beatmapset.artist.clone(),
-                        score.beatmapset.title.clone(),
-                        score.beatmap.version.clone(),
-                        score.beatmapset.creator.clone(),
-                        score.mods.concat(),
-                        score.created_at.get(..10).unwrap_or_default().to_owned(),
-                    )
+                    Details {
+                        lost: false,
+                        artist: score.beatmapset.artist.clone(),
+                        title: score.beatmapset.title.clone(),
+                        version: score.beatmap.version.clone(),
+                        creator: score.beatmapset.creator.clone(),
+                        mods: score.mods.concat(),
+                        played: api_date(score),
+                        hits: api_hits(score),
+                        score: score.score,
+                        grade: api_grade(score),
+                        status: MapStatus::Ranked,
+                        kept_pp: None,
+                    }
                 }
                 Origin::Lost(i) => {
-                    let play = found[lost[i].0].play;
+                    let lost_score = &found[lost[i].0];
+                    let play = lost_score.play;
                     let metadata = play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
-                    (
-                        true,
-                        metadata.map(|m| m.artist.clone()).unwrap_or_default(),
-                        metadata.map(|m| m.title.clone()).unwrap_or_default(),
-                        metadata.map(|m| m.version.clone()).unwrap_or_default(),
-                        metadata.map(|m| m.creator.clone()).unwrap_or_default(),
-                        play.header.mods.acronyms(),
-                        date(play.header.unix_time()),
-                    )
+                    Details {
+                        lost: true,
+                        artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
+                        title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
+                        version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
+                        creator: metadata.map(|m| m.creator.clone()).unwrap_or_default(),
+                        mods: play.header.mods.acronyms(),
+                        played: date(play.header.unix_time()),
+                        hits: Hits::of(&play.header),
+                        score: play.header.score.into(),
+                        grade: grade(&play.header),
+                        status: lost_score.status,
+                        kept_pp: Some(lost_score.kept.pp.unwrap_or_default()),
+                    }
                 }
             };
             PotentialRow {
@@ -110,15 +237,20 @@ pub fn potential_rows(
                 pp: ranked.play.pp,
                 weight: ranked.weight,
                 weighted: ranked.play.pp * ranked.weight,
-                lost,
+                lost: details.lost,
                 beatmap_id: ranked.play.beatmap_id,
-                artist,
-                title,
-                version,
-                creator,
-                mods,
+                artist: details.artist,
+                title: details.title,
+                version: details.version,
+                creator: details.creator,
+                mods: details.mods,
                 accuracy: ranked.play.accuracy,
-                played,
+                played: details.played,
+                hits: details.hits,
+                score: details.score,
+                grade: details.grade,
+                status: details.status,
+                kept_pp: details.kept_pp,
             }
         })
         .collect()
@@ -172,7 +304,9 @@ mod tests {
     use osu_api::{Score, ScoreBeatmap, ScoreBeatmapset, ScoreStatistics};
     use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
-    use super::{LostRow, date, potential_rows, rows, thousands};
+    use lost_scores_core::grade::Grade;
+
+    use super::{Hits, LostRow, date, online_rows, potential_rows, rows, thousands};
 
     fn replay(name: &str, score: u32, pp: f64, unix_time: i64) -> ScannedReplay {
         ScannedReplay {
@@ -274,6 +408,69 @@ mod tests {
     }
 
     #[test]
+    fn lost_rows_carry_hits_accuracy_and_grade() {
+        let mut play = replay("p.osr", 10_000_000, 300.0, 1_728_470_722);
+        play.header.count_300 = 90;
+        play.header.count_100 = 8;
+        play.header.count_50 = 1;
+        play.header.count_miss = 1;
+        play.header.max_combo = 321;
+        play.header.mods = Mods::from_bits(0);
+        let kept = replay("k.osr", 11_000_000, 250.0, 1_728_000_000);
+        let lost = [LostScore {
+            play: &play,
+            kept: &kept,
+            status: MapStatus::Loved,
+        }];
+        let row = &rows(&lost, &MapCatalog::default())[0];
+        assert_eq!(
+            row.hits,
+            Hits {
+                n300: 90,
+                n100: 8,
+                n50: 1,
+                misses: 1
+            }
+        );
+        assert!((row.accuracy - 27_850.0 / 300.0).abs() < 1e-9);
+        assert_eq!(row.grade, Grade::B);
+        assert_eq!(row.max_combo, 321);
+        assert_eq!(row.creator, "m");
+    }
+
+    #[test]
+    fn online_rows_take_the_grade_and_hits_from_the_api_score() {
+        let mut second = score();
+        second.rank = "XH".into();
+        second.pp = Some(200.0);
+        second.beatmap.id = 2;
+        let rows = online_rows(&[score(), second]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].place, 1);
+        assert_eq!(rows[0].grade, Grade::S);
+        assert_eq!(
+            rows[0].hits,
+            Hits {
+                n300: 100,
+                n100: 2,
+                n50: 0,
+                misses: 0
+            }
+        );
+        assert_eq!(rows[0].score, 1_000_000);
+        assert_eq!(rows[0].mods, "HDDT");
+        assert!((rows[0].accuracy - 98.0).abs() < 1e-9);
+        assert_eq!(rows[0].creator, "Smoke");
+        assert_eq!(rows[0].played, "2024-09-07");
+        assert_eq!(rows[0].weight, 1.0);
+        assert_eq!(rows[1].place, 2);
+        assert_eq!(rows[1].grade, Grade::XH);
+        assert!((rows[1].weight - 0.95).abs() < 1e-12);
+        assert!((rows[1].weighted - 190.0).abs() < 1e-9);
+        assert_eq!(rows[1].beatmap_id, 2);
+    }
+
+    #[test]
     fn dates_are_utc_days() {
         for (unix, expected) in [
             (0, "1970-01-01"),
@@ -313,6 +510,16 @@ mod tests {
                 title: "B".into(),
                 version: "x".into(),
                 file: "p.osr".into(),
+                creator: "m".into(),
+                hits: Hits {
+                    n300: 100,
+                    n100: 0,
+                    n50: 0,
+                    misses: 0
+                },
+                accuracy: 100.0,
+                grade: Grade::XH,
+                max_combo: 100,
             }]
         );
     }
@@ -333,6 +540,14 @@ mod tests {
         assert!(rows[1].lost);
         assert_eq!(rows[0].title, "Congrathalations!");
         assert_eq!(rows[1].title, "B");
+        assert_eq!(rows[0].grade, Grade::S);
+        assert_eq!(rows[0].score, 1_000_000);
+        assert_eq!(rows[0].status, MapStatus::Ranked);
+        assert_eq!(rows[0].kept_pp, None);
+        assert_eq!(rows[1].hits.n300, 100);
+        assert_eq!(rows[1].grade, Grade::XH);
+        assert_eq!(rows[1].score, 1);
+        assert_eq!(rows[1].kept_pp, Some(300.0));
     }
 
     #[test]
