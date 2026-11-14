@@ -3,8 +3,9 @@
 1. Set the version in `[workspace.package]` of `Cargo.toml`, run `cargo build` so that `Cargo.lock` follows, and write `docs/releases/<version>.md`.
 2. Commit, push, and wait for a green CI on Linux and Windows.
 3. Optional test build: run the Release workflow by hand on main (Actions, Release, "Run workflow", or `gh workflow run release.yml`). It builds the same files with `<version>-test-<commit>` in their names, as the artifacts Linux, Windows and macOS of the run, and creates no release. Run by hand on a tag, it behaves like the tag push.
-4. Push the tag `v<version>`. The Release workflow checks that the tag matches `Cargo.toml`, builds the files and creates a draft release with them, `SHA256SUMS` and the notes file.
-5. Check the files of the draft (below), then publish the draft by hand.
+4. Tag the rosu-pp commit that `crates/lost-scores-core/Cargo.toml` pins in kz-lemon4ik/rosu-pp as `lost-scores-<version>` and push that tag. A fork branch can be deleted or rewritten; the tag keeps the commit, so the release can always be built from source. Two releases on the same commit simply give it two tags.
+5. Push the tag `v<version>`. The Release workflow checks that the tag matches `Cargo.toml`, builds the files and creates a draft release with them, `SHA256SUMS` and the notes file.
+6. Check the files of the draft (below), then publish the draft by hand.
 
 The files:
 
