@@ -781,6 +781,7 @@ fn preview_from(state: &State<'_>, folder: &std::path::Path, room: f32) {
                 height: buffer.height() as f32 / SCALE,
                 image: slint::Image::from_rgba8(buffer),
                 ready: true,
+                centered: label == &"Badge",
             }
         })
         .collect();
@@ -835,13 +836,13 @@ fn render_switch_snapshots() {
     state.set_has_images(true);
 
     state.set_show_results(true);
-    draw_sized(&surface, LOGICAL, &dir.join("switch2-table-650.png"));
+    draw_sized(&surface, LOGICAL, &dir.join("switch3-table-650.png"));
 
     state.set_images_shown(true);
     state.set_prev_picture_ok(false);
     state.set_next_picture_ok(true);
-    draw_sized(&surface, LOGICAL, &dir.join("switch2-images-650.png"));
-    draw_sized(&surface, TWO_COLUMNS, &dir.join("switch2-images-1600.png"));
+    draw_sized(&surface, LOGICAL, &dir.join("switch3-images-650.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("switch3-images-1600.png"));
 
     state.set_images_shown(false);
     state.set_show_results(true);

@@ -23,7 +23,9 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::clipboard::Clipboard;
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
-use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
+use crate::previews::{
+    BADGE_LOGICAL, Wanted, natural_width, picture_tops, plan, render_all, step_target,
+};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::scans::{older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
@@ -76,6 +78,7 @@ struct Session {
     opens_results: Cell<bool>,
     opener: RefCell<Opener>,
     images_view: Cell<bool>,
+    picked_images: Cell<bool>,
     picture_tops: RefCell<Vec<f32>>,
     images_scroll: Cell<(f32, f32, f32)>,
     preview_room: Cell<f32>,
@@ -139,7 +142,8 @@ impl Session {
             pending_delete: RefCell::new(None),
             opens_results: Cell::new(false),
             opener: RefCell::new(Arc::new(|target| open::that(target))),
-            images_view: Cell::new(false),
+            images_view: Cell::new(true),
+            picked_images: Cell::new(true),
             picture_tops: RefCell::new(Vec::new()),
             images_scroll: Cell::new((0.0, 0.0, 0.0)),
             preview_room: Cell::new(0.0),
@@ -231,6 +235,7 @@ impl Session {
             state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
             self.consent.set(Consent::new(settings.catbox_confirmed));
         }
+        self.init_mode();
         self.bind(&state);
         self.bind_extras(&state);
         self.load_newest();
@@ -316,7 +321,7 @@ impl Session {
         let session = self.clone();
         state.on_start_scan(move || session.start_scan());
         let session = self.clone();
-        state.on_set_tab(move |index| session.show_tab(Tab::from_index(index)));
+        state.on_set_tab(move |index| session.pick_table(Tab::from_index(index)));
         let session = self.clone();
         state.on_sort_by(move |index| session.sort_by(Column::from_index(index)));
         let session = self.clone();
@@ -344,7 +349,9 @@ impl Session {
         let session = self.clone();
         state.on_cancel_delete(move || session.cancel_delete());
         let session = self.clone();
-        state.on_show_images(move || session.show_images());
+        state.on_show_images(move || session.pick_images());
+        let session = self.clone();
+        state.on_results_opening(move || session.show_picked_mode());
         let session = self.clone();
         state.on_images_scrolled(move |top, visible, content| {
             session.images_scrolled(top, visible, content)
@@ -763,6 +770,28 @@ impl Session {
         match anchor {
             Some(index) => self.jump_to(-(index as f32 * ROW_HEIGHT + offset), false),
             None => self.jump(0, false),
+        }
+    }
+
+    fn init_mode(&self) {
+        self.show_picked_mode();
+    }
+
+    fn pick_images(&self) {
+        self.picked_images.set(true);
+        self.show_images();
+    }
+
+    fn pick_table(&self, tab: Tab) {
+        self.picked_images.set(false);
+        self.show_tab(tab);
+    }
+
+    fn show_picked_mode(&self) {
+        if self.picked_images.get() {
+            self.show_images();
+        } else {
+            self.show_tab(self.tab.get());
         }
     }
 
@@ -1370,6 +1399,8 @@ impl Session {
         for (item, result) in made {
             let preview = match result {
                 Ok(buffer) => Preview {
+                    centered: natural_width(&item.path) == BADGE_LOGICAL
+                        || buffer.width() < item.width,
                     label: item.label.into(),
                     width: buffer.width() as f32 / scale,
                     height: buffer.height() as f32 / scale,
@@ -1377,6 +1408,7 @@ impl Session {
                     ready: true,
                 },
                 Err(_) => Preview {
+                    centered: false,
                     label: item.label.into(),
                     image: slint::Image::default(),
                     width: 0.0,
@@ -1860,6 +1892,81 @@ mod tests {
         begin(&session);
         finish(&session);
         assert!(!state.get_show_results());
+        assert!(state.get_images_shown());
+    }
+
+    fn with_layout(width: f32) -> (MainWindow, std::rc::Rc<Session>, Fixture) {
+        let (window, session, root) = session(width);
+        crate::layout::bind(&window);
+        (window, session, root)
+    }
+
+    #[test]
+    fn the_default_mode_is_images_in_one_column() {
+        let (window, session, _root) = session(650.0);
+        session.init_mode();
+        assert!(window.global::<State>().get_images_shown());
+        assert!(session.picked_images.get());
+    }
+
+    #[test]
+    fn the_default_mode_is_images_in_two_columns() {
+        let (window, session, _root) = session(1600.0);
+        session.init_mode();
+        assert!(window.global::<State>().get_images_shown());
+        assert!(session.picked_images.get());
+    }
+
+    #[test]
+    fn a_picked_table_is_kept_by_back_and_see_full_results() {
+        let (window, _session, _root) = with_layout(650.0);
+        let state = window.global::<State>();
+        state.invoke_set_tab(0);
+        assert!(!state.get_images_shown());
+        state.invoke_see_full_results();
+        assert!(state.get_show_results());
+        assert!(!state.get_images_shown());
+        state.invoke_back();
+        state.invoke_see_full_results();
+        assert!(!state.get_images_shown());
+    }
+
+    #[test]
+    fn a_picked_images_is_kept_by_back_and_see_full_results() {
+        let (window, session, _root) = with_layout(650.0);
+        let state = window.global::<State>();
+        state.invoke_set_tab(1);
+        state.invoke_show_images();
+        assert!(session.picked_images.get());
+        state.invoke_see_full_results();
+        state.invoke_back();
+        state.invoke_see_full_results();
+        assert!(state.get_images_shown());
+    }
+
+    #[test]
+    fn a_scan_that_ends_shows_images_without_changing_the_pick() {
+        let (window, session, root) = with_layout(650.0);
+        let state = window.global::<State>();
+        state.invoke_set_tab(2);
+        assert!(!session.picked_images.get());
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), true));
+        assert!(state.get_images_shown());
+        assert!(!session.picked_images.get());
+        state.invoke_back();
+        state.invoke_see_full_results();
+        assert!(!state.get_images_shown());
+    }
+
+    #[test]
+    fn after_a_scan_back_and_see_full_results_open_the_images_by_default() {
+        let (window, session, root) = with_layout(650.0);
+        let state = window.global::<State>();
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), true));
+        state.invoke_back();
+        state.invoke_see_full_results();
         assert!(state.get_images_shown());
     }
 

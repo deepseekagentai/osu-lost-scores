@@ -47,6 +47,7 @@ pub fn plan(images: &[ShareImage], room: f32, scale: f32) -> Vec<Wanted> {
         .collect()
 }
 
+pub const MAX_HEIGHT: u32 = 16_000;
 pub const CARD_HEAD: f32 = 40.0;
 pub const CARD_FOOT: f32 = 18.0;
 
@@ -86,9 +87,13 @@ pub fn render_preview(path: &Path, width: u32) -> Result<SharedPixelBuffer<Rgba8
     let decoded = image::open(path)
         .with_context(|| format!("cannot read {}", path.display()))?
         .into_rgba8();
-    let height = ((f64::from(decoded.height()) * f64::from(width) / f64::from(decoded.width()))
-        .round() as u32)
-        .max(1);
+    let (source_width, source_height) = (f64::from(decoded.width()), f64::from(decoded.height()));
+    let mut width = width;
+    let mut height = ((source_height * f64::from(width) / source_width).round() as u32).max(1);
+    if height > MAX_HEIGHT {
+        width = ((f64::from(MAX_HEIGHT) * source_width / source_height).floor() as u32).max(1);
+        height = ((source_height * f64::from(width) / source_width).round() as u32).max(1);
+    }
     let fitted = if decoded.dimensions() == (width, height) {
         decoded
     } else {
@@ -153,6 +158,17 @@ mod tests {
         assert_eq!((preview.width(), preview.height()), (730, 372));
         let same = render_preview(&path, 1960).unwrap();
         assert_eq!((same.width(), same.height()), (1960, 1000));
+    }
+
+    #[test]
+    fn a_tall_picture_is_prepared_narrower_to_stay_under_the_texture_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = save(dir.path(), "lost_scores.png", 98, 40_000);
+        let preview = render_preview(&path, 61).unwrap();
+        assert_eq!((preview.width(), preview.height()), (39, 15_918));
+        let fits = save(dir.path(), "potential_top.png", 98, 20_000);
+        let preview = render_preview(&fits, 61).unwrap();
+        assert_eq!((preview.width(), preview.height()), (61, 12_449));
     }
 
     #[test]

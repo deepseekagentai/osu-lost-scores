@@ -618,9 +618,10 @@ component PreviewCard inherits Rectangle {
     in property <Preview> item;
     in property <int> index;
     property <length> span: max(root.item.width, 160px);
+    property <length> shift: root.item.centered ? max(0px, (root.width - root.span) / 2) : 0px;
     height: 40px + root.item.height + 18px;
     SecondaryButton {
-        x: root.span - 72px - 6px - self.width;
+        x: root.shift + root.span - 72px - 6px - self.width;
         y: 1px;
         width: 58px;
         height: 30px;
@@ -632,7 +633,7 @@ component PreviewCard inherits Rectangle {
         }
     }
     SecondaryButton {
-        x: root.span - self.width;
+        x: root.shift + root.span - self.width;
         y: 1px;
         width: 72px;
         height: 30px;
@@ -644,7 +645,7 @@ component PreviewCard inherits Rectangle {
         }
     }
     if root.item.ready: Image {
-        x: 0px;
+        x: root.shift;
         y: 40px;
         source: root.item.image;
         width: root.item.width;

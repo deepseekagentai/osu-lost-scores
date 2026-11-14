@@ -265,6 +265,7 @@ mod tests {
                 width: 0.0,
                 height: 0.0,
                 ready: false,
+                centered: false,
             })
             .collect();
         state.set_previews(ModelRc::new(VecModel::from(previews)));
@@ -505,6 +506,55 @@ mod tests {
             ElementHandle::find_by_accessible_label(&window, "catbox").count(),
             0
         );
+    }
+
+    #[test]
+    fn the_badge_is_centred_and_its_buttons_follow_its_right_edge() {
+        let window = images_window(650.0, &[]);
+        let state = window.global::<State>();
+        let make = |label: &str, width: f32, centered: bool| Preview {
+            label: label.into(),
+            image: slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                width as u32,
+                60,
+            )),
+            width,
+            height: 60.0,
+            ready: true,
+            centered,
+        };
+        state.set_has_images(true);
+        state.set_previews(ModelRc::new(VecModel::from(vec![
+            make("Badge", 300.0, true),
+            make("Lost Scores", 500.0, false),
+        ])));
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let image = |width: f32| {
+            ElementHandle::find_by_element_type_name(&window, "Image")
+                .find(|element| element.size().width == width && element.size().height == 60.0)
+                .unwrap()
+        };
+        let card = ElementHandle::find_by_element_type_name(&window, "PreviewCard")
+            .next()
+            .unwrap();
+        let badge = image(300.0);
+        let wide = image(500.0);
+        let centre = card.absolute_position().x + card.size().width / 2.0;
+        assert!((badge.absolute_position().x + 150.0 - centre).abs() < 1.0);
+        assert_eq!(wide.absolute_position().x, card.absolute_position().x);
+        let mut catboxes: Vec<_> = ElementHandle::find_by_accessible_label(&window, "catbox")
+            .map(|button| {
+                (
+                    button.absolute_position().y,
+                    button.absolute_position().x + button.size().width / 2.0 + 36.0,
+                )
+            })
+            .collect();
+        catboxes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!((catboxes[0].1 - (badge.absolute_position().x + 300.0)).abs() < 1.0);
+        assert!((catboxes[1].1 - (wide.absolute_position().x + 500.0)).abs() < 1.0);
     }
 
     #[test]

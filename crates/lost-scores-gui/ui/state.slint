@@ -50,6 +50,7 @@ export struct Preview {
     width: length,
     height: length,
     ready: bool,
+    centered: bool,
 }
 
 export global State {
@@ -151,6 +152,7 @@ export global State {
     callback confirm-delete();
     callback cancel-delete();
     callback show-images();
+    callback results-opening();
     callback images-scrolled(length, length, length);
     callback step-picture(int);
     callback preview-room-changed(length);

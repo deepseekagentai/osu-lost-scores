@@ -37,6 +37,7 @@ pub fn bind(window: &MainWindow) {
     state.on_see_full_results(move || {
         if let Some(window) = weak.upgrade() {
             remembered.borrow_mut().enter(window.window());
+            window.global::<State>().invoke_results_opening();
             window.global::<State>().set_show_results(true);
         }
     });
