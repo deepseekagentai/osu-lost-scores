@@ -23,7 +23,7 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::clipboard::Clipboard;
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
-use crate::previews::{Wanted, plan, render_all};
+use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::scans::{older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
@@ -76,6 +76,8 @@ struct Session {
     opens_results: Cell<bool>,
     opener: RefCell<Opener>,
     images_view: Cell<bool>,
+    picture_tops: RefCell<Vec<f32>>,
+    images_scroll: Cell<(f32, f32, f32)>,
     preview_room: Cell<f32>,
     preview_shown: RefCell<Vec<Wanted>>,
     preview_wanted: RefCell<Vec<Wanted>>,
@@ -138,6 +140,8 @@ impl Session {
             opens_results: Cell::new(false),
             opener: RefCell::new(Arc::new(|target| open::that(target))),
             images_view: Cell::new(false),
+            picture_tops: RefCell::new(Vec::new()),
+            images_scroll: Cell::new((0.0, 0.0, 0.0)),
             preview_room: Cell::new(0.0),
             preview_shown: RefCell::new(Vec::new()),
             preview_wanted: RefCell::new(Vec::new()),
@@ -341,6 +345,12 @@ impl Session {
         state.on_cancel_delete(move || session.cancel_delete());
         let session = self.clone();
         state.on_show_images(move || session.show_images());
+        let session = self.clone();
+        state.on_images_scrolled(move |top, visible, content| {
+            session.images_scrolled(top, visible, content)
+        });
+        let session = self.clone();
+        state.on_step_picture(move |direction| session.step_picture(direction));
         let session = self.clone();
         state.on_preview_room_changed(move |room| session.preview_room_changed(room));
         let session = self.clone();
@@ -1228,6 +1238,7 @@ impl Session {
                     .borrow_mut()
                     .finish(done.scan.lost_total, done.scan.lost_ranked, false);
                 self.show_results(&done.scan);
+                self.images_view.set(true);
                 self.register(&done.folder, &done.scan);
             }
             Message::Refreshed(updated) => {
@@ -1239,9 +1250,7 @@ impl Session {
                     self.register(&done.folder, &done.scan);
                 }
                 self.refresh_shared();
-                if self.window.global::<State>().get_has_images() {
-                    self.show_images();
-                }
+                self.show_images();
                 let (total, ranked) = self.counts.get();
                 let images = self.window.global::<State>().get_has_images();
                 self.scan.borrow_mut().finish(total, ranked, images);
@@ -1259,6 +1268,33 @@ impl Session {
         let narrow = !self.window.get_two_columns();
         if self.opens_results.replace(false) && narrow {
             self.window.global::<State>().set_show_results(true);
+        }
+    }
+
+    fn images_scrolled(&self, top: f32, visible: f32, content: f32) {
+        self.images_scroll.set((top, visible, content));
+        self.update_arrows();
+    }
+
+    fn update_arrows(&self) {
+        let (top, visible, content) = self.images_scroll.get();
+        let tops = self.picture_tops.borrow();
+        let state = self.window.global::<State>();
+        state.set_prev_picture_ok(step_target(&tops, top, visible, content, false).is_some());
+        state.set_next_picture_ok(step_target(&tops, top, visible, content, true).is_some());
+    }
+
+    fn step_picture(&self, direction: i32) {
+        let (top, visible, content) = self.images_scroll.get();
+        let target = step_target(
+            &self.picture_tops.borrow(),
+            top,
+            visible,
+            content,
+            direction > 0,
+        );
+        if let Some(target) = target {
+            self.jump_to(-target, true);
         }
     }
 
@@ -1351,10 +1387,13 @@ impl Session {
             items.push(preview);
             shown.push(item);
         }
+        let heights: Vec<f32> = items.iter().map(|item| item.height).collect();
+        *self.picture_tops.borrow_mut() = picture_tops(&heights);
         *self.preview_shown.borrow_mut() = shown;
         self.window
             .global::<State>()
             .set_previews(ModelRc::new(VecModel::from(items)));
+        self.update_arrows();
     }
 
     fn show_card(&self, potential: &PotentialResult) {
@@ -1448,7 +1487,7 @@ mod tests {
     use crate::account::KeysError;
     use crate::share::render::ShareImage;
     use crate::table::Tab;
-    use crate::worker::Message;
+    use crate::worker::{Finished, Message};
     use crate::{MainWindow, State};
 
     static HOME: Mutex<(usize, Option<TempDir>)> = Mutex::new((0, None));
@@ -1824,18 +1863,125 @@ mod tests {
         assert!(state.get_images_shown());
     }
 
-    fn a_scan_without_pictures_stays_on_its_table_tab(width: f32) {
-        let (window, session, root) = session(width);
-        let state = window.global::<State>();
-        open_scan(&session, &scan_folder(root.path(), false));
-        begin(&session);
-        finish(&session);
-        assert!(!state.get_images_shown(), "{width}");
+    fn scan_ends(session: &Session, folder: &Path) {
+        session.handle(Message::Finished(Box::new(Finished {
+            scan: saved_scan(),
+            folder: folder.to_path_buf(),
+        })));
+        session.handle(Message::Refreshed(None));
     }
 
     #[test]
-    fn a_scan_without_pictures_stays_on_its_table_tab_in_one_column() {
-        a_scan_without_pictures_stays_on_its_table_tab(650.0);
+    fn a_scan_that_ends_leaves_a_table_mode_for_the_images_in_one_column() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        session.show_tab(Tab::Potential);
+        assert!(!state.get_images_shown());
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), true));
+        assert!(state.get_show_results());
+        assert!(state.get_images_shown());
+    }
+
+    #[test]
+    fn a_scan_that_ends_with_the_overlay_already_open_switches_it_to_the_images() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        session.show_tab(Tab::Online);
+        state.set_show_results(true);
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), true));
+        assert!(state.get_show_results());
+        assert!(state.get_images_shown());
+    }
+
+    #[test]
+    fn a_scan_that_ends_in_two_columns_switches_the_right_panel_to_the_images() {
+        let (window, session, root) = session(1600.0);
+        let state = window.global::<State>();
+        session.show_tab(Tab::Lost);
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), true));
+        assert!(!state.get_show_results());
+        assert!(state.get_images_shown());
+    }
+
+    #[test]
+    fn a_scan_that_ends_without_pictures_still_opens_the_images_mode() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        session.show_tab(Tab::Lost);
+        begin(&session);
+        scan_ends(&session, &scan_folder(root.path(), false));
+        assert!(state.get_images_shown());
+        assert!(!state.get_has_images());
+    }
+
+    #[test]
+    fn a_scan_that_fails_leaves_the_mode_as_it_was() {
+        let (window, session, _root) = session(1600.0);
+        let state = window.global::<State>();
+        session.show_tab(Tab::Lost);
+        begin(&session);
+        session.handle(Message::Failed("the scan failed".into()));
+        assert!(!state.get_images_shown());
+    }
+
+    #[test]
+    fn the_previews_come_in_the_order_badge_lost_scores_potential_top() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), true));
+        session.preview_room_changed(584.0);
+        make_previews(&session);
+        let labels: Vec<_> = (0..state.get_previews().row_count())
+            .map(|index| {
+                state
+                    .get_previews()
+                    .row_data(index)
+                    .unwrap()
+                    .label
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(labels, ["Badge", "Lost Scores", "Potential Top"]);
+    }
+
+    #[test]
+    fn next_from_the_top_lands_on_the_second_picture_and_previous_is_off_there() {
+        let (window, session, root) = session(650.0);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                scale_factor: 1.25,
+            });
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_images_shown(true);
+        let_the_panel_open();
+        open_scan(&session, &scan_folder(root.path(), true));
+        make_previews(&session);
+        let_the_panel_open();
+        let tops = session.picture_tops.borrow().clone();
+        assert_eq!(tops.len(), 3);
+        let (top, visible, content) = session.images_scroll.get();
+        assert_eq!(top, 0.0);
+        assert!(content > visible, "{content} {visible}");
+        assert!(!state.get_prev_picture_ok());
+        assert!(state.get_next_picture_ok());
+
+        session.step_picture(-1);
+        assert_eq!(state.get_jump_y(), 0.0);
+        session.step_picture(1);
+        assert_eq!(state.get_jump_y(), -tops[1]);
+        assert!(state.get_jump_animated());
+        let_the_panel_open();
+        let_the_panel_open();
+        let (top, _, _) = session.images_scroll.get();
+        assert_eq!(top, tops[1]);
+        assert!(state.get_prev_picture_ok());
     }
 
     #[test]
@@ -1916,15 +2062,15 @@ mod tests {
             let badge = (520.0_f32.min(room) * 1.25).round() as u32;
             let seen = drawn_previews(&window, 1.25);
             assert_eq!(seen.len(), 3, "{width}");
-            assert_eq!(seen[0].2.0, big, "{width} lost");
-            assert_eq!(seen[1].2.0, big, "{width} potential");
-            assert_eq!(seen[2].2.0, badge, "{width} badge");
+            assert_eq!(seen[0].2.0, badge, "{width} badge");
+            assert_eq!(seen[1].2.0, big, "{width} lost");
+            assert_eq!(seen[2].2.0, big, "{width} potential");
             assert_eq!(
-                seen[0].2.1,
+                seen[1].2.1,
                 (1200.0 * f64::from(big) / 1960.0).round() as u32
             );
             assert_eq!(
-                seen[2].2.1,
+                seen[0].2.1,
                 (280.0 * f64::from(badge) / 1040.0).round() as u32
             );
         }
@@ -1956,12 +2102,11 @@ mod tests {
         let images: Vec<_> = handles(&window, "Image").collect();
         let mut checked = 0;
         for (index, top) in tops.iter().enumerate() {
-            let drawn = images
-                .iter()
-                .find(|image| {
-                    (image.absolute_position().y - top).abs() < 0.5 && image.size().width > 100.0
-                })
-                .unwrap();
+            let Some(drawn) = images.iter().find(|image| {
+                (image.absolute_position().y - top).abs() < 0.5 && image.size().width > 100.0
+            }) else {
+                continue;
+            };
             let size = drawn.size();
             assert_eq!(
                 (size.width, size.height),
@@ -1970,7 +2115,7 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 1);
+        assert!(checked >= 2);
     }
 
     #[test]
@@ -2025,7 +2170,7 @@ mod tests {
         let ready: Vec<_> = (0..state.get_previews().row_count())
             .map(|index| state.get_previews().row_data(index).unwrap().ready)
             .collect();
-        assert_eq!(ready, [true, false, true]);
+        assert_eq!(ready, [true, true, false]);
         let last = session.log.row_data(session.log.row_count() - 1).unwrap();
         assert!(
             last.text

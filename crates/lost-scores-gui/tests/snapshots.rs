@@ -765,9 +765,9 @@ fn preview_from(state: &State<'_>, folder: &std::path::Path, room: f32) {
     use lost_scores_gui::previews::{natural_width, preview_pixels, render_preview};
 
     let files = [
+        ("Badge", "summary_badge.png"),
         ("Lost Scores", "lost_scores.png"),
         ("Potential Top", "potential_top.png"),
-        ("Badge", "summary_badge.png"),
     ];
     let items: Vec<Preview> = files
         .iter()
@@ -835,11 +835,13 @@ fn render_switch_snapshots() {
     state.set_has_images(true);
 
     state.set_show_results(true);
-    draw_sized(&surface, LOGICAL, &dir.join("switch-table-650.png"));
+    draw_sized(&surface, LOGICAL, &dir.join("switch2-table-650.png"));
 
     state.set_images_shown(true);
-    draw_sized(&surface, LOGICAL, &dir.join("switch-images-650.png"));
-    draw_sized(&surface, TWO_COLUMNS, &dir.join("switch-images-1600.png"));
+    state.set_prev_picture_ok(false);
+    state.set_next_picture_ok(true);
+    draw_sized(&surface, LOGICAL, &dir.join("switch2-images-650.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("switch2-images-1600.png"));
 
     state.set_images_shown(false);
     state.set_show_results(true);

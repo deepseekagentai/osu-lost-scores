@@ -323,7 +323,7 @@ mod tests {
         };
         let table = label_y("Table");
         let images = label_y("Images");
-        assert!(table.x < images.x, "{width}");
+        assert!(images.x < table.x, "{width}");
         assert_eq!(table.y, images.y);
         let selector = ElementHandle::find_by_element_type_name(&window, "ScanSelector")
             .next()
@@ -353,6 +353,50 @@ mod tests {
                 .mock_single_click(PointerEventButton::Left);
         }
         assert_eq!(*calls.borrow(), [-1, 1]);
+    }
+
+    fn arrows(window: &MainWindow) -> usize {
+        ["Previous picture", "Next picture"]
+            .iter()
+            .map(|label| ElementHandle::find_by_accessible_label(window, label).count())
+            .sum()
+    }
+
+    #[test]
+    fn the_arrows_show_only_in_images_mode_with_pictures() {
+        let window = images_window(650.0, &["Badge", "Lost Scores"]);
+        let state = window.global::<State>();
+        assert_eq!(arrows(&window), 0);
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        assert_eq!(arrows(&window), 2);
+        state.set_has_images(false);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        assert_eq!(arrows(&window), 0);
+    }
+
+    #[test]
+    fn the_arrows_sit_in_the_bottom_right_corner_and_follow_their_enabled_state() {
+        let window = images_window(650.0, &["Badge", "Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        state.set_next_picture_ok(true);
+        let steps = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = steps.clone();
+        state.on_step_picture(move |direction| log.borrow_mut().push(direction));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        let find = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+        };
+        let (previous, next) = (find("Previous picture"), find("Next picture"));
+        assert!(previous.absolute_position().x < next.absolute_position().x);
+        assert!(next.absolute_position().x + next.size().width > 560.0);
+        assert!(next.absolute_position().y > 600.0);
+        previous.mock_single_click(PointerEventButton::Left);
+        next.mock_single_click(PointerEventButton::Left);
+        assert_eq!(*steps.borrow(), [1]);
     }
 
     #[test]

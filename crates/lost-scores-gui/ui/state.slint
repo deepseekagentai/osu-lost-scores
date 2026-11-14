@@ -121,6 +121,8 @@ export global State {
     in-out property <bool> has-images;
     in-out property <bool> images-shown;
     in-out property <[Preview]> previews;
+    in-out property <bool> prev-picture-ok;
+    in-out property <bool> next-picture-ok;
     in-out property <bool> upload-confirm-open;
     in-out property <bool> delete-confirm-open;
     in-out property <string> delete-message;
@@ -149,6 +151,8 @@ export global State {
     callback confirm-delete();
     callback cancel-delete();
     callback show-images();
+    callback images-scrolled(length, length, length);
+    callback step-picture(int);
     callback preview-room-changed(length);
     callback open-image(int);
     callback upload-image(int);

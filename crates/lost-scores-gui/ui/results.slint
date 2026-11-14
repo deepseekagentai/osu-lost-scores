@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { T } from "theme.slint";
 import { State, ScoreRow, FootItem, Preview } from "state.slint";
 import { IconButton, SecondaryButton, TipArea } from "widgets.slint";
@@ -662,26 +662,27 @@ component PreviewCard inherits Rectangle {
     }
 }
 
-component ImagesView inherits VerticalLayout {
-    spacing: 10px;
-    padding-top: 6px;
-    if !State.has-images: Text {
-        vertical-stretch: 0;
-        text: "This scan has no images. Images are made after every scan from now on.";
-        color: T.k;
-        font-size: 14px;
-        font-italic: true;
-        wrap: word-wrap;
-    }
-    if State.has-images: ListView {
-        vertical-stretch: 1;
-        for item[i] in State.previews: PreviewCard {
-            item: item;
-            index: i;
+component PictureArrows inherits HorizontalLayout {
+    spacing: 6px;
+    IconButton {
+        width: 40px;
+        height: 40px;
+        icon: @image-url("../assets/i-chev-up.svg");
+        tip: "Previous picture";
+        enabled: State.prev-picture-ok;
+        clicked => {
+            State.step-picture(-1);
         }
     }
-    if !State.has-images: Rectangle {
-        vertical-stretch: 1;
+    IconButton {
+        width: 40px;
+        height: 40px;
+        icon: @image-url("../assets/i-chev-down.svg");
+        tip: "Next picture";
+        enabled: State.next-picture-ok;
+        clicked => {
+            State.step-picture(1);
+        }
     }
 }
 
@@ -718,17 +719,17 @@ component ModeSwitch inherits Rectangle {
         padding: 3px;
         spacing: 2px;
         ModeSegment {
-            text: "Table";
-            active: !State.images-shown;
-            clicked => {
-                State.set-tab(State.tab);
-            }
-        }
-        ModeSegment {
             text: "Images";
             active: State.images-shown;
             clicked => {
                 State.show-images();
+            }
+        }
+        ModeSegment {
+            text: "Table";
+            active: !State.images-shown;
+            clicked => {
+                State.set-tab(State.tab);
             }
         }
     }
@@ -773,15 +774,17 @@ component FootPair inherits HorizontalLayout {
 export component ResultsPanel inherits Rectangle {
     in property <bool> show-back: false;
     property <bool> narrow: true;
-    property <bool> switch-up: root.width >= 800px;
+    property <bool> switch-up: false;
     property <bool> split-foot: root.narrow && State.foot.length > 3;
     property <int> jump: State.jump-serial;
     init => {
         root.narrow = root.width < 980px;
+        root.switch-up = root.width >= 800px;
         State.preview-room-changed(root.width - 66px);
     }
     changed width => {
         root.narrow = root.width < 980px;
+        root.switch-up = root.width >= 800px;
         State.preview-room-changed(root.width - 66px);
     }
     property <length> view-y: list.content-y;
@@ -792,15 +795,37 @@ export component ResultsPanel inherits Rectangle {
     changed view-y => {
         State.scroll-y = root.view-y;
     }
+    property <bool> glide-images: false;
+    property <length> images-top: -imgs.content-y;
+    property <length> images-room: imgs.visible-height;
+    property <length> images-total: imgs.content-height;
+    changed images-top => {
+        State.images-scrolled(root.images-top, root.images-room, root.images-total);
+    }
+    changed images-room => {
+        State.images-scrolled(root.images-top, root.images-room, root.images-total);
+    }
+    changed images-total => {
+        State.images-scrolled(root.images-top, root.images-room, root.images-total);
+    }
     changed jump => {
-        root.glide-to = Math.min(0px, Math.max(State.jump-y, list.visible-height - list.content-height));
+        root.glide-images = State.images-shown;
+        if (root.glide-images) {
+            root.glide-to = Math.min(0px, Math.max(State.jump-y, imgs.visible-height - imgs.content-height));
+        } else {
+            root.glide-to = Math.min(0px, Math.max(State.jump-y, list.visible-height - list.content-height));
+        }
         if (State.jump-animated) {
-            root.glide-from = list.content-y;
+            root.glide-from = root.glide-images ? imgs.content-y : list.content-y;
             root.glide-start = animation-tick();
             root.gliding = true;
         } else {
             root.gliding = false;
-            list.content-y = root.glide-to;
+            if (root.glide-images) {
+                imgs.content-y = root.glide-to;
+            } else {
+                list.content-y = root.glide-to;
+            }
         }
     }
     Timer {
@@ -809,7 +834,12 @@ export component ResultsPanel inherits Rectangle {
         triggered => {
             let t = Math.min(1.0, (animation-tick() - root.glide-start) / 250ms);
             let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-            list.content-y = root.glide-from + (root.glide-to - root.glide-from) * eased;
+            let y = root.glide-from + (root.glide-to - root.glide-from) * eased;
+            if (root.glide-images) {
+                imgs.content-y = y;
+            } else {
+                list.content-y = y;
+            }
             if (t >= 1.0) {
                 root.gliding = false;
             }
@@ -973,9 +1003,32 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
             }
-            if State.has-results && State.images-shown: ImagesView {
+            imgs := ScrollView {
+                x: 0px;
+                y: 6px;
                 width: parent.width;
-                height: parent.height;
+                height: parent.height - 6px;
+                visible: State.images-shown && State.has-images;
+                VerticalLayout {
+                    for item[i] in State.previews: PreviewCard {
+                        item: item;
+                        index: i;
+                    }
+                }
+            }
+            if State.images-shown && !State.has-images: Text {
+                x: 0px;
+                y: 12px;
+                width: parent.width;
+                text: "This scan has no images. Images are made after every scan from now on.";
+                color: T.k;
+                font-size: 14px;
+                font-italic: true;
+                wrap: word-wrap;
+            }
+            if State.images-shown && State.has-images: PictureArrows {
+                x: parent.width - self.preferred-width - 24px;
+                y: parent.height - 40px - 12px;
             }
         }
         if State.has-results && !State.images-shown: Rectangle {
@@ -1054,7 +1107,7 @@ export component ResultsPanel inherits Rectangle {
                             }
                         }
                         if i > 0: RowTrash {
-                            x: parent.width - self.width - 4px - (scans-list.viewport-height > scans-list.visible-height ? 16px : 0px);
+                            x: parent.width - self.width - 4px - (scans-list.content-height > scans-list.visible-height ? 16px : 0px);
                             y: 3px;
                             lit: ta.has-hover;
                             over <=> row.trash-over;

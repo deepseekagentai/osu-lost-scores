@@ -47,6 +47,41 @@ pub fn plan(images: &[ShareImage], room: f32, scale: f32) -> Vec<Wanted> {
         .collect()
 }
 
+pub const CARD_HEAD: f32 = 40.0;
+pub const CARD_FOOT: f32 = 18.0;
+
+pub fn picture_tops(heights: &[f32]) -> Vec<f32> {
+    let mut top = 0.0;
+    heights
+        .iter()
+        .map(|height| {
+            let here = top;
+            top += CARD_HEAD + height + CARD_FOOT;
+            here
+        })
+        .collect()
+}
+
+const EDGE: f32 = 1.0;
+
+pub fn step_target(
+    tops: &[f32],
+    top: f32,
+    visible: f32,
+    content: f32,
+    forward: bool,
+) -> Option<f32> {
+    if forward {
+        let furthest = (content - visible).max(0.0);
+        if top >= furthest - EDGE {
+            return None;
+        }
+        tops.iter().copied().find(|at| *at > top + EDGE)
+    } else {
+        tops.iter().rev().copied().find(|at| *at < top - EDGE)
+    }
+}
+
 pub fn render_preview(path: &Path, width: u32) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
     let decoded = image::open(path)
         .with_context(|| format!("cannot read {}", path.display()))?
@@ -79,7 +114,10 @@ mod tests {
 
     use image::{Rgba, RgbaImage};
 
-    use super::{BADGE_LOGICAL, WIDE_LOGICAL, natural_width, preview_pixels, render_preview};
+    use super::{
+        BADGE_LOGICAL, WIDE_LOGICAL, natural_width, picture_tops, preview_pixels, render_preview,
+        step_target,
+    };
 
     fn save(dir: &Path, name: &str, width: u32, height: u32) -> std::path::PathBuf {
         let path = dir.join(name);
@@ -124,5 +162,34 @@ mod tests {
         std::fs::write(&path, b"not a png").unwrap();
         assert!(render_preview(&path, 100).is_err());
         assert!(render_preview(&dir.path().join("none.png"), 100).is_err());
+    }
+
+    #[test]
+    fn each_picture_starts_after_the_card_of_the_one_before() {
+        assert_eq!(picture_tops(&[100.0, 200.0, 50.0]), [0.0, 158.0, 416.0]);
+        assert!(picture_tops(&[]).is_empty());
+    }
+
+    #[test]
+    fn next_goes_to_the_following_picture_and_stops_at_the_end() {
+        let tops = [0.0, 158.0, 416.0];
+        assert_eq!(step_target(&tops, 0.0, 500.0, 900.0, true), Some(158.0));
+        assert_eq!(step_target(&tops, 158.0, 500.0, 900.0, true), Some(416.0));
+        assert_eq!(step_target(&tops, 416.0, 500.0, 900.0, true), None);
+        assert_eq!(step_target(&tops, 400.0, 500.0, 900.0, true), None);
+    }
+
+    #[test]
+    fn previous_is_off_at_the_top_and_goes_to_the_picture_start_otherwise() {
+        let tops = [0.0, 158.0, 416.0];
+        assert_eq!(step_target(&tops, 0.0, 500.0, 900.0, false), None);
+        assert_eq!(step_target(&tops, 158.0, 500.0, 900.0, false), Some(0.0));
+        assert_eq!(step_target(&tops, 200.0, 500.0, 900.0, false), Some(158.0));
+    }
+
+    #[test]
+    fn a_short_list_has_nowhere_to_go() {
+        let tops = [0.0, 158.0];
+        assert_eq!(step_target(&tops, 0.0, 500.0, 400.0, true), None);
     }
 }

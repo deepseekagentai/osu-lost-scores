@@ -42,9 +42,9 @@ pub const POTENTIAL_FILE: &str = "potential_top.png";
 pub const BADGE_FILE: &str = "summary_badge.png";
 
 const IMAGES: [(&str, &str); 3] = [
+    (BADGE_FILE, "Badge"),
     (LOST_FILE, "Lost Scores"),
     (POTENTIAL_FILE, "Potential Top"),
-    (BADGE_FILE, "Badge"),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -529,7 +529,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        BADGE_FILE, Choice, LOST_FILE, Prepared, RenderArgs, Rendered, guarded, images_in, png,
+        BADGE_FILE, Choice, LOST_FILE, POTENTIAL_FILE, Prepared, RenderArgs, Rendered, guarded,
+        images_in, png,
     };
 
     fn parse(args: &[&str]) -> Result<RenderArgs, String> {
@@ -589,8 +590,14 @@ mod tests {
         std::fs::write(dir.path().join("scan.json"), b"{}").unwrap();
         let found = images_in(dir.path());
         let labels: Vec<_> = found.iter().map(|image| image.label).collect();
-        assert_eq!(labels, ["Lost Scores", "Badge"]);
-        assert_eq!(found[0].path, dir.path().join(LOST_FILE));
+        assert_eq!(labels, ["Badge", "Lost Scores"]);
+        assert_eq!(found[1].path, dir.path().join(LOST_FILE));
+        std::fs::write(dir.path().join(POTENTIAL_FILE), b"x").unwrap();
+        let labels: Vec<_> = images_in(dir.path())
+            .iter()
+            .map(|image| image.label)
+            .collect();
+        assert_eq!(labels, ["Badge", "Lost Scores", "Potential Top"]);
     }
 
     #[test]
