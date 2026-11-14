@@ -226,6 +226,7 @@ fn add_missing_maps(
     if md5s.is_empty() {
         return Ok(());
     }
+    let before = catalog.clone();
     events(Event::Log(format!(
         "{} maps missing from Songs could hold a lost play; each one not in the cache takes two requests at one per second",
         md5s.len()
@@ -237,6 +238,7 @@ fn add_missing_maps(
             &mut catalog,
             &cache_dir,
             api,
+            unix_now(),
             |done, total| {
                 events(Event::Progress {
                     step: Step::MissingMaps,
@@ -246,7 +248,7 @@ fn add_missing_maps(
             },
         )
     });
-    if let Some(path) = &catalog_path {
+    if let Some(path) = catalog_path.as_ref().filter(|_| catalog != before) {
         catalog.save(path)?;
     }
     let report = report?;
@@ -336,7 +338,7 @@ pub fn refresh_statuses(
     if ids.is_empty() {
         return Ok(0);
     }
-    let changed = timings.time("status refresh", || {
+    let refreshed = timings.time("status refresh", || {
         maps::refresh(catalog, &ids, api, now, |done, total| {
             events(Event::Progress {
                 step: Step::Refresh,
@@ -345,10 +347,19 @@ pub fn refresh_statuses(
             });
         })
     });
+    let changed = match refreshed {
+        Ok(changed) => changed,
+        Err(error) => {
+            events(Event::Log(format!(
+                "Could not refresh map statuses: {}",
+                printable(&error.to_string())
+            )));
+            return Ok(0);
+        }
+    };
     if let Some(path) = catalog_file(maps) {
         catalog.save(&path)?;
     }
-    let changed = changed?;
     events(Event::Log(format!(
         "asked again about {} maps whose status can change, {changed} changed",
         ids.len()

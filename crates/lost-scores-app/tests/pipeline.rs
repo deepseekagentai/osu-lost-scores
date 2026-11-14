@@ -1,5 +1,6 @@
 mod common;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -25,6 +26,7 @@ const NOW: i64 = 1_800_000_000;
 struct Fake {
     calls: Vec<String>,
     top: Vec<Score>,
+    fail_batch: bool,
 }
 
 impl MapSource for Fake {
@@ -32,6 +34,9 @@ impl MapSource for Fake {
 
     fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ApiError> {
         self.calls.push(format!("batch {ids:?}"));
+        if self.fail_batch {
+            return Err(ApiError::Network("down".into()));
+        }
         Ok(Vec::new())
     }
 
@@ -403,4 +408,94 @@ fn refresh_is_a_separate_step() {
             .iter()
             .any(|line| line.starts_with("asked again about 1 maps"))
     );
+}
+
+#[test]
+fn a_failed_status_refresh_warns_and_carries_on() {
+    osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut catalog = MapCatalog::default();
+    catalog.insert(
+        SAMPLE_MD5.to_owned(),
+        MapInfo {
+            beatmap_id: Some(5),
+            status: MapStatus::Pending,
+            ranked_at: None,
+            outdated: false,
+            checked_at: None,
+        },
+    );
+    let mut fake = Fake {
+        fail_batch: true,
+        ..Fake::default()
+    };
+    let mut events = Vec::new();
+    let changed = refresh_statuses(
+        Some(&maps),
+        &mut catalog,
+        &mut fake,
+        NOW,
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert_eq!(changed, 0);
+    assert_eq!(catalog.get(SAMPLE_MD5).unwrap().status, MapStatus::Pending);
+    assert!(
+        log_lines(&events)
+            .iter()
+            .any(|line| line.starts_with("Could not refresh map statuses: ")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn check_leaves_the_catalog_file_alone_when_nothing_changed() {
+    osu_folder();
+    let cache = setup::osu_cache_dir().unwrap();
+    write(&cache, &format!("{SAMPLE_MD5}.osu"), SAMPLE);
+    let root = tempfile::tempdir().unwrap();
+    let osu = root.path().join("osu");
+    for (name, counts, score, ticks) in [
+        ("a.osr", [7, 0, 0, 0], 500_000, EARLY_TICKS),
+        ("b.osr", [5, 2, 0, 0], 900_000, EARLY_TICKS + 1),
+    ] {
+        let replay = Replay {
+            mode: 0,
+            player: "Lemon",
+            beatmap_md5: SAMPLE_MD5,
+            counts,
+            score,
+            max_combo: 8,
+            mods: 0,
+            ticks,
+        };
+        write(&osu, &format!("Data/r/{name}"), &replay.bytes());
+    }
+    write(&osu, "Songs/.keep", b"");
+    let maps = root.path().join("maps.json");
+    let original = format!(
+        "{{\n  \"version\": 1,\n  \"maps\": {{\"{SAMPLE_MD5}\": {{\"beatmap_id\": 5, \"status\": \"ranked\", \"ranked_at\": null}}}}\n}}\n"
+    );
+    fs::write(&maps, &original).unwrap();
+    let mut fake = Fake::default();
+    let mut source = source(&osu, Some(maps.clone()));
+    source.check_missing = true;
+    let read = read(
+        &source,
+        Some(&mut fake),
+        "",
+        &mut Timings::new(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(
+        read.scan
+            .replays
+            .iter()
+            .all(|replay| replay.beatmap.is_some())
+    );
+    assert!(!fake.calls.iter().any(|call| call.starts_with("lookup")));
+    assert_eq!(fs::read_to_string(&maps).unwrap(), original);
 }

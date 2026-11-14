@@ -74,7 +74,7 @@ struct SavedCatalog<'a> {
     maps: &'a HashMap<String, MapInfo>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapCatalog {
     maps: HashMap<String, MapInfo>,
 }
