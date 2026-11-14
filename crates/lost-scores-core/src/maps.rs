@@ -203,7 +203,7 @@ pub fn wanted(replays: &[ScannedReplay], catalog: &MapCatalog) -> Vec<Wanted> {
 
 pub const BATCH_SIZE: usize = 50;
 
-pub fn fill<S: MapSource>(
+pub fn fill<S: MapSource + ?Sized>(
     catalog: &mut MapCatalog,
     wanted: &[Wanted],
     source: &mut S,
@@ -306,7 +306,7 @@ pub fn stale(catalog: &MapCatalog, now: i64) -> Vec<u32> {
     ids
 }
 
-pub fn refresh<S: MapSource>(
+pub fn refresh<S: MapSource + ?Sized>(
     catalog: &mut MapCatalog,
     ids: &[u32],
     source: &mut S,

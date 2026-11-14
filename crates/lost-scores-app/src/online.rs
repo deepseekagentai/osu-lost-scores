@@ -1,3 +1,4 @@
+use crate::pipeline::Api;
 use lost_scores_core::maps::{FetchedMap, MapInfo, MapSource, MapStatus};
 use lost_scores_core::missing::OsuFiles;
 use osu_api::{ApiError, Beatmap, Client, Credentials, Http, Score};
@@ -26,8 +27,10 @@ impl Online {
     pub fn check(&mut self) -> Result<(), ApiError> {
         self.client.check()
     }
+}
 
-    pub fn player(&mut self, name: &str) -> Result<Player, ApiError> {
+impl Api for Online {
+    fn player(&mut self, name: &str) -> Result<Player, ApiError> {
         let user = self.client.user(name)?;
         let statistics = user.statistics;
         Ok(Player {
@@ -39,7 +42,7 @@ impl Online {
         })
     }
 
-    pub fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
+    fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
         self.client.top_plays(user_id)
     }
 }

@@ -48,7 +48,7 @@ pub fn missing_maps(replays: &[ScannedReplay], catalog: &MapCatalog) -> Vec<Stri
         .collect()
 }
 
-pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
+pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E> + ?Sized>(
     md5s: &[String],
     replays: &mut [ScannedReplay],
     catalog: &mut MapCatalog,
@@ -76,7 +76,7 @@ pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
     Ok(report)
 }
 
-fn download<E, S: MapSource<Error = E> + OsuFiles<Error = E>>(
+fn download<E, S: MapSource<Error = E> + OsuFiles<Error = E> + ?Sized>(
     md5: &str,
     path: &Path,
     catalog: &mut MapCatalog,

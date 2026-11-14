@@ -7,23 +7,20 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lost_scores_app::keys;
-use lost_scores_app::online::{Online, Player};
+use lost_scores_app::online::Online;
+use lost_scores_app::pipeline::{self, Api, Event};
 use lost_scores_app::rows;
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
-use lost_scores_core::maps::{self, MapCatalog, Wanted};
-use lost_scores_core::missing::{fetch_missing, missing_maps};
-use lost_scores_core::potential::{self, Play};
-use lost_scores_core::{Scan, lost, pp};
-use osu_api::{Credentials, Score};
+use osu_api::Credentials;
 use serde::Serialize;
 
 use crate::dump::Dump;
+use crate::progress::Printer;
 
 #[derive(Parser)]
 #[command(
@@ -183,9 +180,11 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     let mut timings = Timings::new();
+    let mut printer = Printer::new();
+    let mut events = |event| printer.handle(event);
     let (result, source) = match &cli.command {
         Some(Command::Scan { output, source }) => (
-            dump_replays(source, output.as_deref(), &mut timings),
+            dump_replays(source, output.as_deref(), &mut timings, &mut events),
             Some(source),
         ),
         Some(Command::Potential {
@@ -194,13 +193,20 @@ fn run(cli: Cli) -> Result<()> {
             json,
             source,
         }) => (
-            show_potential(source, maps.as_deref(), *limit, *json, &mut timings),
+            show_potential(
+                source,
+                maps.as_deref(),
+                *limit,
+                *json,
+                &mut timings,
+                &mut events,
+            ),
             Some(source),
         ),
         Some(Command::Login) => (login(), None),
         Some(Command::Logout) => (logout(), None),
         None => (
-            show_lost(&cli.source, &cli.view, &mut timings),
+            show_lost(&cli.source, &cli.view, &mut timings, &mut events),
             Some(&cli.source),
         ),
     };
@@ -221,6 +227,16 @@ fn connect(source: &Source) -> Option<Online> {
     saved_keys().map(Online::new)
 }
 
+fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {
+    pipeline::Source {
+        osu_dir: source.osu_dir.clone(),
+        player: source.player.clone(),
+        songs_dir: source.songs_dir.clone(),
+        check_missing: source.check_missing,
+        maps: maps.map(Path::to_path_buf),
+    }
+}
+
 fn api_hint(source: &Source) -> &'static str {
     if source.offline && saved_keys().is_some() {
         "run without --offline"
@@ -229,72 +245,21 @@ fn api_hint(source: &Source) -> &'static str {
     }
 }
 
-fn read(
+fn dump_replays(
     source: &Source,
-    maps: Option<&Path>,
-    mut api: Option<&mut Online>,
+    output: Option<&Path>,
     timings: &mut Timings,
-) -> Result<(Scan, usize, Option<Player>)> {
-    let osu_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?;
-    let config = setup::read_user_config(&osu_dir);
-    let player = match &source.player {
-        Some(player) => player.clone(),
-        None => setup::player(&config)?,
-    };
-    let songs_dir = match &source.songs_dir {
-        Some(dir) => dir.clone(),
-        None => setup::songs_dir(&osu_dir, &config)?,
-    };
-    let (names, found_player) = match api.as_deref_mut() {
-        Some(api) => match timings.time("player lookup", || api.player(&player)) {
-            Ok(found) => (found.names.clone(), Some(found)),
-            Err(error) => {
-                eprintln!(
-                    "could not look the player up on the osu! API: {}",
-                    rows::printable(&error.to_string())
-                );
-                (vec![player.clone()], None)
-            }
-        },
-        None => (vec![player.clone()], None),
-    };
-    eprintln!("osu!: {}", rows::printable(&osu_dir.display().to_string()));
-    eprintln!("player: {}", rows::printable(&names.join(", ")));
-    let started = Instant::now();
-    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
-    timings.add("songs index", scan.timings.songs);
-    timings.add("replays", scan.timings.replays);
-    let mut checking = Duration::ZERO;
-    if source.check_missing {
-        match api {
-            Some(api) => {
-                let started = Instant::now();
-                add_missing_maps(&mut scan, maps, api, timings)?;
-                checking = started.elapsed();
-            }
-            None => eprintln!(
-                "--check-missing needs the osu! API: {}; continuing without it",
-                api_hint(source)
-            ),
-        }
-    }
-    let pp_failed = timings.time("pp", || pp::fill(&osu_dir, &mut scan.replays));
-    let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
-    eprintln!(
-        "{} replays read in {:.1} s, {with_pp} of the player's have a local beatmap and pp",
-        scan.replay_files,
-        (started.elapsed() - checking).as_secs_f64()
-    );
-    if pp_failed > 0 {
-        eprintln!("{pp_failed} beatmaps could not be loaded for pp");
-    }
-    Ok((scan, pp_failed, found_player))
-}
-
-fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -> Result<()> {
+    events: &mut dyn FnMut(Event),
+) -> Result<()> {
     let mut api = connect(source);
-    let (scan, pp_failed, _) = read(source, None, api.as_mut(), timings)?;
-    let dump = Dump::new(&scan, pp_failed);
+    let read = pipeline::read(
+        &pipeline_source(source, None),
+        api.as_mut().map(|api| api as &mut dyn Api),
+        api_hint(source),
+        timings,
+        events,
+    )?;
+    let dump = Dump::new(&read.scan, read.pp_failed);
     eprintln!("{}", dump.stats);
     match output {
         Some(path) => {
@@ -306,14 +271,43 @@ fn dump_replays(source: &Source, output: Option<&Path>, timings: &mut Timings) -
     }
 }
 
-fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> {
+fn show_lost(
+    source: &Source,
+    view: &View,
+    timings: &mut Timings,
+    events: &mut dyn FnMut(Event),
+) -> Result<()> {
     let mut api = connect(source);
-    let (scan, _, _) = read(source, view.maps.as_deref(), api.as_mut(), timings)?;
-    let catalog = load_catalog(source, view.maps.as_deref(), &scan, api.as_mut(), timings)?;
-    let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
-    let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
+    let hint = api_hint(source);
+    let read = pipeline::read(
+        &pipeline_source(source, view.maps.as_deref()),
+        api.as_mut().map(|api| api as &mut dyn Api),
+        hint,
+        timings,
+        events,
+    )?;
+    let mut catalog = pipeline::load_catalog(
+        view.maps.as_deref(),
+        &read.scan,
+        api.as_mut().map(|api| api as &mut dyn Api),
+        hint,
+        pipeline::unix_now(),
+        timings,
+        events,
+    )?;
+    if let Some(api) = api.as_mut() {
+        pipeline::refresh_statuses(
+            view.maps.as_deref(),
+            &mut catalog,
+            api,
+            pipeline::unix_now(),
+            timings,
+            events,
+        )?;
+    }
+    let found = pipeline::lost(&read.scan, &catalog, timings);
     let show_all = view.all || catalog.is_empty();
-    let mut rows = rows::rows(&found, &catalog);
+    let mut rows = found.rows;
     rows.retain(|row| show_all || row.status.gives_pp());
     if let SortBy::Date = view.sort {
         rows.sort_by_key(|row| Reverse(row.unix_time));
@@ -322,8 +316,8 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
         return write_json(
             io::stdout().lock(),
             &LostReport {
-                lost_total: found.len(),
-                lost_ranked: ranked,
+                lost_total: found.total,
+                lost_ranked: found.ranked,
                 lost: &rows,
             },
         );
@@ -333,120 +327,15 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
         eprintln!("no map catalog yet: map statuses are unknown, so every map is shown");
     } else if view.all {
         eprintln!(
-            "{} lost plays, {ranked} of them on ranked maps",
-            found.len()
+            "{} lost plays, {} of them on ranked maps",
+            found.total, found.ranked
         );
     } else {
         eprintln!(
-            "{ranked} lost plays on ranked maps; {} with loved and unranked maps (--all)",
-            found.len()
+            "{} lost plays on ranked maps; {} with loved and unranked maps (--all)",
+            found.ranked, found.total
         );
     }
-    Ok(())
-}
-
-fn load_catalog(
-    source: &Source,
-    maps: Option<&Path>,
-    scan: &Scan,
-    mut api: Option<&mut Online>,
-    timings: &mut Timings,
-) -> Result<MapCatalog> {
-    let started = Instant::now();
-    let now = unix_now();
-    let catalog_path = catalog_file(maps);
-    let mut catalog = open_catalog(catalog_path.as_deref())?;
-    let wanted = maps::wanted(&scan.replays, &catalog);
-    if !wanted.is_empty() {
-        match api.as_deref_mut() {
-            Some(api) => {
-                update_catalog(&mut catalog, catalog_path.as_deref(), &wanted, api, now)?;
-            }
-            None => eprintln!(
-                "{} maps have no status yet; to fetch them from the osu! API, {}",
-                wanted.len(),
-                api_hint(source)
-            ),
-        }
-    }
-    timings.add("map catalog", started.elapsed());
-    if let Some(api) = api {
-        let ids = maps::stale(&catalog, now);
-        if !ids.is_empty() {
-            let bar = progress::bar("status refresh");
-            let changed = timings.time("status refresh", || {
-                maps::refresh(&mut catalog, &ids, api, now, progress::track(&bar))
-            });
-            bar.finish_and_clear();
-            if let Some(path) = &catalog_path {
-                catalog.save(path)?;
-            }
-            eprintln!(
-                "asked again about {} maps whose status can change, {} changed",
-                ids.len(),
-                changed?
-            );
-        }
-    }
-    Ok(catalog)
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
-}
-
-fn catalog_file(maps: Option<&Path>) -> Option<PathBuf> {
-    maps.map(Path::to_path_buf).or_else(setup::maps_file)
-}
-
-fn open_catalog(path: Option<&Path>) -> Result<MapCatalog> {
-    Ok(match path {
-        Some(path) if path.is_file() => MapCatalog::load(path)?,
-        _ => MapCatalog::default(),
-    })
-}
-
-fn add_missing_maps(
-    scan: &mut Scan,
-    maps: Option<&Path>,
-    api: &mut Online,
-    timings: &mut Timings,
-) -> Result<()> {
-    let cache_dir = setup::osu_cache_dir().context("cannot find a folder for the map cache")?;
-    let catalog_path = catalog_file(maps);
-    let mut catalog = open_catalog(catalog_path.as_deref())?;
-    let md5s = missing_maps(&scan.replays, &catalog);
-    if md5s.is_empty() {
-        return Ok(());
-    }
-    eprintln!(
-        "{} maps missing from Songs could hold a lost play; each one not in the cache takes two requests at one per second",
-        md5s.len()
-    );
-    let bar = progress::bar("missing maps");
-    let report = timings.time("missing maps", || {
-        fetch_missing(
-            &md5s,
-            &mut scan.replays,
-            &mut catalog,
-            &cache_dir,
-            api,
-            progress::track(&bar),
-        )
-    });
-    bar.finish_and_clear();
-    if let Some(path) = &catalog_path {
-        catalog.save(path)?;
-    }
-    let report = report?;
-    eprintln!(
-        "{} maps missing from Songs looked up: {} from the cache, {} downloaded, {} not on the server, {} changed since the replay",
-        report.maps, report.cached, report.downloaded, report.not_found, report.mismatched
-    );
     Ok(())
 }
 
@@ -456,85 +345,64 @@ fn show_potential(
     limit: usize,
     json: bool,
     timings: &mut Timings,
+    events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     let mut api = connect(source)
         .with_context(|| format!("the potential top needs the osu! API: {}", api_hint(source)))?;
-    let (scan, _, player) = read(source, maps, Some(&mut api), timings)?;
-    let player =
-        player.context("the potential top needs the player's profile from the osu! API")?;
-    let catalog = load_catalog(source, maps, &scan, Some(&mut api), timings)?;
-    let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
-    let lost = potential::lost_plays(&found, &catalog);
-    let scores: Vec<Score> = timings
-        .time("online top", || api.top(player.id))?
-        .into_iter()
-        .filter(|score| score.pp.is_some())
-        .collect();
-    let online: Vec<Play> = scores
-        .iter()
-        .map(|score| Play {
-            beatmap_id: score.beatmap.id,
-            pp: score.pp.unwrap_or_default(),
-            accuracy: score.accuracy * 100.0,
-        })
-        .collect();
-    let lost_only: Vec<Play> = lost.iter().map(|(_, play)| *play).collect();
-    let result = timings.time("potential top", || {
-        potential::potential(&online, &lost_only, player.pp)
-    });
-    let rows = rows::potential_rows(&result, &scores, &found, &lost);
+    let hint = api_hint(source);
+    let read = pipeline::read(
+        &pipeline_source(source, maps),
+        Some(&mut api),
+        hint,
+        timings,
+        events,
+    )?;
+    let player = read
+        .player
+        .context("the potential top needs the player's profile from the osu! API")?;
+    let mut catalog = pipeline::load_catalog(
+        maps,
+        &read.scan,
+        Some(&mut api),
+        hint,
+        pipeline::unix_now(),
+        timings,
+        events,
+    )?;
+    pipeline::refresh_statuses(
+        maps,
+        &mut catalog,
+        &mut api,
+        pipeline::unix_now(),
+        timings,
+        events,
+    )?;
+    let result = pipeline::potential(&mut api, &player, &read.scan, &catalog, timings, events)?;
     if json {
         write_json(
             io::stdout().lock(),
             &PotentialReport {
-                current_pp: player.pp,
-                potential_pp: result.pp,
-                current_accuracy: player.accuracy,
-                potential_accuracy: result.accuracy,
-                global_rank: player.global_rank,
+                current_pp: result.current_pp,
+                potential_pp: result.potential_pp,
+                current_accuracy: result.current_accuracy,
+                potential_accuracy: result.potential_accuracy,
+                global_rank: result.global_rank,
                 lost_in_top: result.lost_in_top,
-                top: &rows,
+                top: &result.rows,
             },
         )?;
     } else {
-        println!("{}", table::potential_table(&rows, limit));
+        println!("{}", table::potential_table(&result.rows, limit));
     }
     eprintln!(
         "{} → {}pp ({:+.1}), {:.2}% → {:.2}% ({:+.2}%), {} lost plays in the top 200",
-        rows::thousands(player.pp),
-        rows::thousands(result.pp),
-        result.pp - player.pp,
-        player.accuracy,
-        result.accuracy,
-        result.accuracy - player.accuracy,
+        rows::thousands(result.current_pp),
+        rows::thousands(result.potential_pp),
+        result.potential_pp - result.current_pp,
+        result.current_accuracy,
+        result.potential_accuracy,
+        result.potential_accuracy - result.current_accuracy,
         result.lost_in_top
-    );
-    Ok(())
-}
-
-fn update_catalog(
-    catalog: &mut MapCatalog,
-    path: Option<&Path>,
-    wanted: &[Wanted],
-    api: &mut Online,
-    now: i64,
-) -> Result<()> {
-    let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
-    let requests = with_id.div_ceil(maps::BATCH_SIZE) + (wanted.len() - with_id);
-    eprintln!(
-        "asking the osu! API about {} maps, about {requests} requests at one per second",
-        wanted.len()
-    );
-    let bar = progress::bar("map statuses");
-    let result = maps::fill(catalog, wanted, api, now, progress::track(&bar));
-    bar.finish_and_clear();
-    if let Some(path) = path {
-        catalog.save(path)?;
-    }
-    let report = result?;
-    eprintln!(
-        "{} maps found by id, {} by md5, {} played on an older version, {} not on the server",
-        report.by_id, report.by_md5, report.outdated, report.not_found
     );
     Ok(())
 }

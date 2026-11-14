@@ -1,0 +1,406 @@
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use common::{Replay, isolate_environment, write};
+use lost_scores_app::online::Player;
+use lost_scores_app::pipeline::{
+    Api, Event, Source, Step, load_catalog, lost, potential, read, refresh_statuses,
+};
+use lost_scores_app::setup;
+use lost_scores_app::timings::Timings;
+use lost_scores_core::maps::{FetchedMap, MapCatalog, MapInfo, MapSource, MapStatus};
+use lost_scores_core::missing::OsuFiles;
+use osu_api::{ApiError, Score, ScoreBeatmap, ScoreBeatmapset, ScoreStatistics};
+use tempfile::TempDir;
+
+const SAMPLE: &[u8] = include_bytes!("fixtures/sample.osu");
+const SAMPLE_MD5: &str = "0b577cbe9bc774600d20cfa17c0aa94c";
+const SAMPLE_PATH: &str = "Songs/1 Sample/sample.osu";
+const EARLY_TICKS: i64 = 638_355_968_000_000_000;
+const NOW: i64 = 1_800_000_000;
+
+#[derive(Default)]
+struct Fake {
+    calls: Vec<String>,
+    top: Vec<Score>,
+}
+
+impl MapSource for Fake {
+    type Error = ApiError;
+
+    fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ApiError> {
+        self.calls.push(format!("batch {ids:?}"));
+        Ok(Vec::new())
+    }
+
+    fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
+        self.calls.push(format!("lookup {md5}"));
+        Ok(Some(FetchedMap {
+            checksum: Some(md5.to_owned()),
+            info: MapInfo {
+                beatmap_id: Some(11),
+                status: MapStatus::Ranked,
+                ranked_at: None,
+                outdated: false,
+                checked_at: None,
+            },
+        }))
+    }
+}
+
+impl OsuFiles for Fake {
+    type Error = ApiError;
+
+    fn download(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
+        self.calls.push(format!("download {beatmap_id}"));
+        Ok(Vec::new())
+    }
+}
+
+impl Api for Fake {
+    fn player(&mut self, name: &str) -> Result<Player, ApiError> {
+        self.calls.push(format!("player {name}"));
+        Ok(Player {
+            id: 7,
+            names: vec![name.to_owned()],
+            pp: 1000.0,
+            accuracy: 98.0,
+            global_rank: Some(1),
+        })
+    }
+
+    fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
+        self.calls.push(format!("top {user_id}"));
+        Ok(self.top.clone())
+    }
+}
+
+fn online_score(beatmap_id: u32, pp: f64) -> Score {
+    Score {
+        id: u64::from(beatmap_id),
+        pp: Some(pp),
+        accuracy: 0.98,
+        mods: Vec::new(),
+        score: 1_000_000,
+        rank: "S".into(),
+        created_at: "2024-09-07T21:44:00Z".into(),
+        statistics: ScoreStatistics {
+            count_300: 100,
+            count_100: 2,
+            count_50: 0,
+            count_miss: 0,
+        },
+        beatmap: ScoreBeatmap {
+            id: beatmap_id,
+            version: "Expert".into(),
+            checksum: None,
+        },
+        beatmapset: ScoreBeatmapset {
+            id: 2,
+            artist: "Artist".into(),
+            title: "Title".into(),
+            creator: "Mapper".into(),
+        },
+    }
+}
+
+fn osu_folder() -> &'static Path {
+    static FOLDER: OnceLock<TempDir> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            isolate_environment();
+            let dir = tempfile::tempdir().unwrap();
+            fill_osu_folder(dir.path());
+            setup::resolve_osu_dir(Some(dir.path())).unwrap();
+            dir
+        })
+        .path()
+}
+
+fn fill_osu_folder(root: &Path) {
+    write(root, SAMPLE_PATH, SAMPLE);
+    let best_pp = Replay {
+        mode: 0,
+        player: "Lemon",
+        beatmap_md5: SAMPLE_MD5,
+        counts: [7, 0, 0, 0],
+        score: 500_000,
+        max_combo: 8,
+        mods: 0,
+        ticks: EARLY_TICKS,
+    };
+    let best_score = Replay {
+        counts: [5, 2, 0, 0],
+        score: 900_000,
+        ticks: EARLY_TICKS + 1,
+        ..best_pp
+    };
+    write(root, "Data/r/a.osr", &best_pp.bytes());
+    write(root, "Data/r/b.osr", &best_score.bytes());
+}
+
+fn source(dir: &Path, maps: Option<PathBuf>) -> Source {
+    Source {
+        osu_dir: Some(dir.to_path_buf()),
+        player: Some("Lemon".into()),
+        songs_dir: None,
+        check_missing: false,
+        maps,
+    }
+}
+
+fn collect(events: &mut Vec<Event>) -> impl FnMut(Event) + '_ {
+    move |event| events.push(event)
+}
+
+fn log_lines(events: &[Event]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Log(line) => Some(line.as_str()),
+            Event::Progress { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn read_reports_the_lines_the_cli_printed() {
+    let dir = osu_folder();
+    let mut fake = Fake::default();
+    let mut events = Vec::new();
+    let read = read(
+        &source(dir, None),
+        Some(&mut fake),
+        "run lost-scores login first",
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    let lines = log_lines(&events);
+    assert!(lines[0].starts_with("osu!:"), "{lines:?}");
+    assert!(lines[1].starts_with("player: Lemon"), "{lines:?}");
+    assert!(lines[2].starts_with("2 replays read in"), "{lines:?}");
+    assert_eq!(read.scan.replays.len(), 2);
+    assert_eq!(read.pp_failed, 0);
+    assert_eq!(read.player.unwrap().id, 7);
+}
+
+#[test]
+fn read_without_the_api_still_reports_the_player() {
+    let dir = osu_folder();
+    let mut events = Vec::new();
+    let read = read(
+        &source(dir, None),
+        None,
+        "run lost-scores login first",
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert!(read.player.is_none());
+    assert!(log_lines(&events)[1].starts_with("player: Lemon"));
+}
+
+#[test]
+fn load_catalog_reports_progress_for_each_request() {
+    let dir = osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut fake = Fake::default();
+    let mut timings = Timings::new();
+    let mut events = Vec::new();
+    let scan = read(
+        &source(dir, Some(maps.clone())),
+        None,
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap()
+    .scan;
+    let catalog = load_catalog(
+        Some(&maps),
+        &scan,
+        Some(&mut fake),
+        "",
+        NOW,
+        &mut timings,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    let last = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Progress {
+                step: Step::Catalog,
+                done,
+                total,
+            } => Some((*done, *total)),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!(last, (1, 1));
+    assert_eq!(catalog.get(SAMPLE_MD5).unwrap().status, MapStatus::Ranked);
+    assert!(maps.is_file());
+    assert!(
+        log_lines(&events)
+            .iter()
+            .any(|line| line.starts_with("asking the osu! API about 1 maps"))
+    );
+}
+
+#[test]
+fn load_catalog_without_the_api_says_how_to_get_statuses() {
+    let dir = osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut timings = Timings::new();
+    let scan = read(
+        &source(dir, Some(maps.clone())),
+        None,
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap()
+    .scan;
+    let mut events = Vec::new();
+    let catalog = load_catalog(
+        Some(&maps),
+        &scan,
+        None,
+        "run without --offline",
+        NOW,
+        &mut timings,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert!(catalog.is_empty());
+    assert_eq!(
+        log_lines(&events),
+        ["1 maps have no status yet; to fetch them from the osu! API, run without --offline"]
+    );
+}
+
+#[test]
+fn potential_merges_the_fake_online_top() {
+    let dir = osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut fake = Fake {
+        top: vec![online_score(100, 500.0), online_score(101, 400.0)],
+        ..Fake::default()
+    };
+    let mut timings = Timings::new();
+    let read = read(
+        &source(dir, Some(maps.clone())),
+        Some(&mut fake),
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap();
+    let catalog = load_catalog(
+        Some(&maps),
+        &read.scan,
+        Some(&mut fake),
+        "",
+        NOW,
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap();
+    let found = lost(&read.scan, &catalog, &mut timings);
+    assert_eq!((found.total, found.ranked, found.rows.len()), (1, 1, 1));
+    let mut events = Vec::new();
+    let player = read.player.unwrap();
+    let result = potential(
+        &mut fake,
+        &player,
+        &read.scan,
+        &catalog,
+        &mut timings,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert_eq!(result.rows.len(), 3);
+    assert_eq!(
+        result.rows.iter().map(|row| row.lost).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!(result.lost_in_top, 1);
+    assert_eq!(result.online.len(), 2);
+    assert_eq!(result.current_pp, 1000.0);
+    assert!(result.potential_pp > 0.0);
+    assert_eq!(result.global_rank, Some(1));
+    assert!(fake.calls.contains(&"top 7".to_owned()));
+}
+
+#[test]
+fn refresh_is_a_separate_step() {
+    let dir = osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut stale = MapCatalog::default();
+    stale.insert(
+        SAMPLE_MD5.to_owned(),
+        MapInfo {
+            beatmap_id: Some(5),
+            status: MapStatus::Pending,
+            ranked_at: None,
+            outdated: false,
+            checked_at: None,
+        },
+    );
+    stale.save(&maps).unwrap();
+    let mut fake = Fake::default();
+    let mut timings = Timings::new();
+    let scan = read(
+        &source(dir, Some(maps.clone())),
+        None,
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap()
+    .scan;
+    let mut catalog = load_catalog(
+        Some(&maps),
+        &scan,
+        Some(&mut fake),
+        "",
+        NOW,
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+    let mut events = Vec::new();
+    let changed = refresh_statuses(
+        Some(&maps),
+        &mut catalog,
+        &mut fake,
+        NOW,
+        &mut timings,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert_eq!(fake.calls, ["batch [5]"]);
+    assert_eq!(changed, 0);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::Progress {
+            step: Step::Refresh,
+            done: 1,
+            total: 1
+        }
+    )));
+    assert!(
+        log_lines(&events)
+            .iter()
+            .any(|line| line.starts_with("asked again about 1 maps"))
+    );
+}
