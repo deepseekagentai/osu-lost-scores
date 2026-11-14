@@ -243,6 +243,7 @@ fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {
         songs_dir: source.songs_dir.clone(),
         check_missing: source.check_missing,
         maps: maps.map(Path::to_path_buf),
+        stop_on_lookup_error: false,
     }
 }
 

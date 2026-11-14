@@ -9,14 +9,15 @@ use lost_scores_app::cache;
 use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    self, Api, Event, Lost, PotentialResult, Source, Step, find, load_catalog, lost, potential,
-    read, refresh_statuses,
+    self, Api, Event, Lost, PlayerLookup, PotentialResult, Source, Step, find, load_catalog, lost,
+    potential, read, refresh_statuses,
 };
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
 use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::MapCatalog;
 
+use crate::account::lookup_failure;
 use crate::share::rasters::{self, Fetch, HttpFetch};
 use crate::share::render::{FAILURE_PREFIX, panic_message};
 use crate::share::{ShareOptions, cover_sets};
@@ -119,11 +120,15 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         API_HINT,
         &mut timings,
         &mut events,
-    )?;
-    proceed!();
-    let player = read.player.ok_or_else(|| {
-        anyhow!("the osu! API did not accept the keys or does not know this player")
+    )
+    .map_err(|error| match error.downcast::<PlayerLookup>() {
+        Ok(lookup) => anyhow!(lookup_failure(&lookup.player, &lookup.error)),
+        Err(other) => other,
     })?;
+    proceed!();
+    let player = read
+        .player
+        .ok_or_else(|| anyhow!("the osu! API did not return the player"))?;
     let mut catalog = load_catalog(
         job.source.maps.as_deref(),
         &read.scan,

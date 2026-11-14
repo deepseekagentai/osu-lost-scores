@@ -54,7 +54,27 @@ pub struct Source {
     pub songs_dir: Option<PathBuf>,
     pub check_missing: bool,
     pub maps: Option<PathBuf>,
+    pub stop_on_lookup_error: bool,
 }
+
+#[derive(Debug)]
+pub struct PlayerLookup {
+    pub player: String,
+    pub error: ApiError,
+}
+
+impl std::fmt::Display for PlayerLookup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "could not look the player {} up on the osu! API: {}",
+            printable(&self.player),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for PlayerLookup {}
 
 pub struct Read {
     pub osu_dir: PathBuf,
@@ -144,6 +164,9 @@ pub fn read(
     let (names, found_player) = match api.as_deref_mut() {
         Some(api) => match timings.time("player lookup", || api.player(&player)) {
             Ok(found) => (found.names.clone(), Some(found)),
+            Err(error) if source.stop_on_lookup_error => {
+                return Err(PlayerLookup { player, error }.into());
+            }
             Err(error) => {
                 events(Event::Log(format!(
                     "could not look the player up on the osu! API: {}",

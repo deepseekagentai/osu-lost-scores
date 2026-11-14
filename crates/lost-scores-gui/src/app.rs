@@ -1189,6 +1189,7 @@ impl Session {
                 songs_dir: None,
                 check_missing: settings.check_missing,
                 maps: None,
+                stop_on_lookup_error: true,
             },
             scans_dir,
             include_all: settings.include_all,
@@ -2042,6 +2043,22 @@ mod tests {
         assert_eq!(state.get_previews().row_count(), 3);
         open_scan(&session, &scan_folder(&root.path().join("other"), false));
         assert_eq!(state.get_previews().row_count(), 0);
+    }
+
+    #[test]
+    fn a_failed_scan_says_why_and_lets_the_next_one_start() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        begin(&session);
+        assert!(state.get_busy());
+        session.handle(Message::Failed(
+            "Could not reach the osu! API: timeout: global. osu! may be having problems; try again in a few minutes.".into(),
+        ));
+        assert_eq!(state.get_status(), "Operation failed");
+        assert!(!state.get_busy());
+        let last = session.log.row_data(session.log.row_count() - 1).unwrap();
+        assert!(last.text.starts_with("Error: Could not reach the osu! API"));
+        assert!(session.prepare_scan().is_some());
     }
 
     #[test]

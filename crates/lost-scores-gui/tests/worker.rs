@@ -32,6 +32,7 @@ fn isolate_environment() -> TempDir {
 struct Fake {
     known: bool,
     statistics: bool,
+    failure: Option<u16>,
 }
 
 impl Fake {
@@ -39,6 +40,7 @@ impl Fake {
         Self {
             known: true,
             statistics: true,
+            failure: None,
         }
     }
 
@@ -46,6 +48,7 @@ impl Fake {
         Self {
             known: false,
             statistics: true,
+            failure: None,
         }
     }
 
@@ -53,6 +56,14 @@ impl Fake {
         Self {
             known: true,
             statistics: false,
+            failure: None,
+        }
+    }
+
+    fn failing(status: u16) -> Self {
+        Self {
+            failure: Some(status),
+            ..Self::known()
         }
     }
 }
@@ -79,6 +90,16 @@ impl OsuFiles for Fake {
 
 impl Api for Fake {
     fn player(&mut self, name: &str) -> Result<Player, ApiError> {
+        match self.failure {
+            Some(0) => return Err(ApiError::Network("timeout: global".into())),
+            Some(status) => {
+                return Err(ApiError::Status {
+                    status,
+                    url: "user".into(),
+                });
+            }
+            None => {}
+        }
         if self.known {
             Ok(Player {
                 id: 7,
@@ -158,6 +179,7 @@ fn job(root: &Path) -> Job {
             songs_dir: Some(osu.join("Songs")),
             check_missing: false,
             maps: Some(root.join("maps.json")),
+            stop_on_lookup_error: true,
         },
         scans_dir: root.join("scans"),
         include_all: true,
@@ -222,6 +244,72 @@ fn a_rejected_player_fails_the_scan_and_saves_nothing() {
     let messages = sink.messages.borrow();
     assert!(matches!(messages.last(), Some(Message::Failed(_))));
     assert!(history::list(&job.scans_dir).is_empty());
+}
+
+fn failure_text(api: &mut Fake) -> (String, Vec<String>) {
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    fs::write(
+        job.source.osu_dir.as_ref().unwrap().join("Data/r/x.osr"),
+        b"x",
+    )
+    .unwrap();
+    let sink = Recorder::open();
+    let outcome = run(&job, api, &sink);
+    assert!(matches!(outcome, Outcome::Failed));
+    let lines = logs(&sink);
+    let messages = sink.messages.borrow();
+    let Some(Message::Failed(text)) = messages.last() else {
+        panic!("the scan did not fail");
+    };
+    assert!(history::list(&job.scans_dir).is_empty());
+    (text.clone(), lines)
+}
+
+#[test]
+fn a_network_error_on_the_lookup_stops_the_scan_and_says_so() {
+    let _serial = serial();
+    let (text, lines) = failure_text(&mut Fake::failing(0));
+    assert_eq!(
+        text,
+        "Could not reach the osu! API: timeout: global. osu! may be having problems; try again in a few minutes."
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains("replays read")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().all(|line| !line.contains("keys")), "{lines:?}");
+}
+
+#[test]
+fn a_server_error_on_the_lookup_is_reported_as_unreachable() {
+    let _serial = serial();
+    let (text, _) = failure_text(&mut Fake::failing(503));
+    assert!(text.starts_with("Could not reach the osu! API: "), "{text}");
+    assert!(text.ends_with("try again in a few minutes."), "{text}");
+}
+
+#[test]
+fn a_401_on_the_lookup_blames_the_keys_and_stops_early() {
+    let _serial = serial();
+    let (text, lines) = failure_text(&mut Fake::failing(401));
+    assert_eq!(text, "User not found or API keys are invalid");
+    assert!(lines.iter().all(|line| !line.contains("replays read")));
+}
+
+#[test]
+fn a_404_on_the_lookup_names_the_player() {
+    let _serial = serial();
+    let (text, lines) = failure_text(&mut Fake::failing(404));
+    assert_eq!(text, "The osu! API does not know the player Lemon");
+    assert!(lines.iter().all(|line| !line.contains("replays read")));
+}
+
+#[test]
+fn a_429_on_the_lookup_says_the_api_is_busy() {
+    let _serial = serial();
+    let (text, _) = failure_text(&mut Fake::failing(429));
+    assert_eq!(text, "The osu! API is busy, try again in a minute");
 }
 
 #[test]

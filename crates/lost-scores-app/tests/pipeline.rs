@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use common::{Isolated, Replay, isolate_environment, write};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    Api, Event, Source, Step, find, load_catalog, lost, potential, read, refresh_statuses,
+    Api, Event, PlayerLookup, Source, Step, find, load_catalog, lost, potential, read,
+    refresh_statuses,
 };
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
@@ -27,6 +28,7 @@ struct Fake {
     top: Vec<Score>,
     fail_batch: bool,
     bare_player: bool,
+    lookup_failure: Option<u16>,
 }
 
 impl MapSource for Fake {
@@ -67,6 +69,16 @@ impl OsuFiles for Fake {
 impl Api for Fake {
     fn player(&mut self, name: &str) -> Result<Player, ApiError> {
         self.calls.push(format!("player {name}"));
+        match self.lookup_failure {
+            Some(0) => return Err(ApiError::Network("timeout: global".into())),
+            Some(status) => {
+                return Err(ApiError::Status {
+                    status,
+                    url: "user".into(),
+                });
+            }
+            None => {}
+        }
         Ok(Player {
             id: 7,
             names: vec![name.to_owned()],
@@ -162,6 +174,7 @@ fn source(dir: &Path, maps: Option<PathBuf>) -> Source {
         songs_dir: None,
         check_missing: false,
         maps,
+        stop_on_lookup_error: false,
     }
 }
 
@@ -200,6 +213,62 @@ fn read_reports_the_lines_the_cli_printed() {
     assert_eq!(read.scan.replays.len(), 2);
     assert_eq!(read.pp_failed, 0);
     assert_eq!(read.player.unwrap().id, 7);
+}
+
+fn failing(status: u16) -> Fake {
+    Fake {
+        lookup_failure: Some(status),
+        ..Fake::default()
+    }
+}
+
+#[test]
+fn a_failed_lookup_still_reads_the_replays_with_the_config_name() {
+    let osu = osu_folder();
+    let mut events = Vec::new();
+    let mut api = failing(0);
+    let read = read(
+        &source(osu.path(), None),
+        Some(&mut api),
+        "",
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert!(read.player.is_none());
+    assert_eq!(read.scan.replays.len(), 2);
+    let lines = log_lines(&events);
+    assert!(lines[0].starts_with("could not look the player up on the osu! API"));
+    assert!(lines.iter().any(|line| line.starts_with("player: Lemon")));
+    assert!(lines.iter().any(|line| line.contains("replays read")));
+}
+
+#[test]
+fn a_failed_lookup_stops_before_the_replays_when_asked_to() {
+    for status in [0, 401, 404, 429, 503] {
+        let osu = osu_folder();
+        let mut events = Vec::new();
+        let mut api = failing(status);
+        let mut asked = source(osu.path(), None);
+        asked.stop_on_lookup_error = true;
+        let error = read(
+            &asked,
+            Some(&mut api),
+            "",
+            &mut Timings::new(),
+            &mut collect(&mut events),
+        )
+        .err()
+        .unwrap();
+        let lookup = error.downcast_ref::<PlayerLookup>().unwrap();
+        assert_eq!(lookup.player, "Lemon");
+        match (status, &lookup.error) {
+            (0, ApiError::Network(_)) => {}
+            (code, ApiError::Status { status, .. }) => assert_eq!(*status, code),
+            other => panic!("{other:?}"),
+        }
+        assert!(events.is_empty(), "{status}: {events:?}");
+    }
 }
 
 #[test]

@@ -71,6 +71,24 @@ pub fn keys_error(error: &ApiError) -> KeysError {
     }
 }
 
+pub fn lookup_failure(player: &str, error: &ApiError) -> String {
+    match error {
+        ApiError::Status { status: 404, .. } => {
+            format!("The osu! API does not know the player {player}")
+        }
+        ApiError::Network(reason) => unreachable_text(reason),
+        ApiError::Status { status, .. } if *status >= 500 => unreachable_text(&error.to_string()),
+        ApiError::Format { .. } => unreachable_text(&error.to_string()),
+        other => keys_error(other).to_string(),
+    }
+}
+
+fn unreachable_text(reason: &str) -> String {
+    format!(
+        "Could not reach the osu! API: {reason}. osu! may be having problems; try again in a few minutes."
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Account {
     Name(String),
