@@ -157,6 +157,10 @@ pub trait MapSource {
 
     fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, Self::Error>;
     fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, Self::Error>;
+
+    fn batch_size(&self) -> usize {
+        BATCH_SIZE
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -214,13 +218,14 @@ pub fn fill<S: MapSource + ?Sized>(
     let mut ids: Vec<u32> = wanted.iter().filter_map(|item| item.beatmap_id).collect();
     ids.sort_unstable();
     ids.dedup();
-    let batches = ids.len().div_ceil(BATCH_SIZE);
+    let size = source.batch_size();
+    let batches = ids.len().div_ceil(size);
     let without_id = wanted
         .iter()
         .filter(|item| item.beatmap_id.is_none())
         .count();
     let mut fetched = Vec::new();
-    for (done, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
+    for (done, chunk) in ids.chunks(size).enumerate() {
         fetched.extend(source.batch(chunk)?);
         progress(done + 1, batches + without_id);
     }
@@ -313,9 +318,10 @@ pub fn refresh<S: MapSource + ?Sized>(
     now: i64,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<usize, S::Error> {
-    let batches = ids.len().div_ceil(BATCH_SIZE);
+    let size = source.batch_size();
+    let batches = ids.len().div_ceil(size);
     let mut fetched = Vec::new();
-    for (done, chunk) in ids.chunks(BATCH_SIZE).enumerate() {
+    for (done, chunk) in ids.chunks(size).enumerate() {
         fetched.extend(source.batch(chunk)?);
         progress(done + 1, batches);
     }
@@ -350,8 +356,8 @@ mod tests {
     use osu_formats::{BeatmapMetadata, Mods, ReplayHeader};
 
     use super::{
-        CatalogError, FetchedMap, FillReport, MapCatalog, MapInfo, MapSource, MapStatus,
-        RECHECK_AFTER, Wanted, fill, refresh, stale, wanted,
+        BATCH_SIZE, CatalogError, FetchedMap, FillReport, MapCatalog, MapInfo, MapSource,
+        MapStatus, RECHECK_AFTER, Wanted, fill, refresh, stale, wanted,
     };
     use crate::{LocalBeatmap, ScannedReplay};
 
@@ -466,10 +472,15 @@ mod tests {
         lookups: HashMap<String, FetchedMap>,
         batch_calls: Vec<Vec<u32>>,
         lookup_calls: Vec<String>,
+        size: Option<usize>,
     }
 
     impl MapSource for FakeSource {
         type Error = ();
+
+        fn batch_size(&self) -> usize {
+            self.size.unwrap_or(BATCH_SIZE)
+        }
 
         fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ()> {
             self.batch_calls.push(ids.to_vec());
@@ -744,6 +755,33 @@ mod tests {
         fill(&mut catalog, &wanted_ids(51), &mut source, NOW, |_, _| {}).unwrap();
         let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
         assert_eq!(sizes, [50, 1]);
+    }
+
+    #[test]
+    fn fill_and_refresh_ask_as_many_maps_as_the_source_takes() {
+        let mut source = FakeSource {
+            size: Some(3),
+            ..FakeSource::default()
+        };
+        fill(
+            &mut MapCatalog::default(),
+            &wanted_ids(7),
+            &mut source,
+            NOW,
+            |_, _| {},
+        )
+        .unwrap();
+        let ids: Vec<u32> = (1..=7).collect();
+        refresh(
+            &mut MapCatalog::default(),
+            &ids,
+            &mut source,
+            NOW,
+            |_, _| {},
+        )
+        .unwrap();
+        let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [3, 3, 1, 3, 3, 1]);
     }
 
     #[test]

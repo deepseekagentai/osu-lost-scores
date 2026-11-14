@@ -29,6 +29,7 @@ struct Fake {
     fail_batch: bool,
     bare_player: bool,
     lookup_failure: Option<u16>,
+    shared: bool,
 }
 
 impl MapSource for Fake {
@@ -67,6 +68,10 @@ impl OsuFiles for Fake {
 }
 
 impl Api for Fake {
+    fn shared(&self) -> bool {
+        self.shared
+    }
+
     fn player(&mut self, name: &str) -> Result<Player, ApiError> {
         self.calls.push(format!("player {name}"));
         match self.lookup_failure {
@@ -335,6 +340,43 @@ fn load_catalog_reports_progress_for_each_request() {
         log_lines(&events)
             .iter()
             .any(|line| line.starts_with("asking the osu! API about 1 maps"))
+    );
+}
+
+#[test]
+fn load_catalog_through_the_server_names_it() {
+    let osu = osu_folder();
+    let work = tempfile::tempdir().unwrap();
+    let maps = work.path().join("maps.json");
+    let mut fake = Fake {
+        shared: true,
+        ..Fake::default()
+    };
+    let mut timings = Timings::new();
+    let mut events = Vec::new();
+    let scan = read(
+        &source(osu.path(), Some(maps.clone())),
+        None,
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap()
+    .scan;
+    load_catalog(
+        Some(&maps),
+        &scan,
+        Some(&mut fake),
+        "",
+        NOW,
+        &mut timings,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert!(
+        log_lines(&events)
+            .iter()
+            .any(|line| line.starts_with("asking the Lost Scores server about 1 maps"))
     );
 }
 

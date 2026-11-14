@@ -46,6 +46,10 @@ pub enum Event {
 pub trait Api: MapSource<Error = ApiError> + OsuFiles<Error = ApiError> {
     fn player(&mut self, name: &str) -> Result<Player, ApiError>;
     fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError>;
+
+    fn shared(&self) -> bool {
+        false
+    }
 }
 
 pub struct Source {
@@ -327,11 +331,18 @@ fn update_catalog(
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
-    let requests = with_id.div_ceil(maps::BATCH_SIZE) + (wanted.len() - with_id);
-    events(Event::Log(format!(
-        "asking the osu! API about {} maps, about {requests} requests at one per second",
-        wanted.len()
-    )));
+    let requests = with_id.div_ceil(api.batch_size()) + (wanted.len() - with_id);
+    events(Event::Log(if api.shared() {
+        format!(
+            "asking the Lost Scores server about {} maps, about {requests} requests; maps it has not seen yet wait in its shared queue",
+            wanted.len()
+        )
+    } else {
+        format!(
+            "asking the osu! API about {} maps, about {requests} requests at one per second",
+            wanted.len()
+        )
+    }));
     let result = maps::fill(catalog, wanted, api, now, |done, total| {
         events(Event::Progress {
             step: Step::Catalog,

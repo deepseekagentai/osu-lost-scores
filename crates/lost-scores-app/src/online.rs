@@ -9,6 +9,7 @@ pub struct Online {
     client: Client<Http>,
 }
 
+#[derive(Debug)]
 pub struct Player {
     pub id: u32,
     pub names: Vec<String>,
@@ -71,7 +72,7 @@ impl OsuFiles for Online {
     }
 }
 
-fn player_from(name: &str, user: User) -> Player {
+pub(crate) fn player_from(name: &str, user: User) -> Player {
     let statistics = user.statistics;
     Player {
         id: user.id,
@@ -95,7 +96,7 @@ fn all_names(player: &str, current: String, previous: Vec<String>) -> Vec<String
     names
 }
 
-fn fetched(beatmap: Beatmap) -> FetchedMap {
+pub(crate) fn fetched(beatmap: Beatmap) -> FetchedMap {
     let ranked_at = beatmap
         .beatmapset
         .as_ref()

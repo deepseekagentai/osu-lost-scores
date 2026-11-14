@@ -7,5 +7,6 @@ pub mod online;
 pub mod pipeline;
 pub mod rows;
 pub mod setup;
+pub mod shared;
 pub mod timings;
 pub mod updates;

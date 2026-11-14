@@ -1,14 +1,15 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const API_URL: &str = "https://osu.ppy.sh/api/v2";
 const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
+pub const SERVER_URL: &str = "https://api.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Credentials {
@@ -26,6 +27,7 @@ pub struct Response {
 pub trait Transport {
     fn post_form(&mut self, url: &str, form: &[(&str, &str)]) -> Result<Response, ApiError>;
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
+    fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +56,10 @@ pub enum ApiError {
         url: String,
         source: serde_json::Error,
     },
+    #[error("the Lost Scores server is busy; try again in {retry_after} s")]
+    Busy { retry_after: u64 },
+    #[error("the Lost Scores server is busy today; add your own API keys to scan now")]
+    BusyToday,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -191,16 +197,7 @@ impl<T: Transport> Client<T> {
     }
 
     pub fn top_plays(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
-        let mut plays = Vec::new();
-        for offset in [0, BEST_PAGE] {
-            let page = self.best_scores(user_id, offset)?;
-            let short = page.len() < BEST_PAGE as usize;
-            plays.extend(page);
-            if short {
-                break;
-            }
-        }
-        Ok(plays)
+        top_pages(|offset| self.best_scores(user_id, offset))
     }
 
     fn renew_token(&mut self) -> Result<(), ApiError> {
@@ -281,6 +278,145 @@ impl<T: Transport> Client<T> {
     }
 }
 
+fn top_pages(
+    mut page: impl FnMut(u32) -> Result<Vec<Score>, ApiError>,
+) -> Result<Vec<Score>, ApiError> {
+    let mut plays = Vec::new();
+    for offset in [0, BEST_PAGE] {
+        let scores = page(offset)?;
+        let short = scores.len() < BEST_PAGE as usize;
+        plays.extend(scores);
+        if short {
+            break;
+        }
+    }
+    Ok(plays)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct MapsAnswer {
+    pub beatmaps: Vec<Beatmap>,
+    #[serde(default)]
+    pub missing_ids: Vec<u32>,
+    #[serde(default)]
+    pub missing_md5s: Vec<String>,
+    #[serde(default)]
+    pub pending_ids: Vec<u32>,
+    #[serde(default)]
+    pub pending_md5s: Vec<String>,
+    #[serde(default)]
+    pub retry_after: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct MapsQuestion<'a> {
+    ids: &'a [u32],
+    md5s: &'a [String],
+}
+
+#[derive(Deserialize)]
+struct ServerError {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    retry_after: Option<u64>,
+}
+
+pub struct Server<T> {
+    transport: T,
+    base: String,
+}
+
+impl<T: Transport> Server<T> {
+    pub fn new(transport: T, base: &str) -> Self {
+        Self {
+            transport,
+            base: base.trim_end_matches('/').to_owned(),
+        }
+    }
+
+    pub fn maps(&mut self, ids: &[u32], md5s: &[String]) -> Result<MapsAnswer, ApiError> {
+        let url = format!("{}/v1/maps", self.base);
+        let body =
+            serde_json::to_vec(&MapsQuestion { ids, md5s }).map_err(|source| ApiError::Format {
+                url: url.clone(),
+                source,
+            })?;
+        let response = self.transport.post_json(&url, &body)?;
+        match answer(&url, response)? {
+            Some(body) => parse(&url, &body),
+            None => Err(ApiError::Status { status: 404, url }),
+        }
+    }
+
+    pub fn user_by(&mut self, key: UserKey, value: &str) -> Result<User, ApiError> {
+        let url = format!(
+            "{}/v1/osu/users/{}/osu?key={}",
+            self.base,
+            encode(value),
+            key.as_str()
+        );
+        self.get_json(&url)?
+            .ok_or(ApiError::Status { status: 404, url })
+    }
+
+    pub fn best_scores(&mut self, user_id: u32, offset: u32) -> Result<Vec<Score>, ApiError> {
+        let url = format!(
+            "{}/v1/osu/users/{user_id}/scores/best?mode=osu&limit={BEST_PAGE}&offset={offset}",
+            self.base
+        );
+        Ok(self.get_json(&url)?.unwrap_or_default())
+    }
+
+    pub fn top_plays(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
+        top_pages(|offset| self.best_scores(user_id, offset))
+    }
+
+    pub fn osu_file(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
+        let url = format!("{FILE_URL}/{beatmap_id}");
+        let response = self.transport.get(&url, "")?;
+        match response.status {
+            200 => Ok(response.body),
+            404 => Ok(Vec::new()),
+            status => Err(ApiError::Status { status, url }),
+        }
+    }
+
+    fn get_json<D: DeserializeOwned>(&mut self, url: &str) -> Result<Option<D>, ApiError> {
+        let response = self.transport.get(url, "")?;
+        match answer(url, response)? {
+            Some(body) => parse(url, &body).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+fn answer(url: &str, response: Response) -> Result<Option<Vec<u8>>, ApiError> {
+    let told = |body: &[u8]| serde_json::from_slice::<ServerError>(body).ok();
+    match response.status {
+        200 => Ok(Some(response.body)),
+        404 => Ok(None),
+        429 => Err(ApiError::Busy {
+            retry_after: response
+                .retry_after
+                .filter(|seconds| *seconds > 0)
+                .or_else(|| told(&response.body).and_then(|error| error.retry_after))
+                .unwrap_or(60),
+        }),
+        503 if told(&response.body)
+            .and_then(|error| error.error)
+            .as_deref()
+            == Some("busy_today") =>
+        {
+            Err(ApiError::BusyToday)
+        }
+        status => Err(ApiError::Status {
+            status,
+            url: url.into(),
+        }),
+    }
+}
+
 #[derive(Deserialize)]
 struct Token {
     access_token: String,
@@ -339,12 +475,22 @@ impl Transport for Http {
     }
 
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
+        let request = self.agent.get(url).header("Accept", "application/json");
+        let request = if token.is_empty() {
+            request
+        } else {
+            request.header("Authorization", format!("Bearer {token}"))
+        };
+        read(request.call().map_err(network)?)
+    }
+
+    fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError> {
         let response = self
             .agent
-            .get(url)
+            .post(url)
             .header("Accept", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .call()
+            .header("Content-Type", "application/json")
+            .send(body)
             .map_err(network)?;
         read(response)
     }
@@ -408,7 +554,7 @@ mod tests {
 
     use super::{
         ApiError, Client, Credentials, Response, Score, ScoreBeatmap, ScoreBeatmapset,
-        ScoreStatistics, Transport, User, UserKey, UserStatistics, unix_time,
+        ScoreStatistics, Server, Transport, User, UserKey, UserStatistics, unix_time,
     };
 
     #[derive(Default)]
@@ -440,6 +586,93 @@ mod tests {
             self.requests.push(format!("GET {url} bearer={token}"));
             Ok(self.answers.pop_front().expect("no scripted answer"))
         }
+
+        fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError> {
+            self.requests
+                .push(format!("POST {url} {}", String::from_utf8_lossy(body)));
+            Ok(self.answers.pop_front().expect("no scripted answer"))
+        }
+    }
+
+    fn server(fake: Fake) -> Server<Fake> {
+        Server::new(fake, "https://api.test/")
+    }
+
+    #[test]
+    fn the_server_answers_known_missing_and_pending_maps() {
+        let fake = Fake::default().answer(
+            200,
+            &format!(
+                r#"{{"beatmaps":[{}],"missing_ids":[2],"missing_md5s":[],"pending_ids":[3],"pending_md5s":["abc"],"retry_after":5}}"#,
+                beatmap_json(1)
+            ),
+        );
+        let mut api = server(fake);
+        let answer = api.maps(&[1, 2, 3], &["abc".to_owned()]).unwrap();
+        assert_eq!(
+            answer.beatmaps.iter().map(|map| map.id).collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(answer.missing_ids, [2]);
+        assert_eq!(answer.pending_ids, [3]);
+        assert_eq!(answer.pending_md5s, ["abc"]);
+        assert_eq!(answer.retry_after, Some(5));
+        assert_eq!(
+            api.transport.requests[0],
+            r#"POST https://api.test/v1/maps {"ids":[1,2,3],"md5s":["abc"]}"#
+        );
+    }
+
+    #[test]
+    fn a_busy_server_says_how_long_to_wait() {
+        let mut fake = Fake::default();
+        fake.answers.push_back(Response {
+            status: 429,
+            retry_after: Some(7),
+            body: br#"{"retry_after":7}"#.to_vec(),
+        });
+        let mut api = server(fake.answer(503, r#"{"error":"busy_today"}"#));
+        assert!(matches!(
+            api.user_by(UserKey::Id, "7"),
+            Err(ApiError::Busy { retry_after: 7 })
+        ));
+        let today = api.maps(&[1], &[]).unwrap_err();
+        assert!(matches!(today, ApiError::BusyToday));
+        assert_eq!(
+            today.to_string(),
+            "the Lost Scores server is busy today; add your own API keys to scan now"
+        );
+    }
+
+    #[test]
+    fn player_data_comes_from_the_server_without_a_token() {
+        let fake = Fake::default()
+            .answer(
+                200,
+                r#"{"id":7,"username":"Some Name","previous_usernames":[],"statistics":null}"#,
+            )
+            .answer(200, "[]");
+        let mut api = server(fake);
+        assert_eq!(api.user_by(UserKey::Username, "Some Name").unwrap().id, 7);
+        assert!(api.best_scores(7, 100).unwrap().is_empty());
+        assert_eq!(
+            api.transport.requests,
+            [
+                "GET https://api.test/v1/osu/users/Some%20Name/osu?key=username bearer=",
+                "GET https://api.test/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=100 bearer=",
+            ]
+        );
+    }
+
+    #[test]
+    fn osu_files_come_from_osu_without_a_token() {
+        let fake = Fake::default().answer(200, "osu file format v14");
+        let mut api = server(fake);
+        assert_eq!(api.osu_file(5).unwrap(), b"osu file format v14");
+        assert_eq!(
+            api.transport.requests[0],
+            "GET https://osu.ppy.sh/osu/5 bearer="
+        );
     }
 
     const TOKEN: &str = r#"{"token_type":"Bearer","expires_in":86400,"access_token":"t1"}"#;
