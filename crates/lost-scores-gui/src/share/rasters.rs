@@ -1,22 +1,22 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use image::RgbaImage;
 use image::imageops::{self, FilterType};
 use lost_scores_core::files::write_atomic;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use ureq::Error as UreqError;
 
-use crate::avatar::round_corners;
-
 pub const STRIP_WIDTH: u32 = 612;
 pub const STRIP_HEIGHT: u32 = 116;
 const STRIP_RADIUS: f32 = 16.0;
 const STRIP_OPACITY: f32 = 0.35;
-const MAX_BYTES: u64 = 5_000_000;
+pub(crate) const MAX_BYTES: u64 = 5_000_000;
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn cover_url(set_id: u32) -> String {
     format!("https://assets.ppy.sh/beatmaps/{set_id}/covers/cover.jpg")
@@ -65,10 +65,25 @@ pub fn cover_strip(jpeg: &[u8]) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
     Ok(into_buffer(&strip))
 }
 
+pub(crate) fn round_corners(image: &mut RgbaImage, radius: f32) {
+    let size = image.width() as f32;
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let dx = (x as f32 + 0.5 - radius)
+            .min(0.0)
+            .min(size - radius - (x as f32 + 0.5));
+        let dy = (y as f32 + 0.5 - radius)
+            .min(0.0)
+            .min(size - radius - (y as f32 + 0.5));
+        let outside = (dx * dx + dy * dy).sqrt() - radius;
+        let coverage = (0.5 - outside).clamp(0.0, 1.0);
+        pixel.0[3] = (f32::from(pixel.0[3]) * coverage).round() as u8;
+    }
+}
+
 pub fn rounded_square(
     image: &[u8],
     size: u32,
-    radius: u32,
+    radius: f32,
 ) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
     let decoded = image::load_from_memory(image)
         .context("cannot decode the avatar")?
@@ -76,7 +91,7 @@ pub fn rounded_square(
     let side = decoded.width().min(decoded.height());
     let square = crop_centre(&decoded, side, side);
     let mut scaled = imageops::resize(&square, size, size, FilterType::Lanczos3);
-    round_corners(&mut scaled, radius as f32);
+    round_corners(&mut scaled, radius);
     Ok(into_buffer(&scaled))
 }
 
@@ -91,7 +106,7 @@ pub struct HttpFetch {
 impl HttpFetch {
     pub fn new() -> Self {
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15)))
+            .timeout_global(Some(TIMEOUT))
             .user_agent(lost_scores_app::online::USER_AGENT)
             .build()
             .into();
@@ -121,37 +136,63 @@ impl Fetch for HttpFetch {
     }
 }
 
+pub struct Covers {
+    pub found: HashMap<u32, Vec<u8>>,
+    pub failed: usize,
+}
+
 pub fn covers(
     set_ids: &[u32],
     cache_dir: &Path,
     fetch: &mut dyn Fetch,
     progress: &mut dyn FnMut(usize, usize),
-) -> HashMap<u32, Vec<u8>> {
-    let mut found = HashMap::new();
+) -> Covers {
+    let mut covers = Covers {
+        found: HashMap::new(),
+        failed: 0,
+    };
     let total = set_ids.len();
     for (index, &set_id) in set_ids.iter().enumerate() {
-        if !found.contains_key(&set_id)
-            && let Some(bytes) = cover_bytes(set_id, cache_dir, fetch)
-        {
-            found.insert(set_id, bytes);
+        if let Entry::Vacant(slot) = covers.found.entry(set_id) {
+            let file = cache_dir.join(format!("{set_id}.jpg"));
+            match cached(Some(&file), || fetch.get(&cover_url(set_id))) {
+                Ok(Some(bytes)) => {
+                    slot.insert(bytes);
+                }
+                Ok(None) => {}
+                Err(_) => covers.failed += 1,
+            }
         }
         progress(index + 1, total);
     }
-    found
+    covers
 }
 
-fn cover_bytes(set_id: u32, cache_dir: &Path, fetch: &mut dyn Fetch) -> Option<Vec<u8>> {
-    let file = cache_dir.join(format!("{set_id}.jpg"));
-    if let Ok(bytes) = fs::read(&file)
-        && image::load_from_memory(&bytes).is_ok()
+pub(crate) fn cached(
+    file: Option<&Path>,
+    download: impl FnOnce() -> Result<Option<Vec<u8>>>,
+) -> Result<Option<Vec<u8>>> {
+    if let Some(file) = file
+        && let Ok(bytes) = fs::read(file)
     {
-        return Some(bytes);
+        if image::load_from_memory(&bytes).is_ok() {
+            return Ok(Some(bytes));
+        }
+        let _ = fs::remove_file(file);
     }
-    let bytes = fetch.get(&cover_url(set_id)).ok()??;
-    image::load_from_memory(&bytes).ok()?;
-    let _ = fs::create_dir_all(cache_dir);
-    let _ = write_atomic(&file, &bytes);
-    Some(bytes)
+    let Some(bytes) = download()? else {
+        return Ok(None);
+    };
+    if image::load_from_memory(&bytes).is_err() {
+        bail!("the download is not an image");
+    }
+    if let Some(file) = file {
+        if let Some(parent) = file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = write_atomic(file, &bytes);
+    }
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]
@@ -254,7 +295,7 @@ mod tests {
 
     #[test]
     fn avatar_corners_are_transparent() {
-        let avatar = rounded_square(&png(300, 300), 128, 28).unwrap();
+        let avatar = rounded_square(&png(300, 300), 128, 28.0).unwrap();
         assert_eq!((avatar.width(), avatar.height()), (128, 128));
         let pixels = avatar.as_slice();
         for (x, y) in [(0, 0), (127, 0), (0, 127), (127, 127)] {
@@ -266,7 +307,7 @@ mod tests {
 
     #[test]
     fn a_non_square_avatar_is_cropped_to_the_size() {
-        let avatar = rounded_square(&png(300, 200), 208, 44).unwrap();
+        let avatar = rounded_square(&png(300, 200), 208, 44.0).unwrap();
         assert_eq!((avatar.width(), avatar.height()), (208, 208));
     }
 
@@ -280,25 +321,27 @@ mod tests {
             seen.push((done, total))
         });
         assert_eq!(fetch.calls, vec![cover_url(8)]);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[&7], jpeg(20, 10));
+        assert_eq!(found.found.len(), 2);
+        assert_eq!(found.found[&7], jpeg(20, 10));
         assert!(dir.path().join("8.jpg").exists());
         assert_eq!(seen.last(), Some(&(2, 2)));
 
         let mut again = Counting::new(Vec::new());
         let found = covers(&[7, 8], dir.path(), &mut again, &mut |_, _| {});
         assert!(again.calls.is_empty());
-        assert_eq!(found.len(), 2);
+        assert_eq!(found.found.len(), 2);
+        assert_eq!(found.failed, 0);
     }
 
     #[test]
-    fn a_missing_cover_is_skipped() {
+    fn a_missing_cover_is_skipped_and_a_failed_one_is_counted() {
         let dir = tempfile::tempdir().unwrap();
         let mut fetch = Counting::new(jpeg(30, 15));
         fetch.missing.push(cover_url(1));
         fetch.failing.push(cover_url(2));
         let found = covers(&[1, 2, 3], dir.path(), &mut fetch, &mut |_, _| {});
-        assert_eq!(found.keys().copied().collect::<Vec<_>>(), vec![3]);
+        assert_eq!(found.found.keys().copied().collect::<Vec<_>>(), vec![3]);
+        assert_eq!(found.failed, 1);
         assert!(!dir.path().join("1.jpg").exists());
         assert!(!dir.path().join("2.jpg").exists());
     }

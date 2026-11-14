@@ -19,6 +19,7 @@ use slint::{
     SharedString, VecModel,
 };
 
+use crate::avatar;
 use crate::share::art::Art;
 use crate::share::model::{
     ShareOptions, ShareRow, badge_lost_line, badge_when_line, lost_rows, mods_width,
@@ -30,8 +31,8 @@ use crate::view::{color, status_chip};
 use crate::{ShareArt, ShareBadge, ShareItem, ShareLost, ShareMod, SharePotential};
 
 pub const SCALE: f32 = 2.0;
-pub const HEADER_AVATAR: (u32, u32) = (128, 28);
-pub const BADGE_AVATAR: (u32, u32) = (208, 44);
+pub const HEADER_AVATAR: (u32, f32) = (128, 28.0);
+pub const BADGE_AVATAR: (u32, f32) = (208, 44.0);
 pub const LOST_FILE: &str = "lost_scores.png";
 pub const POTENTIAL_FILE: &str = "potential_top.png";
 pub const BADGE_FILE: &str = "summary_badge.png";
@@ -43,6 +44,30 @@ pub struct Prepared {
     pub strips: HashMap<u32, Pixels>,
     pub header_avatar: Option<Pixels>,
     pub badge_avatar: Option<Pixels>,
+    pub covers_total: usize,
+    pub covers_failed: usize,
+    pub avatar_error: Option<String>,
+}
+
+impl Prepared {
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.covers_failed > 0 {
+            warnings.push(format!(
+                "{} of {} covers could not be downloaded",
+                self.covers_failed, self.covers_total
+            ));
+        }
+        if let Some(error) = &self.avatar_error {
+            warnings.push(format!("The avatar could not be downloaded: {error}"));
+        }
+        warnings
+    }
+}
+
+pub struct Output {
+    pub paths: Vec<PathBuf>,
+    pub warnings: Vec<String>,
 }
 
 pub struct Rendered {
@@ -267,24 +292,47 @@ pub fn prepare(
         .collect();
     set_ids.sort_unstable();
     set_ids.dedup();
-    let strips = caches
-        .covers
-        .as_deref()
-        .map(|dir| rasters::covers(&set_ids, dir, fetch, &mut |_, _| {}))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(set, bytes)| Some((set, rasters::cover_strip(&bytes).ok()?)))
-        .collect();
-    let bytes = crate::avatar::fetch(scan.player_id, caches.avatars.as_deref()).ok();
-    let square = |(size, radius): (u32, u32)| {
-        bytes
-            .as_deref()
-            .and_then(|bytes| rasters::rounded_square(bytes, size, radius).ok())
+    let mut covers_failed = 0;
+    let mut strips = HashMap::new();
+    if let Some(dir) = caches.covers.as_deref() {
+        let covers = rasters::covers(&set_ids, dir, fetch, &mut |_, _| {});
+        covers_failed = covers.failed;
+        for (set, bytes) in covers.found {
+            match rasters::cover_strip(&bytes) {
+                Ok(strip) => {
+                    strips.insert(set, strip);
+                }
+                Err(_) => covers_failed += 1,
+            }
+        }
+    }
+    let mut avatar_error = None;
+    let bytes = match avatar::fetch_via(scan.player_id, caches.avatars.as_deref(), fetch) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            avatar_error = Some(format!("{error:#}"));
+            None
+        }
     };
+    let mut square = |(size, radius): (u32, f32)| {
+        let bytes = bytes.as_deref()?;
+        match rasters::rounded_square(bytes, size, radius) {
+            Ok(square) => Some(square),
+            Err(error) => {
+                avatar_error.get_or_insert(format!("{error:#}"));
+                None
+            }
+        }
+    };
+    let header_avatar = square(HEADER_AVATAR);
+    let badge_avatar = square(BADGE_AVATAR);
     Prepared {
         strips,
-        header_avatar: square(HEADER_AVATAR),
-        badge_avatar: square(BADGE_AVATAR),
+        header_avatar,
+        badge_avatar,
+        covers_total: set_ids.len(),
+        covers_failed,
+        avatar_error,
     }
 }
 
@@ -301,7 +349,7 @@ pub fn render_with(
     options: &ShareOptions,
     caches: &Caches,
     fetch: &mut dyn Fetch,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Output> {
     let scan = history::load(folder)?;
     let prepared = prepare(&scan, options, caches, fetch);
     let images = render_images(&scan, options, &prepared, &TimeZone::system())?;
@@ -312,14 +360,17 @@ pub fn render_with(
             .with_context(|| format!("cannot write {}", path.display()))?;
         written.push(path);
     }
-    Ok(written)
+    Ok(Output {
+        paths: written,
+        warnings: prepared.warnings(),
+    })
 }
 
-pub fn render_all(folder: &Path, options: &ShareOptions) -> Result<Vec<PathBuf>> {
+pub fn render_all(folder: &Path, options: &ShareOptions) -> Result<Output> {
     render_with(folder, options, &Caches::standard(), &mut HttpFetch::new())
 }
 
-pub fn render_folder(folder: &Path) -> Result<Vec<PathBuf>> {
+pub fn render_folder(folder: &Path) -> Result<Output> {
     let scan = history::load(folder)?;
     let settings = setup::config_file()
         .map(|path| setup::load_settings(&path))
@@ -331,4 +382,27 @@ pub fn render_folder(folder: &Path) -> Result<Vec<PathBuf>> {
     };
     use_offscreen_platform()?;
     render_all(folder, &options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Prepared;
+
+    #[test]
+    fn warnings_name_what_was_skipped() {
+        assert!(Prepared::default().warnings().is_empty());
+        let prepared = Prepared {
+            covers_total: 19,
+            covers_failed: 3,
+            avatar_error: Some("network down".into()),
+            ..Prepared::default()
+        };
+        assert_eq!(
+            prepared.warnings(),
+            [
+                "3 of 19 covers could not be downloaded",
+                "The avatar could not be downloaded: network down"
+            ]
+        );
+    }
 }

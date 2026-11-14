@@ -162,7 +162,9 @@ fn render_all_writes_three_pngs_of_the_right_size() {
         ),
     )
     .unwrap();
-    let written = render_with(&folder, &options, &caches, &mut Offline).unwrap();
+    let written = render_with(&folder, &options, &caches, &mut Offline)
+        .unwrap()
+        .paths;
     let names: Vec<_> = written
         .iter()
         .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
@@ -178,7 +180,9 @@ fn render_all_writes_three_pngs_of_the_right_size() {
         empty
     })
     .unwrap();
-    let written = render_with(&empty, &options, &caches, &mut Offline).unwrap();
+    let written = render_with(&empty, &options, &caches, &mut Offline)
+        .unwrap()
+        .paths;
     assert_eq!(written.len(), 1);
     assert_eq!(size(&written[0]), (1960, 2 * (150 + 64)));
     assert!(!empty.join(POTENTIAL_FILE).exists());

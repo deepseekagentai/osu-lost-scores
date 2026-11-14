@@ -1,73 +1,30 @@
-use std::fs;
 use std::path::Path;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
-use image::imageops::{self, FilterType};
-use lost_scores_core::files::write_atomic;
+use anyhow::{Result, anyhow};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
+use crate::share::rasters::{Fetch, HttpFetch, cached, rounded_square};
+
 const CORNER_RATIO: f32 = 16.0 / 120.0;
-const MAX_BYTES: u64 = 5_000_000;
 
 pub fn avatar_pixels(logical: f32, scale: f32) -> u32 {
     (logical * scale).round() as u32
 }
 
 pub fn render_avatar(bytes: &[u8], pixels: u32) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
-    let decoded = image::load_from_memory(bytes)
-        .context("cannot decode the avatar")?
-        .to_rgba8();
-    let side = decoded.width().min(decoded.height());
-    let square = imageops::crop_imm(
-        &decoded,
-        (decoded.width() - side) / 2,
-        (decoded.height() - side) / 2,
-        side,
-        side,
-    )
-    .to_image();
-    let mut scaled = imageops::resize(&square, pixels, pixels, FilterType::Lanczos3);
-    round_corners(&mut scaled, pixels as f32 * CORNER_RATIO);
-    Ok(SharedPixelBuffer::clone_from_slice(
-        scaled.as_raw(),
-        pixels,
-        pixels,
-    ))
-}
-
-pub(crate) fn round_corners(image: &mut image::RgbaImage, radius: f32) {
-    let size = image.width() as f32;
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let dx = (x as f32 + 0.5 - radius)
-            .min(0.0)
-            .min(size - radius - (x as f32 + 0.5));
-        let dy = (y as f32 + 0.5 - radius)
-            .min(0.0)
-            .min(size - radius - (y as f32 + 0.5));
-        let outside = (dx * dx + dy * dy).sqrt() - radius;
-        let coverage = (0.5 - outside).clamp(0.0, 1.0);
-        pixel.0[3] = (f32::from(pixel.0[3]) * coverage).round() as u8;
-    }
+    rounded_square(bytes, pixels, pixels as f32 * CORNER_RATIO)
 }
 
 pub fn fetch(id: u32, cache: Option<&Path>) -> Result<Vec<u8>> {
-    fetch_with(id, cache, download)
+    fetch_via(id, cache, &mut HttpFetch::new())
 }
 
-fn download(id: u32) -> Result<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(15)))
-        .user_agent(lost_scores_app::online::USER_AGENT)
-        .build()
-        .into();
-    Ok(agent
-        .get(format!("https://a.ppy.sh/{id}"))
-        .call()?
-        .body_mut()
-        .with_config()
-        .limit(MAX_BYTES)
-        .read_to_vec()?)
+pub fn fetch_via(id: u32, cache: Option<&Path>, fetch: &mut dyn Fetch) -> Result<Vec<u8>> {
+    fetch_with(id, cache, |id| {
+        fetch
+            .get(&format!("https://a.ppy.sh/{id}"))?
+            .ok_or_else(|| anyhow!("the avatar was not found"))
+    })
 }
 
 fn fetch_with(
@@ -76,29 +33,8 @@ fn fetch_with(
     download: impl FnOnce(u32) -> Result<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let file = cache.map(|dir| dir.join(id.to_string()));
-    if let Some(file) = &file
-        && let Ok(bytes) = fs::read(file)
-    {
-        if is_image(&bytes) {
-            return Ok(bytes);
-        }
-        let _ = fs::remove_file(file);
-    }
-    let bytes = download(id)?;
-    if !is_image(&bytes) {
-        anyhow::bail!("the avatar download is not an image");
-    }
-    if let Some(file) = &file {
-        if let Some(parent) = file.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = write_atomic(file, &bytes);
-    }
-    Ok(bytes)
-}
-
-fn is_image(bytes: &[u8]) -> bool {
-    image::load_from_memory(bytes).is_ok()
+    cached(file.as_deref(), || download(id).map(Some))?
+        .ok_or_else(|| anyhow!("the avatar was not found"))
 }
 
 #[cfg(test)]
@@ -107,7 +43,8 @@ mod tests {
 
     use image::{ImageFormat, Rgba, RgbaImage};
 
-    use super::{avatar_pixels, fetch_with, render_avatar};
+    use super::{avatar_pixels, fetch_via, fetch_with, render_avatar};
+    use crate::share::rasters::Fetch;
 
     fn png(size: u32) -> Vec<u8> {
         let image = RgbaImage::from_pixel(size, size, Rgba([200, 120, 40, 255]));
@@ -165,5 +102,29 @@ mod tests {
         let again = fetch_with(7, Some(dir.path()), |_| Ok(good.clone())).unwrap();
         assert_eq!(again, good);
         assert_eq!(std::fs::read(dir.path().join("7")).unwrap(), good);
+    }
+
+    struct Canned(Option<Vec<u8>>, Vec<String>);
+
+    impl Fetch for Canned {
+        fn get(&mut self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            self.1.push(url.to_owned());
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn the_avatar_downloads_through_the_fetch_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut found = Canned(Some(png(8)), Vec::new());
+        let bytes = fetch_via(7, Some(dir.path()), &mut found).unwrap();
+        assert_eq!(bytes, png(8));
+        assert_eq!(found.1, ["https://a.ppy.sh/7"]);
+        assert_eq!(std::fs::read(dir.path().join("7")).unwrap(), png(8));
+        let mut again = Canned(None, Vec::new());
+        assert_eq!(fetch_via(7, Some(dir.path()), &mut again).unwrap(), png(8));
+        assert!(again.1.is_empty());
+        let mut missing = Canned(None, Vec::new());
+        assert!(fetch_via(8, Some(dir.path()), &mut missing).is_err());
     }
 }

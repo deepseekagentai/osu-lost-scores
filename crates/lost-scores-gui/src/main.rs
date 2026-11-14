@@ -9,8 +9,11 @@ fn render_images(folder: Option<String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match lost_scores_gui::share::render::render_folder(Path::new(&folder)) {
-        Ok(written) => {
-            for path in written {
+        Ok(output) => {
+            for warning in output.warnings {
+                eprintln!("{warning}");
+            }
+            for path in output.paths {
                 println!("{}", path.display());
             }
             ExitCode::SUCCESS
