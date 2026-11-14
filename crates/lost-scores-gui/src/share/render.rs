@@ -456,7 +456,11 @@ impl RenderArgs {
                         setup::parse_scores_to_show(&value)
                             .map(usize::from)
                             .ok_or_else(|| {
-                                format!("--count needs a number from 1 to 200, got '{value}'")
+                                format!(
+                                    "--count needs a number from {} to {}, got '{value}'",
+                                    setup::SCORES_TO_SHOW.start(),
+                                    setup::SCORES_TO_SHOW.end()
+                                )
                             })?,
                     );
                 }
@@ -569,7 +573,8 @@ mod tests {
         assert!(parse(&[]).is_err());
         assert!(parse(&["--cached"]).is_err());
         assert!(parse(&["--count", "0", "/scans/x"]).is_err());
-        assert!(parse(&["--count", "201", "/scans/x"]).is_err());
+        assert!(parse(&["--count", "251", "/scans/x"]).is_err());
+        assert!(parse(&["--count", "250", "/scans/x"]).is_ok());
         assert!(parse(&["--count", "/scans/x"]).is_err());
         assert!(parse(&["--show-lost-in-top", "/scans/x"]).is_err());
         assert!(parse(&["--unknown", "/scans/x"]).is_err());
