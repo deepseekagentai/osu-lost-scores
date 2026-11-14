@@ -1,7 +1,10 @@
+pub mod cache;
 pub mod detect;
+pub mod history;
 pub mod keys;
 pub mod online;
 pub mod pipeline;
 pub mod rows;
 pub mod setup;
 pub mod timings;
+pub mod updates;

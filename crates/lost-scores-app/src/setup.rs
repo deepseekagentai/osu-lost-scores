@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -14,9 +15,38 @@ pub struct UserConfig {
     pub beatmap_directory: Option<String>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub const SCORES_TO_SHOW: RangeInclusive<u16> = 1..=999;
+const DEFAULT_SCORES_TO_SHOW: u16 = 10;
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub osu_dir: Option<PathBuf>,
+    pub player: Option<String>,
+    pub include_all: bool,
+    pub check_missing: bool,
+    pub show_lost_in_top_image: bool,
+    pub scores_to_show: u16,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            osu_dir: None,
+            player: None,
+            include_all: false,
+            check_missing: false,
+            show_lost_in_top_image: false,
+            scores_to_show: DEFAULT_SCORES_TO_SHOW,
+        }
+    }
+}
+
+pub fn parse_scores_to_show(text: &str) -> Option<u16> {
+    text.trim()
+        .parse()
+        .ok()
+        .filter(|count| SCORES_TO_SHOW.contains(count))
 }
 
 pub fn read_user_config(osu_dir: &Path) -> UserConfig {
@@ -113,12 +143,20 @@ pub fn credentials_file() -> Option<PathBuf> {
     app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("credentials.json"))
 }
 
+pub fn cache_root() -> Option<PathBuf> {
+    app_dir(&["XDG_CACHE_HOME", "LOCALAPPDATA"], ".cache")
+}
+
+pub fn data_root() -> Option<PathBuf> {
+    app_dir(&["XDG_DATA_HOME", "APPDATA"], ".local/share")
+}
+
 pub fn osu_cache_dir() -> Option<PathBuf> {
-    app_dir(&["XDG_CACHE_HOME", "LOCALAPPDATA"], ".cache").map(|dir| dir.join("osu"))
+    cache_root().map(|dir| dir.join("osu"))
 }
 
 pub fn maps_file() -> Option<PathBuf> {
-    app_dir(&["XDG_DATA_HOME", "APPDATA"], ".local/share").map(|dir| dir.join("maps.json"))
+    data_root().map(|dir| dir.join("maps.json"))
 }
 
 fn app_dir(vars: &[&str], home_fallback: &str) -> Option<PathBuf> {
@@ -180,7 +218,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        Settings, UserConfig, load_settings, player, read_user_config, save_settings, songs_dir,
+        Settings, UserConfig, load_settings, parse_scores_to_show, player, read_user_config,
+        save_settings, songs_dir,
     };
 
     #[test]
@@ -244,8 +283,35 @@ mod tests {
         assert_eq!(load_settings(&path), Settings::default());
         let settings = Settings {
             osu_dir: Some(dir.path().join("osu!")),
+            player: Some("Lemon".into()),
+            include_all: true,
+            scores_to_show: 25,
+            ..Settings::default()
         };
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(&path), settings);
+    }
+
+    #[test]
+    fn old_config_files_load_with_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"osu_dir":"/x"}"#).unwrap();
+        let settings = load_settings(&path);
+        assert_eq!(settings.osu_dir, Some("/x".into()));
+        assert_eq!(settings.scores_to_show, 10);
+        assert!(
+            !settings.include_all && !settings.check_missing && !settings.show_lost_in_top_image
+        );
+    }
+
+    #[test]
+    fn scores_to_show_accepts_1_to_999_only() {
+        for text in ["0", "1000", "abc", ""] {
+            assert_eq!(parse_scores_to_show(text), None, "{text:?}");
+        }
+        assert_eq!(parse_scores_to_show(" 25 "), Some(25));
+        assert_eq!(parse_scores_to_show("999"), Some(999));
+        assert_eq!(parse_scores_to_show("1"), Some(1));
     }
 }
