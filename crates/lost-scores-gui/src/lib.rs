@@ -64,6 +64,7 @@ mod tests {
         assert_eq!(started.get(), 1);
 
         window.global::<State>().set_show_results(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
         click_start_scan(&window);
         assert_eq!(started.get(), 1);
     }

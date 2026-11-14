@@ -686,3 +686,38 @@ fn render_walkthrough_snapshots() {
         draw_sized(&surface, WIDE, &dir.join(format!("{name}.png")));
     }
 }
+
+#[test]
+#[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
+fn render_walkthrough2_snapshots() {
+    let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
+    let state = window.global::<State>();
+    state.set_osu_dir("/home/player/games/osu!".into());
+    connect_sample(&state);
+    state.set_include_all(false);
+    state.set_check_missing(false);
+    state.set_show_lost(false);
+    draw(&surface, &dir.join("w14-toggle-icons-off.png"));
+    state.set_include_all(true);
+    state.set_check_missing(true);
+    state.set_show_lost(true);
+    draw(&surface, &dir.join("w15-toggle-icons-on.png"));
+
+    let scan = fake_scan(false);
+    let results = Results::new(&scan);
+    results.present(&state, &scan, Tab::Lost);
+    state.set_show_results(true);
+    draw(&surface, &dir.join("w16-results-overlay-settled.png"));
+    state.set_show_results(false);
+    draw(&surface, &dir.join("w17-controls-after-back.png"));
+}

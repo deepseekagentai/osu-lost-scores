@@ -15,6 +15,11 @@ export component MainWindow inherits Window {
     out property <string> product: "osu! Lost Scores Analyzer";
     in-out property <bool> compact: false;
     in-out property <bool> two-columns: false;
+    property <float> overlay-t: State.show-results && !root.two-columns ? 1 : 0;
+    animate overlay-t {
+        duration: 200ms;
+        easing: ease-out;
+    }
     init => {
         root.compact = root.height < 790px;
         root.two-columns = root.width >= 1480px;
@@ -209,9 +214,12 @@ export component MainWindow inherits Window {
         }
     }
 
-    if State.show-results && !root.two-columns: Rectangle {
+    if root.overlay-t > 0 && !root.two-columns: Rectangle {
+        x: 0px;
+        y: (1 - root.overlay-t) * 16px;
         width: root.width;
         height: root.height;
+        opacity: root.overlay-t;
         background: T.bg;
         TouchArea { }
         ResultsPanel {
