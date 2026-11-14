@@ -1,6 +1,9 @@
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+
+use crate::share::render::panic_message;
 
 pub trait Pasteboard {
     fn put_image(&mut self, path: &Path) -> Result<(), String>;
@@ -34,10 +37,20 @@ impl Clipboard {
                     board = open();
                 }
                 let result = match board.as_mut() {
-                    Some(board) => match &job.request {
-                        Request::Image(path) => board.put_image(path),
-                        Request::Text(text) => board.put_text(text),
-                    },
+                    Some(held) => {
+                        let attempt =
+                            panic::catch_unwind(AssertUnwindSafe(|| match &job.request {
+                                Request::Image(path) => held.put_image(path),
+                                Request::Text(text) => held.put_text(text),
+                            }));
+                        attempt.unwrap_or_else(|payload| {
+                            board = None;
+                            Err(format!(
+                                "the clipboard stopped: {}",
+                                panic_message(payload.as_ref())
+                            ))
+                        })
+                    }
                     None => Err("the clipboard is not available".to_owned()),
                 };
                 (job.done)(result);
@@ -112,6 +125,10 @@ mod tests {
             let mut log = self.0.lock().unwrap();
             log.puts
                 .push((format!("image {}", path.display()), thread::current().id()));
+            drop(log);
+            if path.ends_with("explodes.png") {
+                panic!("the image decoder blew up");
+            }
             if path.ends_with("broken.png") {
                 return Err("cannot read the image".to_owned());
             }
@@ -190,6 +207,22 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("the clipboard was never released");
+    }
+
+    #[test]
+    fn a_panic_in_a_job_is_that_jobs_error_and_the_clipboard_is_reopened() {
+        let log = Arc::new(Mutex::new(Log::default()));
+        let clipboard = board(&log, true);
+        assert_eq!(ask(&clipboard, Request::Text("first".into())), Ok(()));
+        let failed = ask(&clipboard, Request::Image("/a/explodes.png".into()));
+        assert_eq!(
+            failed,
+            Err("the clipboard stopped: the image decoder blew up".to_owned())
+        );
+        assert_eq!(ask(&clipboard, Request::Text("next".into())), Ok(()));
+        let log = log.lock().unwrap();
+        assert_eq!(log.opened, 2);
+        assert_eq!(log.puts.last().unwrap().0, "text next");
     }
 
     #[test]
