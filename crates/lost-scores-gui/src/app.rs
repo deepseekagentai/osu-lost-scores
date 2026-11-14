@@ -7,6 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
+use jiff::tz::TimeZone;
 use lost_scores_app::online::Online;
 use lost_scores_app::pipeline::Api;
 use lost_scores_app::pipeline::Source;
@@ -22,6 +23,8 @@ use crate::account::{
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::scan::{NEEDS_KEYS, Phase, ScanState};
+use crate::table::{Column, Tab, Table, when, wrap};
+use crate::view::{RowsModel, foot};
 use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
 
@@ -29,6 +32,8 @@ const START_MESSAGE: &str =
     "Could not find your osu! folder: pick it with the button next to the path";
 const AVATAR_LOGICAL: f32 = 120.0;
 const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
+const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
+const COPIED_FOR: Duration = Duration::from_secs(2);
 
 struct Session {
     window: MainWindow,
@@ -42,6 +47,16 @@ struct Session {
     refreshing: Cell<bool>,
     counts: Cell<(usize, usize)>,
     closed: Arc<AtomicBool>,
+    table: Rc<RefCell<Table>>,
+    rows: Rc<RowsModel>,
+    tab: Cell<Tab>,
+    query: RefCell<String>,
+    matches: RefCell<Vec<usize>>,
+    position: Cell<usize>,
+    entries: RefCell<Vec<history::ScanEntry>>,
+    folder: RefCell<Option<PathBuf>>,
+    clipboard: RefCell<Option<arboard::Clipboard>>,
+    copied: slint::Timer,
 }
 
 struct LoopSink {
@@ -80,7 +95,18 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
     let window = MainWindow::new()?;
     slint::set_xdg_app_id(APP_ID)?;
     prepare(&window);
+    let table = Rc::new(RefCell::new(Table::default()));
     let session = Rc::new(Session {
+        rows: Rc::new(RowsModel::new(table.clone())),
+        table,
+        tab: Cell::new(Tab::Lost),
+        query: RefCell::new(String::new()),
+        matches: RefCell::new(Vec::new()),
+        position: Cell::new(0),
+        entries: RefCell::new(Vec::new()),
+        folder: RefCell::new(None),
+        clipboard: RefCell::new(None),
+        copied: slint::Timer::default(),
         window: window.clone_strong(),
         weak: window.as_weak(),
         log: Rc::new(VecModel::default()),
@@ -150,6 +176,7 @@ impl Session {
     fn setup(self: &Rc<Self>, window: &MainWindow) {
         let state = window.global::<State>();
         state.set_log(ModelRc::from(self.log.clone()));
+        state.set_rows(ModelRc::from(self.rows.clone()));
         match setup::resolve_osu_dir(None) {
             Ok(dir) => state.set_osu_dir(show_path(&dir).into()),
             Err(_) => state.set_status(START_MESSAGE.into()),
@@ -160,6 +187,7 @@ impl Session {
         state.set_show_lost(settings.show_lost_in_top_image);
         state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
         self.bind(&state);
+        self.load_newest();
         *self.credentials.borrow_mut() = stored_credentials();
         let name = saved_player().or_else(config_player);
         if let (Some(credentials), Some(name)) = (self.credentials.borrow().clone(), name) {
@@ -214,6 +242,210 @@ impl Session {
         });
         let session = self.clone();
         state.on_start_scan(move || session.start_scan());
+        let session = self.clone();
+        state.on_set_tab(move |index| session.show_tab(Tab::from_index(index)));
+        let session = self.clone();
+        state.on_sort_by(move |index| session.sort_by(Column::from_index(index)));
+        let session = self.clone();
+        state.on_search_changed(move |text| session.search_changed(&text));
+        let session = self.clone();
+        state.on_search_step(move |step| session.search_step(step));
+        let session = self.clone();
+        state.on_select_scan(move |index| session.select_scan(index as usize));
+        let session = self.clone();
+        state.on_open_scan_folder(move || session.open_scan_folder());
+        state.on_open_beatmap(|id| {
+            if id > 0 {
+                let _ = open::that(format!("{BEATMAP_PAGE}{id}"));
+            }
+        });
+        let session = self.clone();
+        state.on_copy_row(move |index| session.copy_row(index as usize));
+        let session = self.clone();
+        state.on_see_full_results(move || {
+            session.window.global::<State>().set_show_results(true);
+        });
+        let session = self.clone();
+        state.on_back(move || {
+            session.window.global::<State>().set_show_results(false);
+        });
+    }
+
+    fn load_newest(self: &Rc<Self>) {
+        let Some(dir) = history::scans_dir() else {
+            return;
+        };
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let entries = history::list(&dir);
+            let loaded = entries
+                .first()
+                .and_then(|entry| history::load(&entry.folder).ok());
+            on_ui(&weak, move |app| {
+                if let Some(scan) = loaded {
+                    *app.entries.borrow_mut() = entries;
+                    app.show_scan(0, &scan);
+                }
+            });
+        });
+    }
+
+    fn select_scan(self: &Rc<Self>, index: usize) {
+        let state = self.window.global::<State>();
+        state.set_scans_open(false);
+        let Some(entry) = self.entries.borrow().get(index).cloned() else {
+            return;
+        };
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let loaded = history::load(&entry.folder);
+            on_ui(&weak, move |app| match loaded {
+                Ok(scan) => app.show_scan(index, &scan),
+                Err(error) => app.log(&format!("Could not open the scan: {error:#}")),
+            });
+        });
+    }
+
+    fn register(&self, folder: &Path, scan: &history::SavedScan) {
+        if let Some(dir) = history::scans_dir() {
+            *self.entries.borrow_mut() = history::list(&dir);
+        }
+        let index = self
+            .entries
+            .borrow()
+            .iter()
+            .position(|entry| entry.folder == folder)
+            .unwrap_or(0);
+        self.show_scan(index, scan);
+    }
+
+    fn show_scan(&self, index: usize, scan: &history::SavedScan) {
+        let zone = TimeZone::system();
+        *self.table.borrow_mut() = Table::from_scan(scan);
+        *self.folder.borrow_mut() = self
+            .entries
+            .borrow()
+            .get(index)
+            .map(|entry| entry.folder.clone());
+        let labels: Vec<slint::SharedString> = self
+            .entries
+            .borrow()
+            .iter()
+            .map(|entry| when(entry.made_at, &zone).into())
+            .collect();
+        let state = self.window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(labels)));
+        state.set_scan_selected(index as i32);
+        state.set_scan_date(when(scan.made_at, &zone).into());
+        state.set_has_results(true);
+        self.show_tab(self.tab.get());
+    }
+
+    fn show_tab(&self, tab: Tab) {
+        self.tab.set(tab);
+        let state = self.window.global::<State>();
+        state.set_tab(tab.index() as i32);
+        state.set_foot(foot(&self.table.borrow(), tab));
+        self.rows.show(tab);
+        self.show_sorting();
+        self.rerun_search(true);
+        self.jump(0);
+    }
+
+    fn show_sorting(&self) {
+        let (column, descending) = self.table.borrow().sorting(self.tab.get());
+        let state = self.window.global::<State>();
+        state.set_sort_column(column.index());
+        state.set_sort_desc(descending);
+    }
+
+    fn sort_by(&self, column: Column) {
+        self.table.borrow_mut().sort(self.tab.get(), column);
+        self.rows.refresh();
+        self.show_sorting();
+        self.rerun_search(true);
+        self.jump(0);
+    }
+
+    fn jump(&self, row: i32) {
+        let state = self.window.global::<State>();
+        state.set_jump_to(row);
+        state.set_jump_serial(state.get_jump_serial() + 1);
+    }
+
+    fn search_changed(&self, text: &str) {
+        *self.query.borrow_mut() = text.to_owned();
+        self.rerun_search(true);
+    }
+
+    fn rerun_search(&self, jump: bool) {
+        let query = self.query.borrow().clone();
+        let found = self.table.borrow().search(self.tab.get(), &query);
+        self.position.set(0);
+        *self.matches.borrow_mut() = found;
+        self.show_match(jump);
+    }
+
+    fn search_step(&self, step: i32) {
+        let total = self.matches.borrow().len();
+        self.position.set(wrap(self.position.get(), total, step));
+        self.show_match(true);
+    }
+
+    fn show_match(&self, jump: bool) {
+        let state = self.window.global::<State>();
+        let matches = self.matches.borrow();
+        let label = if self.query.borrow().trim().is_empty() {
+            String::new()
+        } else if matches.is_empty() {
+            "0/0".to_owned()
+        } else {
+            format!("{}/{}", self.position.get() + 1, matches.len())
+        };
+        state.set_search_label(label.into());
+        match matches.get(self.position.get()) {
+            Some(&row) => {
+                state.set_search_index(row as i32);
+                if jump {
+                    self.jump(row as i32);
+                }
+            }
+            None => state.set_search_index(-1),
+        }
+    }
+
+    fn copy_row(&self, index: usize) {
+        let text = self.table.borrow().copy_text(self.tab.get(), index);
+        let result = {
+            let mut clipboard = self.clipboard.borrow_mut();
+            if clipboard.is_none() {
+                *clipboard = arboard::Clipboard::new().ok();
+            }
+            match clipboard.as_mut() {
+                Some(clipboard) => clipboard.set_text(text).map_err(|error| error.to_string()),
+                None => Err("the clipboard is not available".to_owned()),
+            }
+        };
+        match result {
+            Ok(()) => {
+                let state = self.window.global::<State>();
+                state.set_copied(true);
+                let weak = self.weak.clone();
+                self.copied
+                    .start(slint::TimerMode::SingleShot, COPIED_FOR, move || {
+                        if let Some(window) = weak.upgrade() {
+                            window.global::<State>().set_copied(false);
+                        }
+                    });
+            }
+            Err(error) => self.log(&format!("Could not copy the row: {error}")),
+        }
+    }
+
+    fn open_scan_folder(&self) {
+        if let Some(folder) = self.folder.borrow().as_ref() {
+            let _ = open::that(folder);
+        }
     }
 
     fn log(&self, text: &str) {
@@ -447,6 +679,7 @@ impl Session {
                     .borrow_mut()
                     .finish(done.scan.lost_total, done.scan.lost_ranked);
                 self.show_results(&done.scan);
+                self.register(&done.folder, &done.scan);
             }
             Message::Refreshed(updated) => {
                 self.refreshing.set(false);
@@ -454,6 +687,7 @@ impl Session {
                     self.counts
                         .set((done.scan.lost_total, done.scan.lost_ranked));
                     self.show_results(&done.scan);
+                    self.register(&done.folder, &done.scan);
                 }
                 let (total, ranked) = self.counts.get();
                 self.scan.borrow_mut().finish(total, ranked);

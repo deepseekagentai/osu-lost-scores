@@ -3,6 +3,44 @@ export struct LogEntry {
     text: string,
 }
 
+export struct ModPill {
+    text: string,
+    color: color,
+}
+
+export struct ScoreRow {
+    rank: string,
+    rank-color: color,
+    place: string,
+    title: string,
+    artist: string,
+    version: string,
+    creator: string,
+    date: string,
+    link: string,
+    beatmap-id: int,
+    mods: [ModPill],
+    c100: int,
+    c50: int,
+    miss: int,
+    score: string,
+    acc: string,
+    pp: string,
+    sub: string,
+    sub-red: string,
+    kept-tip: string,
+    lost: bool,
+    status: string,
+    status-color: color,
+    status-text: color,
+}
+
+export struct FootItem {
+    label: string,
+    value: string,
+    positive: bool,
+}
+
 export global State {
     in-out property <string> osu-dir;
     in-out property <bool> busy;
@@ -40,6 +78,23 @@ export global State {
     in-out property <bool> keys-busy;
     in-out property <bool> confirm-open;
 
+    in-out property <bool> has-results;
+    in-out property <bool> show-results;
+    in-out property <int> tab;
+    in-out property <int> sort-column: 5;
+    in-out property <bool> sort-desc: true;
+    in-out property <[ScoreRow]> rows;
+    in-out property <[FootItem]> foot;
+    in-out property <string> scan-date;
+    in-out property <[string]> scans;
+    in-out property <int> scan-selected;
+    in-out property <bool> scans-open;
+    in-out property <string> search-label;
+    in-out property <int> search-index: -1;
+    in-out property <int> jump-to;
+    in-out property <int> jump-serial;
+    in-out property <bool> copied;
+
     callback pick-folder();
     callback start-scan();
     callback open-keys();
@@ -53,4 +108,14 @@ export global State {
     callback set-check-missing(bool);
     callback set-show-lost(bool);
     callback commit-scores(string);
+    callback set-tab(int);
+    callback sort-by(int);
+    callback search-changed(string);
+    callback search-step(int);
+    callback select-scan(int);
+    callback open-scan-folder();
+    callback open-beatmap(int);
+    callback copy-row(int);
+    callback see-full-results();
+    callback back();
 }

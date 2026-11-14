@@ -1,10 +1,19 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
 use image::{Rgba, RgbaImage};
+use jiff::tz::TimeZone;
+use lost_scores_app::history::{SavedScan, VERSION};
+use lost_scores_app::pipeline::PotentialResult;
+use lost_scores_app::rows::{Hits, LostRow, OnlineRow, PotentialRow};
+use lost_scores_core::grade::Grade;
+use lost_scores_core::maps::MapStatus;
 use lost_scores_gui::avatar::render_avatar;
+use lost_scores_gui::table::{Column, Tab, Table, when};
+use lost_scores_gui::view::{RowsModel, foot};
 use lost_scores_gui::{LogEntry, MainWindow, State};
 use slint::platform::WindowEvent;
 use slint::platform::software_renderer::{
@@ -15,6 +24,7 @@ use slint::{ComponentHandle, ModelRc, PhysicalSize, VecModel};
 
 const SCALE: f32 = 1.25;
 const LOGICAL: (f32, f32) = (650.0, 800.0);
+const WIDE: (f32, f32) = (1100.0, 800.0);
 
 struct Offscreen(Rc<MinimalSoftwareWindow>);
 
@@ -25,8 +35,12 @@ impl Platform for Offscreen {
 }
 
 fn draw(surface: &Rc<MinimalSoftwareWindow>, path: &PathBuf) {
-    let width = (LOGICAL.0 * SCALE) as u32;
-    let height = (LOGICAL.1 * SCALE) as u32;
+    draw_sized(surface, LOGICAL, path);
+}
+
+fn draw_sized(surface: &Rc<MinimalSoftwareWindow>, logical: (f32, f32), path: &PathBuf) {
+    let width = (logical.0 * SCALE) as u32;
+    let height = (logical.1 * SCALE) as u32;
     surface.set_size(PhysicalSize::new(width, height));
     slint::platform::update_timers_and_animations();
     thread::sleep(Duration::from_millis(700));
@@ -167,4 +181,320 @@ fn render_snapshots() {
         ),
     ]));
     draw(&surface, &dir.join("7-main-failed.png"));
+}
+
+const SEPTEMBER_2024: i64 = 1_725_406_740;
+
+fn hits(n100: u32, n50: u32, misses: u32) -> Hits {
+    Hits {
+        n300: 400,
+        n100,
+        n50,
+        misses,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lost_row(
+    artist: &str,
+    title: &str,
+    version: &str,
+    mods: &str,
+    grade: Grade,
+    status: MapStatus,
+    pp: f64,
+    kept: f64,
+    minutes: i64,
+) -> LostRow {
+    LostRow {
+        pp,
+        kept_pp: kept,
+        score: 1_234_567,
+        kept_score: 1_000_000,
+        mods: mods.into(),
+        unix_time: SEPTEMBER_2024 - minutes * 60,
+        played: "2024-09-03".into(),
+        status,
+        beatmap_md5: "0b577cbe9bc774600d20cfa17c0aa94c".into(),
+        beatmap_id: Some(1_000_000 + minutes as u32),
+        artist: artist.into(),
+        title: title.into(),
+        version: version.into(),
+        file: "a.osr".into(),
+        creator: "Sample Mapper".into(),
+        hits: hits(12, 2, 1),
+        accuracy: 98.54,
+        grade,
+        max_combo: 500,
+    }
+}
+
+fn weighted_row(place: usize, title: &str, pp: f64, lost: bool, status: MapStatus) -> PotentialRow {
+    let weight = 0.95_f64.powi(place as i32 - 1);
+    PotentialRow {
+        place,
+        pp,
+        weight,
+        weighted: pp * weight,
+        lost,
+        beatmap_id: 2_000_000 + place as u32,
+        artist: "Sample Artist".into(),
+        title: title.into(),
+        version: "Expert".into(),
+        creator: "Sample Mapper".into(),
+        mods: "HDDT".into(),
+        accuracy: 99.12,
+        unix_time: SEPTEMBER_2024 - place as i64 * 3600,
+        played: "2024-09-03".into(),
+        hits: hits(8, 1, 0),
+        score: 2_345_678,
+        grade: Grade::SH,
+        status,
+        kept_pp: lost.then_some(pp - 14.0),
+    }
+}
+
+fn online_row(place: usize, title: &str, pp: f64) -> OnlineRow {
+    let weight = 0.95_f64.powi(place as i32 - 1);
+    OnlineRow {
+        place,
+        pp,
+        weight,
+        weighted: pp * weight,
+        beatmap_id: 3_000_000 + place as u32,
+        artist: "Sample Artist".into(),
+        title: title.into(),
+        version: "Insane".into(),
+        creator: "Sample Mapper".into(),
+        mods: "".into(),
+        accuracy: 97.8,
+        grade: Grade::A,
+        hits: hits(20, 3, 2),
+        score: 1_900_000,
+        unix_time: SEPTEMBER_2024 - place as i64 * 7200,
+        played: "2024-09-03".into(),
+    }
+}
+
+fn fake_scan(unicode: bool) -> SavedScan {
+    let mut lost = vec![
+        lost_row(
+            "Sample Artist",
+            "Sample Title One",
+            "Insane",
+            "HDDT",
+            Grade::S,
+            MapStatus::Ranked,
+            411.87,
+            396.1,
+            10,
+        ),
+        lost_row(
+            "Another Artist",
+            "A Very Long Sample Title That Has To Be Cut With An Ellipsis Somewhere Near The End",
+            "Extra Long Difficulty Name That Also Needs To Be Elided",
+            "HDHR",
+            Grade::X,
+            MapStatus::Loved,
+            388.2,
+            360.0,
+            200,
+        ),
+        lost_row(
+            "Third Artist",
+            "Third Sample",
+            "Hard",
+            "",
+            Grade::A,
+            MapStatus::Graveyard,
+            301.4,
+            300.9,
+            4000,
+        ),
+        lost_row(
+            "Fourth Artist",
+            "Fourth Sample",
+            "Normal",
+            "EZNF",
+            Grade::B,
+            MapStatus::Qualified,
+            250.0,
+            120.0,
+            90_000,
+        ),
+        lost_row(
+            "Fifth Artist",
+            "Fifth Sample",
+            "Easy",
+            "FL",
+            Grade::C,
+            MapStatus::Unknown,
+            199.99,
+            150.0,
+            120_000,
+        ),
+        lost_row(
+            "Sixth Artist",
+            "Sixth Sample",
+            "Lunatic",
+            "HT",
+            Grade::D,
+            MapStatus::Ranked,
+            120.5,
+            119.0,
+            300_000,
+        ),
+        lost_row(
+            "Seventh Artist",
+            "Camellia Remix",
+            "Another",
+            "NCHD",
+            Grade::SH,
+            MapStatus::Ranked,
+            99.0,
+            10.0,
+            400_000,
+        ),
+    ];
+    if unicode {
+        lost.insert(
+            1,
+            lost_row(
+                "Кино",
+                "Группа крови (Cyrillic sample title)",
+                "Лёгкая",
+                "HD",
+                Grade::S,
+                MapStatus::Ranked,
+                350.0,
+                330.0,
+                50,
+            ),
+        );
+        lost.insert(
+            2,
+            lost_row(
+                "初音ミク",
+                "千本桜 (Japanese sample title)",
+                "超高難度",
+                "DT",
+                Grade::A,
+                MapStatus::Loved,
+                340.0,
+                300.0,
+                70,
+            ),
+        );
+    }
+    let rows = vec![
+        weighted_row(1, "Potential One", 455.0, true, MapStatus::Ranked),
+        weighted_row(2, "Potential Two", 430.5, false, MapStatus::Ranked),
+        weighted_row(3, "Potential Three", 420.1, true, MapStatus::Loved),
+        weighted_row(4, "Potential Four", 400.0, false, MapStatus::Ranked),
+    ];
+    let online = vec![
+        online_row(1, "Online One", 440.0),
+        online_row(2, "Online Two", 430.5),
+        online_row(3, "Online Three", 400.0),
+    ];
+    SavedScan {
+        version: VERSION,
+        made_at: SEPTEMBER_2024,
+        player_id: 1,
+        player_name: "SamplePlayer".into(),
+        include_all: true,
+        check_missing: false,
+        lost_total: lost.len(),
+        lost_ranked: lost.len() - 3,
+        lost,
+        potential: Some(PotentialResult {
+            current_pp: 8557.4,
+            potential_pp: 8668.1,
+            current_accuracy: 98.38,
+            potential_accuracy: 97.95,
+            global_rank: Some(14_856),
+            lost_in_top: 2,
+            rows,
+            online,
+        }),
+    }
+}
+
+struct Results {
+    table: Rc<RefCell<Table>>,
+    rows: Rc<RowsModel>,
+}
+
+impl Results {
+    fn new(scan: &SavedScan) -> Self {
+        let table = Rc::new(RefCell::new(Table::in_zone(scan, &TimeZone::UTC)));
+        Self {
+            rows: Rc::new(RowsModel::new(table.clone())),
+            table,
+        }
+    }
+
+    fn present(&self, state: &State<'_>, scan: &SavedScan, tab: Tab) {
+        state.set_rows(ModelRc::from(self.rows.clone()));
+        state.set_has_results(true);
+        state.set_scan_date(when(scan.made_at, &TimeZone::UTC).into());
+        state.set_tab(tab.index() as i32);
+        state.set_foot(foot(&self.table.borrow(), tab));
+        self.rows.show(tab);
+        let (column, descending) = self.table.borrow().sorting(tab);
+        state.set_sort_column(column.index());
+        state.set_sort_desc(descending);
+        state.set_search_index(-1);
+        state.set_search_label("".into());
+    }
+}
+
+#[test]
+#[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
+fn render_results_snapshots() {
+    let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
+    let state = window.global::<State>();
+    state.set_show_results(true);
+
+    draw(&surface, &dir.join("8-results-empty.png"));
+
+    let scan = fake_scan(false);
+    let results = Results::new(&scan);
+    results.present(&state, &scan, Tab::Lost);
+    draw(&surface, &dir.join("9-results-lost-narrow.png"));
+    draw_sized(&surface, WIDE, &dir.join("10-results-lost-wide.png"));
+
+    results.present(&state, &scan, Tab::Online);
+    draw(&surface, &dir.join("11-results-online.png"));
+
+    results.present(&state, &scan, Tab::Potential);
+    draw(&surface, &dir.join("12-results-potential.png"));
+
+    results.present(&state, &scan, Tab::Lost);
+    results.table.borrow_mut().sort(Tab::Lost, Column::Beatmap);
+    results.rows.refresh();
+    state.set_sort_column(Column::Beatmap.index());
+    state.set_sort_desc(false);
+    draw(&surface, &dir.join("13-results-sorted-by-beatmap.png"));
+
+    results.present(&state, &scan, Tab::Lost);
+    let found = results.table.borrow().search(Tab::Lost, "camellia");
+    state.set_search_label(format!("1/{}", found.len()).into());
+    state.set_search_index(found[0] as i32);
+    draw(&surface, &dir.join("14-results-search.png"));
+
+    let unicode = fake_scan(true);
+    let results = Results::new(&unicode);
+    results.present(&state, &unicode, Tab::Lost);
+    draw(&surface, &dir.join("15-results-cyrillic-japanese.png"));
 }

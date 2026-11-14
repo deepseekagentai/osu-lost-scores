@@ -1,11 +1,12 @@
 import { T, Tip } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, GhostIconButton } from "widgets.slint";
+import { HoverBox, GhostIconButton, SecondaryButton } from "widgets.slint";
 import { AccountCard } from "account.slint";
 import { LogBox } from "log.slint";
 import { StartScan, ProgressBar, StatusLine } from "controls.slint";
 import { KeysSheet } from "keys.slint";
 import { ConfirmSheet } from "confirm.slint";
+import { ResultsPanel } from "results.slint";
 
 export { State }
 
@@ -152,10 +153,28 @@ export component MainWindow inherits Window {
             if !root.compact: Rectangle { height: 8px; }
             if !root.compact: LogBox { }
             if root.compact: Rectangle { vertical-stretch: 1; }
+            Rectangle { height: 14px; }
+            SecondaryButton {
+                text: "See Full Results";
+                enabled: State.has-results;
+                clicked => {
+                    State.see-full-results();
+                }
+            }
         }
         Rectangle { horizontal-stretch: 1; }
     }
 
+    if State.show-results: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: T.bg;
+        ResultsPanel {
+            width: parent.width;
+            height: parent.height;
+            show-back: true;
+        }
+    }
     if State.keys-open: KeysSheet {
         width: root.width;
         height: root.height;
