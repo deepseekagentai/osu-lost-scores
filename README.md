@@ -25,6 +25,32 @@ On Linux the launcher entry and the icons come from a script. Run it after insta
 
 It copies `kz.lemon4ik.LostScores.desktop` and the lemon icons into `$XDG_DATA_HOME` (`~/.local/share` by default). Under Wayland the window takes its icon from this entry, which has the same app id as the window. On Windows the icon is built into the executable.
 
+## Share images
+
+After every scan the window saves three pictures into the scan's folder:
+
+- `lost_scores.png`: your lost plays on ranked maps, or on all maps when the scan included unranked and loved ones;
+- `potential_top.png`: your top 200 as it would be with the lost plays kept, with the pp and accuracy it would give;
+- `summary_badge.png`: a small card with the same numbers.
+
+"Scores to show" sets how many plays the two big pictures list, up to 200. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
+
+The share button in the results view lists the pictures of the shown scan:
+
+- **Open** shows one in your image viewer;
+- **Copy** puts it on the clipboard, ready to paste into a chat;
+- **catbox** uploads it to [catbox.moe](https://catbox.moe) and copies the link.
+
+An upload to catbox.moe is anonymous and public: anyone with the link can see the picture, and catbox keeps it until nobody has opened it for two years. It cannot be deleted for free, so the window asks before the first upload, and nothing is uploaded without a click.
+
+Covers come from assets.ppy.sh and are cached; Clear cache removes them.
+
+## Scan history
+
+Every finished scan is kept, and the scan list in the results view opens any earlier one. In a narrow window the results open by themselves when a scan ends.
+
+The cross next to an older scan, or "Delete older scans" at the bottom of the list, moves scans to the system trash after a confirmation, so you can restore them from there. The newest scan always stays.
+
 ## Command line
 
     cargo install --locked --path crates/lost-scores-cli
