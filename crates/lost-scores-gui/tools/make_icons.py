@@ -3,8 +3,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-PNG_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
+PNG_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ICNS_TYPES = (
+    (b"icp4", 16),
+    (b"ic11", 32),
+    (b"icp5", 32),
+    (b"ic12", 64),
+    (b"ic07", 128),
+    (b"ic13", 256),
+    (b"ic08", 256),
+    (b"ic14", 512),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+)
 
 
 def render(svg, icon_dir):
@@ -17,7 +29,7 @@ def render(svg, icon_dir):
         )
 
 
-def build(icon_dir, output):
+def build_ico(icon_dir, output):
     images = [(size, (icon_dir / f"lemon-{size}.png").read_bytes()) for size in ICO_SIZES]
     header = struct.pack("<HHH", 0, 1, len(images))
     offset = len(header) + 16 * len(images)
@@ -32,8 +44,17 @@ def build(icon_dir, output):
     output.write_bytes(header + entries + payload)
 
 
+def build_icns(icon_dir, output):
+    entries = b""
+    for kind, size in ICNS_TYPES:
+        data = (icon_dir / f"lemon-{size}.png").read_bytes()
+        entries += kind + struct.pack(">I", 8 + len(data)) + data
+    output.write_bytes(b"icns" + struct.pack(">I", 8 + len(entries)) + entries)
+
+
 if __name__ == "__main__":
     svg = Path(sys.argv[1])
     folder = Path(sys.argv[2])
     render(svg, folder)
-    build(folder, folder / "lemon.ico")
+    build_ico(folder, folder / "lemon.ico")
+    build_icns(folder, folder / "lemon.icns")

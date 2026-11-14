@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      name: ${{ steps.version.outputs.name }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lost-scores-gui") | .version')
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml"
+              exit 1
+            fi
+            name="$version"
+          else
+            name="$version-test-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    env:
+      NAME: ${{ needs.meta.outputs.name }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - name: System packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace --locked
+      - name: Build
+        run: cargo build --release --locked -p lost-scores-gui -p lost-scores-cli
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          dir="lost-scores-$NAME-linux-x64"
+          mkdir -p "dist/$dir/icons"
+          cp target/release/lost-scores-gui target/release/lost-scores "dist/$dir/"
+          cp packaging/linux/install.sh packaging/linux/kz.lemon4ik.LostScores.desktop "dist/$dir/"
+          cp crates/lost-scores-gui/assets/icon/lemon-*.png "dist/$dir/icons/"
+          cp LICENSE README.md "dist/$dir/"
+          tar -C dist -czf "dist/$dir.tar.gz" "$dir"
+          rm -rf "dist/$dir"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "target/release/lost-scores-gui.exe"
+          ./packaging/windows/check-icon.ps1 $exe
+          $readobj = Join-Path (rustc --print sysroot) "lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-readobj.exe"
+          foreach ($program in $exe, "target/release/lost-scores.exe") {
+            $runtime = & $readobj --coff-imports $program | Select-String -Pattern "VCRUNTIME|MSVCP|api-ms-win-crt"
+            if ($runtime) { throw "$program needs the Visual C++ runtime: $runtime" }
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $exe "dist/lost-scores-$env:NAME-windows-x64.exe"
+          $cli = "lost-scores-cli-$env:NAME-windows-x64"
+          New-Item -ItemType Directory -Force "cli/$cli" | Out-Null
+          Copy-Item target/release/lost-scores.exe, LICENSE, README.md "cli/$cli/"
+          Compress-Archive -Path "cli/$cli" -DestinationPath "dist/$cli.zip"
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/Lost Scores.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/lost-scores-gui "$app/Contents/MacOS/"
+          cp crates/lost-scores-gui/assets/icon/lemon.icns "$app/Contents/Resources/"
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          lipo -archs "$app/Contents/MacOS/lost-scores-gui"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          (cd dist && ditto -c -k --keepParent "Lost Scores.app" "lost-scores-$NAME-macos-arm64.zip")
+          rm -rf "$app"
+          cli="lost-scores-cli-$NAME-macos-arm64"
+          mkdir -p "cli/$cli"
+          cp target/release/lost-scores LICENSE README.md "cli/$cli/"
+          codesign --force --sign - "cli/$cli/lost-scores"
+          (cd cli && ditto -c -k --keepParent "$cli" "../dist/$cli.zip")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "osu! Lost Scores Analyzer $VERSION" --notes-file "docs/releases/$VERSION.md"
