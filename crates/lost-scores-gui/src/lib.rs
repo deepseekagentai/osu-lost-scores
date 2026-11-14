@@ -108,6 +108,65 @@ mod tests {
     }
 
     #[test]
+    fn the_share_popup_has_a_row_for_each_image() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let state = window.global::<State>();
+        state.set_share_images(ModelRc::new(VecModel::from(
+            ["Lost Scores", "Badge"].map(SharedString::from).to_vec(),
+        )));
+        let copied = Rc::new(Cell::new(-1));
+        let uploaded = Rc::new(Cell::new(-1));
+        let (copy, upload) = (copied.clone(), uploaded.clone());
+        state.on_copy_image(move |index| copy.set(index));
+        state.on_upload_image(move |index| upload.set(index));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_has_images(true);
+        state.set_share_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let count = |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
+        assert_eq!(count("Badge"), 1);
+        assert_eq!(count("Copy image"), 2);
+        let buttons: Vec<_> =
+            ElementHandle::find_by_accessible_label(&window, "Upload to catbox").collect();
+        assert_eq!(buttons.len(), 2);
+        buttons[1].mock_single_click(PointerEventButton::Left);
+        assert_eq!(uploaded.get(), 1);
+        assert_eq!(copied.get(), -1);
+    }
+
+    #[test]
+    fn the_upload_sheet_reports_the_checkbox() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let state = window.global::<State>();
+        let answers = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = answers.clone();
+        state.on_confirm_upload(move |remember| log.borrow_mut().push(remember));
+        state.set_upload_confirm_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let upload = || {
+            ElementHandle::find_by_accessible_label(&window, "Upload")
+                .next()
+                .unwrap()
+        };
+        upload().mock_single_click(PointerEventButton::Left);
+        ElementHandle::find_by_accessible_label(&window, "Don't ask again")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        upload().mock_single_click(PointerEventButton::Left);
+        assert_eq!(*answers.borrow(), [false, true]);
+    }
+
+    #[test]
     fn a_folder_without_data_r_is_refused_with_the_cli_message() {
         let dir = tempfile::tempdir().unwrap();
         let error = choose_folder(dir.path()).unwrap_err().to_string();

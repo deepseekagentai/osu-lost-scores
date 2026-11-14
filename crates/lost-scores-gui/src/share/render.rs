@@ -37,6 +37,29 @@ pub const LOST_FILE: &str = "lost_scores.png";
 pub const POTENTIAL_FILE: &str = "potential_top.png";
 pub const BADGE_FILE: &str = "summary_badge.png";
 
+const IMAGES: [(&str, &str); 3] = [
+    (LOST_FILE, "Lost Scores"),
+    (POTENTIAL_FILE, "Potential Top"),
+    (BADGE_FILE, "Badge"),
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareImage {
+    pub label: &'static str,
+    pub path: PathBuf,
+}
+
+pub fn images_in(folder: &Path) -> Vec<ShareImage> {
+    IMAGES
+        .iter()
+        .map(|(file, label)| ShareImage {
+            label,
+            path: folder.join(file),
+        })
+        .filter(|image| image.path.is_file())
+        .collect()
+}
+
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
 #[derive(Default)]
@@ -394,7 +417,20 @@ pub fn render_folder(folder: &Path) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
-    use super::Prepared;
+    use super::{BADGE_FILE, LOST_FILE, Prepared, images_in};
+
+    #[test]
+    fn the_folder_lists_the_images_it_has_in_a_fixed_order() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(images_in(dir.path()).is_empty());
+        std::fs::write(dir.path().join(BADGE_FILE), b"x").unwrap();
+        std::fs::write(dir.path().join(LOST_FILE), b"x").unwrap();
+        std::fs::write(dir.path().join("scan.json"), b"{}").unwrap();
+        let found = images_in(dir.path());
+        let labels: Vec<_> = found.iter().map(|image| image.label).collect();
+        assert_eq!(labels, ["Lost Scores", "Badge"]);
+        assert_eq!(found[0].path, dir.path().join(LOST_FILE));
+    }
 
     #[test]
     fn warnings_name_what_was_skipped() {

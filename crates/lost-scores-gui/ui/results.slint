@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { T } from "theme.slint";
 import { State, ScoreRow, FootItem } from "state.slint";
-import { IconButton, TipArea } from "widgets.slint";
+import { IconButton, SecondaryButton, TipArea } from "widgets.slint";
 
 component Hit inherits HorizontalLayout {
     in property <string> label;
@@ -590,6 +590,21 @@ component OpenFolder inherits VerticalLayout {
     }
 }
 
+component ShareButton inherits VerticalLayout {
+    alignment: center;
+    IconButton {
+        width: 42px;
+        height: 42px;
+        icon: @image-url("../assets/i-share.svg");
+        tip: State.has-images ? "Share the images of this scan" : "No images for this scan";
+        enabled: State.has-images;
+        clicked => {
+            State.share-x = self.absolute-position.x;
+            State.open-share();
+        }
+    }
+}
+
 component FootPair inherits HorizontalLayout {
     in property <FootItem> item;
     in property <bool> first;
@@ -677,6 +692,7 @@ export component ResultsPanel inherits Rectangle {
             }
             if State.has-results: ScanSelector { }
             if State.has-results: OpenFolder { }
+            if State.has-results: ShareButton { }
             Rectangle { horizontal-stretch: 1; }
             SearchField { width: 260px; }
             SearchButtons { }
@@ -693,6 +709,8 @@ export component ResultsPanel inherits Rectangle {
                 }
                 if State.has-results: ScanSelector { }
                 if State.has-results: OpenFolder { }
+                if State.has-results: ShareButton { }
+            if State.has-results: ShareButton { }
                 Rectangle { horizontal-stretch: 1; }
             }
             HorizontalLayout {
@@ -884,6 +902,64 @@ export component ResultsPanel inherits Rectangle {
             }
         }
     }
+    if State.share-open: TouchArea {
+        clicked => {
+            State.share-open = false;
+        }
+    }
+    if State.share-open: Rectangle {
+        width: 392px;
+        x: max(8px, min(State.share-x, root.width - self.width - 8px));
+        y: 24px + 42px + 6px;
+        height: 16px + State.share-images.length * 40px;
+        border-radius: 10px;
+        background: T.card;
+        border-width: 2px;
+        border-color: T.togb;
+        TouchArea { }
+        VerticalLayout {
+            padding: 8px;
+            for label[i] in State.share-images: Rectangle {
+                height: 40px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    padding-left: 10px;
+                    Text {
+                        text: label;
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        SecondaryButton {
+                            width: 92px;
+                            height: 30px;
+                            text: "Copy image";
+                            text-size: 13px;
+                            clicked => {
+                                State.copy-image(i);
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        SecondaryButton {
+                            width: 132px;
+                            height: 30px;
+                            text: "Upload to catbox";
+                            text-size: 13px;
+                            clicked => {
+                                State.upload-image(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if State.copied: Rectangle {
         x: (root.width - self.width) / 2;
         y: root.height - 110px;
@@ -894,7 +970,7 @@ export component ResultsPanel inherits Rectangle {
         border-width: 1px;
         border-color: T.togb;
         copied-text := Text {
-            text: "Copied to clipboard";
+            text: State.copied-text;
             color: T.ftext;
             font-size: 13.5px;
         }

@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control", "image-data"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 jiff = "0.2.43"
 lost-scores-app = { path = "../lost-scores-app" }

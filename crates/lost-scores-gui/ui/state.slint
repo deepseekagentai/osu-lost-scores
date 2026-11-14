@@ -107,6 +107,12 @@ export global State {
     out property <length> mods-col: max(self.mods-width, 48px);
     in-out property <int> jump-serial;
     in-out property <bool> copied;
+    in-out property <string> copied-text: "Copied to clipboard";
+    in-out property <bool> has-images;
+    in-out property <bool> share-open;
+    in-out property <length> share-x;
+    in-out property <[string]> share-images;
+    in-out property <bool> upload-confirm-open;
 
     callback pick-folder();
     callback start-scan();
@@ -127,6 +133,11 @@ export global State {
     callback search-step(int);
     callback select-scan(int);
     callback open-scan-folder();
+    callback open-share();
+    callback copy-image(int);
+    callback upload-image(int);
+    callback confirm-upload(bool);
+    callback cancel-upload();
     callback open-beatmap(int);
     callback copy-row(int);
     callback ask-clear-cache();

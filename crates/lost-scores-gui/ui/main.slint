@@ -6,6 +6,7 @@ import { LogBox } from "log.slint";
 import { StartScan, ProgressBar, StatusLine } from "controls.slint";
 import { KeysSheet } from "keys.slint";
 import { ConfirmSheet } from "confirm.slint";
+import { UploadSheet } from "upload.slint";
 import { ResultsPanel } from "results.slint";
 import { AboutSheet } from "about.slint";
 import { ShareLost, SharePotential, ShareBadge, ShareItem, ShareMod, ShareArt } from "share.slint";
@@ -245,6 +246,16 @@ export component MainWindow inherits Window {
         }
         ok => {
             State.confirm-logout();
+        }
+    }
+    if State.upload-confirm-open: UploadSheet {
+        width: root.width;
+        height: root.height;
+        cancel => {
+            State.cancel-upload();
+        }
+        ok(remember) => {
+            State.confirm-upload(remember);
         }
     }
     if State.cache-confirm-open: ConfirmSheet {

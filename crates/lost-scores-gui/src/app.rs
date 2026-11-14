@@ -22,6 +22,8 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
+use crate::share::render::{ShareImage, images_in};
+use crate::share::upload::{self, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot, mods_width};
@@ -62,6 +64,10 @@ struct Session {
     folder: RefCell<Option<PathBuf>>,
     clipboard: RefCell<Option<arboard::Clipboard>>,
     copied: slint::Timer,
+    consent: Cell<Consent>,
+    shared: RefCell<Vec<ShareImage>>,
+    uploading: Cell<bool>,
+    pending_upload: Cell<Option<usize>>,
 }
 
 struct LoopSink {
@@ -107,6 +113,10 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
         folder: RefCell::new(None),
         clipboard: RefCell::new(None),
         copied: slint::Timer::default(),
+        consent: Cell::new(Consent::new(false)),
+        shared: RefCell::new(Vec::new()),
+        uploading: Cell::new(false),
+        pending_upload: Cell::new(None),
         window: window.clone_strong(),
         weak: window.as_weak(),
         log: Rc::new(VecModel::default()),
@@ -178,6 +188,7 @@ impl Session {
             state.set_check_missing(settings.check_missing);
             state.set_show_lost(settings.show_lost_in_top_image);
             state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
+            self.consent.set(Consent::new(settings.catbox_confirmed));
         }
         self.bind(&state);
         self.bind_extras(&state);
@@ -271,6 +282,16 @@ impl Session {
         });
         let session = self.clone();
         state.on_copy_row(move |index| session.copy_row(index as usize));
+        let session = self.clone();
+        state.on_open_share(move || session.open_share());
+        let session = self.clone();
+        state.on_copy_image(move |index| session.copy_image(index as usize));
+        let session = self.clone();
+        state.on_upload_image(move |index| session.ask_upload(index as usize));
+        let session = self.clone();
+        state.on_confirm_upload(move |remember| session.confirm_upload(remember));
+        let session = self.clone();
+        state.on_cancel_upload(move || session.cancel_upload());
     }
 
     fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
@@ -420,7 +441,151 @@ impl Session {
         state.set_scan_selected(index as i32);
         state.set_scan_date(when(scan.made_at, &zone).into());
         state.set_has_results(true);
+        self.refresh_shared();
         self.show_tab(self.tab.get());
+    }
+
+    fn refresh_shared(&self) {
+        let found = self
+            .folder
+            .borrow()
+            .as_deref()
+            .map(images_in)
+            .unwrap_or_default();
+        let state = self.window.global::<State>();
+        let labels: Vec<slint::SharedString> =
+            found.iter().map(|image| image.label.into()).collect();
+        state.set_has_images(!found.is_empty());
+        state.set_share_images(ModelRc::new(VecModel::from(labels)));
+        *self.shared.borrow_mut() = found;
+    }
+
+    fn open_share(&self) {
+        self.refresh_shared();
+        let state = self.window.global::<State>();
+        state.set_share_open(state.get_has_images());
+    }
+
+    fn toast(&self, text: &str) {
+        let state = self.window.global::<State>();
+        state.set_copied_text(text.into());
+        state.set_copied(true);
+        let weak = self.weak.clone();
+        self.copied
+            .start(slint::TimerMode::SingleShot, COPIED_FOR, move || {
+                if let Some(window) = weak.upgrade() {
+                    window.global::<State>().set_copied(false);
+                }
+            });
+    }
+
+    fn put_on_clipboard(
+        &self,
+        put: impl FnOnce(&mut arboard::Clipboard) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if clipboard.is_none() {
+            *clipboard = arboard::Clipboard::new().ok();
+        }
+        match clipboard.as_mut() {
+            Some(clipboard) => put(clipboard),
+            None => Err("the clipboard is not available".to_owned()),
+        }
+    }
+
+    fn shared_image(&self, index: usize) -> Option<ShareImage> {
+        self.shared.borrow().get(index).cloned()
+    }
+
+    fn copy_image(self: &Rc<Self>, index: usize) {
+        self.window.global::<State>().set_share_open(false);
+        let Some(image) = self.shared_image(index) else {
+            return;
+        };
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let decoded = image::open(&image.path).map(|picture| picture.into_rgba8());
+            on_ui(&weak, move |app| match decoded {
+                Ok(picture) => {
+                    let data = arboard::ImageData {
+                        width: picture.width() as usize,
+                        height: picture.height() as usize,
+                        bytes: picture.into_raw().into(),
+                    };
+                    let result = app.put_on_clipboard(|clipboard| {
+                        clipboard.set_image(data).map_err(|error| error.to_string())
+                    });
+                    match result {
+                        Ok(()) => app.toast("Image copied"),
+                        Err(error) => app.log(&format!("Could not copy the image: {error}")),
+                    }
+                }
+                Err(error) => app.log(&format!("Could not copy the image: {error}")),
+            });
+        });
+    }
+
+    fn ask_upload(self: &Rc<Self>, index: usize) {
+        let state = self.window.global::<State>();
+        state.set_share_open(false);
+        if self.uploading.get() || self.shared_image(index).is_none() {
+            return;
+        }
+        if self.consent.get().must_ask() {
+            self.pending_upload.set(Some(index));
+            state.set_upload_confirm_open(true);
+        } else {
+            self.upload(index);
+        }
+    }
+
+    fn confirm_upload(self: &Rc<Self>, remember: bool) {
+        self.window.global::<State>().set_upload_confirm_open(false);
+        let mut consent = self.consent.get();
+        consent.accept(remember);
+        self.consent.set(consent);
+        if remember {
+            self.change_settings(|settings| settings.catbox_confirmed = true);
+        }
+        if let Some(index) = self.pending_upload.take() {
+            self.upload(index);
+        }
+    }
+
+    fn cancel_upload(&self) {
+        self.pending_upload.set(None);
+        self.window.global::<State>().set_upload_confirm_open(false);
+    }
+
+    fn upload(self: &Rc<Self>, index: usize) {
+        let Some(image) = self.shared_image(index) else {
+            return;
+        };
+        self.uploading.set(true);
+        self.log(&format!("Uploading {} to catbox...", image.label));
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let result = upload::upload(&upload::agent(), &image.path);
+            on_ui(&weak, move |app| {
+                app.uploading.set(false);
+                match result {
+                    Ok(link) => {
+                        let copied = app.put_on_clipboard(|clipboard| {
+                            clipboard
+                                .set_text(link.clone())
+                                .map_err(|error| error.to_string())
+                        });
+                        match copied {
+                            Ok(()) => app.log(&format!("Link copied: {link}")),
+                            Err(error) => app.log(&format!(
+                                "Uploaded, but the link could not be copied: {error}. Link: {link}"
+                            )),
+                        }
+                    }
+                    Err(error) => app.log(&format!("Could not upload the image: {error:#}")),
+                }
+            });
+        });
     }
 
     fn include_in_place(&self, value: bool) {
@@ -550,28 +715,11 @@ impl Session {
 
     fn copy_row(&self, index: usize) {
         let text = self.table.borrow().copy_text(self.tab.get(), index);
-        let result = {
-            let mut clipboard = self.clipboard.borrow_mut();
-            if clipboard.is_none() {
-                *clipboard = arboard::Clipboard::new().ok();
-            }
-            match clipboard.as_mut() {
-                Some(clipboard) => clipboard.set_text(text).map_err(|error| error.to_string()),
-                None => Err("the clipboard is not available".to_owned()),
-            }
-        };
+        let result = self.put_on_clipboard(|clipboard| {
+            clipboard.set_text(text).map_err(|error| error.to_string())
+        });
         match result {
-            Ok(()) => {
-                let state = self.window.global::<State>();
-                state.set_copied(true);
-                let weak = self.weak.clone();
-                self.copied
-                    .start(slint::TimerMode::SingleShot, COPIED_FOR, move || {
-                        if let Some(window) = weak.upgrade() {
-                            window.global::<State>().set_copied(false);
-                        }
-                    });
-            }
+            Ok(()) => self.toast("Copied to clipboard"),
             Err(error) => self.log(&format!("Could not copy the row: {error}")),
         }
     }
@@ -910,6 +1058,7 @@ impl Session {
                     self.show_results(&done.scan);
                     self.register(&done.folder, &done.scan);
                 }
+                self.refresh_shared();
                 let (total, ranked) = self.counts.get();
                 self.scan.borrow_mut().finish(total, ranked);
             }

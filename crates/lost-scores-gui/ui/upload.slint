@@ -1,0 +1,88 @@
+import { T } from "theme.slint";
+import { PrimaryButton, SecondaryButton } from "widgets.slint";
+
+export component UploadSheet inherits Rectangle {
+    callback cancel();
+    callback ok(bool);
+    property <bool> remember: false;
+    background: #000000b0;
+    TouchArea {
+        clicked => {
+            root.cancel();
+        }
+    }
+    Rectangle {
+        width: min(380px, parent.width - 40px);
+        height: card.preferred-height;
+        border-radius: 12px;
+        background: T.card;
+        border-width: 2px;
+        border-color: T.togb;
+        TouchArea { }
+        card := VerticalLayout {
+            padding: 22px;
+            spacing: 18px;
+            Text {
+                text: "The image goes to catbox.moe and gets a public link. It cannot be deleted for free: catbox keeps it until nobody has opened it for two years. Upload?";
+                color: #ffffff;
+                font-size: 18px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 24px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        y: 1px;
+                        border-radius: 6px;
+                        background: root.remember ? T.tog-on : T.tog;
+                        border-width: 2px;
+                        border-color: root.remember || box.has-hover ? T.acc : T.togb;
+                        if root.remember: Image {
+                            source: @image-url("../assets/i-check.svg");
+                            width: 12px;
+                            height: 12px;
+                            image-fit: contain;
+                            colorize: T.acc;
+                        }
+                    }
+                    Text {
+                        text: "Don't ask again";
+                        color: T.k;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                    }
+                }
+                box := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.remember = !root.remember;
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                SecondaryButton {
+                    height: 40px;
+                    min-width: 120px;
+                    text: "Cancel";
+                    text-size: 16px;
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                PrimaryButton {
+                    height: 40px;
+                    text: "Upload";
+                    clicked => {
+                        root.ok(root.remember);
+                    }
+                }
+            }
+        }
+    }
+}

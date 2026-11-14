@@ -27,6 +27,7 @@ pub struct Settings {
     pub check_missing: bool,
     pub show_lost_in_top_image: bool,
     pub scores_to_show: u16,
+    pub catbox_confirmed: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +39,7 @@ impl Default for Settings {
             check_missing: false,
             show_lost_in_top_image: false,
             scores_to_show: DEFAULT_SCORES_TO_SHOW,
+            catbox_confirmed: false,
         }
     }
 }
@@ -234,6 +236,18 @@ mod tests {
             fs::write(&path, format!(r#"{{"scores_to_show":{stored}}}"#)).unwrap();
             assert_eq!(load_settings(&path).scores_to_show, expected);
         }
+    }
+
+    #[test]
+    fn the_catbox_answer_is_off_until_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"scores_to_show":5}"#).unwrap();
+        let mut settings = load_settings(&path);
+        assert!(!settings.catbox_confirmed);
+        settings.catbox_confirmed = true;
+        save_settings(&path, &settings).unwrap();
+        assert!(load_settings(&path).catbox_confirmed);
     }
 
     #[test]
