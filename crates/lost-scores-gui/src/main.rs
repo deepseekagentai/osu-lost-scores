@@ -1,10 +1,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 
-use lost_scores_gui::share::render::{RenderArgs, render_folder};
+use lost_scores_gui::share::render::{FAILURE_PREFIX, RenderArgs, guarded, render_folder};
 
-fn render_images(args: impl Iterator<Item = String>) -> ExitCode {
+fn render_images(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args = match RenderArgs::parse(args) {
         Ok(args) => args,
         Err(message) => {
@@ -12,7 +13,7 @@ fn render_images(args: impl Iterator<Item = String>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match render_folder(&args) {
+    match guarded(|| render_folder(&args)) {
         Ok(output) => {
             for warning in output.warnings {
                 eprintln!("{warning}");
@@ -23,15 +24,15 @@ fn render_images(args: impl Iterator<Item = String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("cannot render the share images: {error:#}");
+            eprintln!("{FAILURE_PREFIX}{error}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("render-images") {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|first| first == "render-images") {
         return render_images(args);
     }
     match lost_scores_gui::app::run() {

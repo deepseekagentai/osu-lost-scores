@@ -16,7 +16,8 @@ use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
 use lost_scores_core::maps::MapCatalog;
 
-use crate::share::rasters::{self, HttpFetch};
+use crate::share::rasters::{self, Fetch, HttpFetch};
+use crate::share::render::{FAILURE_PREFIX, panic_message};
 use crate::share::{ShareOptions, cover_sets};
 
 const API_HINT: &str = "add your own API keys";
@@ -153,7 +154,7 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         return Ok(Outcome::Closed);
     }
     proceed!();
-    images(job, &shown, &folder, &mut events);
+    create_images(job, &shown, &folder, &mut events, &mut HttpFetch::new());
     proceed!();
     let finished = Completed {
         job,
@@ -234,7 +235,7 @@ fn refresh(
     let updated = saved(job, player, found, result);
     match history::replace(folder, &updated) {
         Ok(()) => {
-            images(job, &updated, folder, events);
+            create_images(job, &updated, folder, events, &mut HttpFetch::new());
             Some(Box::new(Finished {
                 scan: updated,
                 folder: folder.to_path_buf(),
@@ -268,7 +269,31 @@ pub fn render_command(
     command
 }
 
-fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Event)) {
+pub fn create_images(
+    job: &Job,
+    scan: &SavedScan,
+    folder: &Path,
+    events: &mut dyn FnMut(Event),
+    fetch: &mut dyn Fetch,
+) {
+    let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
+        images(job, scan, folder, &mut *events, fetch);
+    }));
+    if let Err(payload) = attempt {
+        events(Event::Log(format!(
+            "Could not create the images: {}",
+            panic_message(payload.as_ref())
+        )));
+    }
+}
+
+fn images(
+    job: &Job,
+    scan: &SavedScan,
+    folder: &Path,
+    events: &mut dyn FnMut(Event),
+    fetch: &mut dyn Fetch,
+) {
     let options = ShareOptions {
         count: job.share_count,
         include_all: scan.include_all,
@@ -283,7 +308,7 @@ fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Eve
                 total,
             });
         };
-        let fetched = rasters::covers(&sets, &dir, &mut HttpFetch::new(), &mut progress);
+        let fetched = rasters::covers(&sets, &dir, fetch, &mut progress);
         if fetched.failed > 0 {
             events(Event::Log(format!(
                 "{} of {} covers could not be downloaded",
@@ -316,20 +341,25 @@ fn run_renderer(job: &Job, folder: &Path) -> Result<Vec<String>> {
         .output()
         .map_err(|error| anyhow!("cannot start {}: {error}", renderer.display()))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut lines = stderr
+    let lines: Vec<String> = stderr
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .collect();
     if output.status.success() {
-        return Ok(lines.collect());
+        return Ok(lines);
     }
-    Err(anyhow!(
-        "{}",
-        lines
-            .next_back()
-            .unwrap_or_else(|| format!("the renderer stopped with {}", output.status))
-    ))
+    Err(anyhow!("{}", failure_line(&lines, &output.status)))
+}
+
+fn failure_line(lines: &[String], status: &std::process::ExitStatus) -> String {
+    lines
+        .iter()
+        .rfind(|line| line.starts_with(FAILURE_PREFIX))
+        .or_else(|| lines.last())
+        .cloned()
+        .unwrap_or_else(|| format!("the renderer stopped with {status}"))
 }
 
 #[cfg(test)]

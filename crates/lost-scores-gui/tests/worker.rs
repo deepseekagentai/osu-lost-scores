@@ -3,12 +3,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 
-use lost_scores_app::history;
+use anyhow::Result;
+use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{Api, Event, Source};
+use lost_scores_app::rows::{Hits, LostRow};
+use lost_scores_core::grade::Grade;
+use lost_scores_core::maps::MapStatus;
 use lost_scores_core::maps::{FetchedMap, MapSource};
 use lost_scores_core::missing::OsuFiles;
-use lost_scores_gui::worker::{Job, Message, Outcome, Sink, render_command, run};
+use lost_scores_gui::share::rasters::Fetch;
+use lost_scores_gui::worker::{Job, Message, Outcome, Sink, create_images, render_command, run};
 use osu_api::{ApiError, Score};
 use tempfile::TempDir;
 
@@ -303,4 +308,125 @@ fn the_render_command_leaves_out_the_top_flag_when_it_is_off() {
         args,
         ["render-images", "--cached", "--count", "10", "/scans/x"]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_panicking_renderer_is_reported_by_its_message_line() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let mut job = job(root.path());
+    job.renderer = renderer_script(
+        root.path(),
+        "echo \"thread 'main' panicked at src/x.rs:1:1:\" >&2\necho 'boom' >&2\necho 'cannot render the share images: boom' >&2\necho 'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace' >&2\nexit 101",
+    );
+    let sink = Recorder::open();
+    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    assert!(matches!(outcome, Outcome::Finished));
+    let lines = logs(&sink);
+    assert!(
+        lines.contains(
+            &"Could not create the images: cannot render the share images: boom".to_owned()
+        ),
+        "{lines:?}"
+    );
+}
+
+struct Panicking;
+
+impl Fetch for Panicking {
+    fn get(&mut self, _url: &str) -> Result<Option<Vec<u8>>> {
+        panic!("the cover server blew up");
+    }
+}
+
+fn one_lost_play() -> SavedScan {
+    SavedScan {
+        version: history::VERSION,
+        made_at: 1_794_649_471,
+        player_id: 7,
+        player_name: "Synthetic".into(),
+        include_all: true,
+        check_missing: false,
+        lost_total: 1,
+        lost_ranked: 1,
+        lost: vec![LostRow {
+            pp: 400.0,
+            kept_pp: 380.0,
+            score: 900_000,
+            kept_score: 800_000,
+            mods: String::new(),
+            unix_time: 1_794_600_000,
+            played: "2026-11-13".into(),
+            status: MapStatus::Ranked,
+            beatmap_md5: format!("{:032x}", 1),
+            beatmap_id: Some(1),
+            beatmapset_id: Some(101),
+            artist: "Synthetic Artist".into(),
+            title: "Synthetic Title".into(),
+            version: "Insane".into(),
+            file: "x.osr".into(),
+            creator: "Synthetic Mapper".into(),
+            hits: Hits {
+                n300: 400,
+                n100: 6,
+                n50: 1,
+                misses: 2,
+            },
+            accuracy: 97.25,
+            grade: Grade::S,
+            max_combo: 321,
+        }],
+        potential: None,
+    }
+}
+
+#[test]
+fn a_panic_while_fetching_covers_is_logged_and_does_not_escape() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let mut lines = Vec::new();
+    let mut events = |event: Event| {
+        if let Event::Log(text) = event {
+            lines.push(text);
+        }
+    };
+    create_images(
+        &job,
+        &one_lost_play(),
+        root.path(),
+        &mut events,
+        &mut Panicking,
+    );
+    assert_eq!(
+        lines,
+        ["Could not create the images: the cover server blew up"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_renderer_binary_does_not_panic_on_a_folder_that_is_not_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::Command;
+
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join(OsStr::from_bytes(b"scan-\xff\xfe"));
+    let output = Command::new(env!("CARGO_BIN_EXE_lost-scores-gui"))
+        .arg("render-images")
+        .arg(&folder)
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env("XDG_CACHE_HOME", root.path().join("cache"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.starts_with("cannot render the share images: "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
 }

@@ -1,11 +1,14 @@
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::ffi::OsString;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow};
-use image::{ImageFormat, RgbaImage};
+use image::codecs::png::PngEncoder;
+use image::{ExtendedColorType, ImageEncoder};
 use jiff::tz::TimeZone;
 use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::{cache, setup};
@@ -30,6 +33,7 @@ use crate::table::when_day;
 use crate::view::{color, status_chip};
 use crate::{ShareArt, ShareBadge, ShareItem, ShareLost, ShareMod, SharePotential};
 
+pub const FAILURE_PREFIX: &str = "cannot render the share images: ";
 pub const SCALE: f32 = 2.0;
 pub const HEADER_AVATAR: (u32, f32) = (128, 28.0);
 pub const BADGE_AVATAR: (u32, f32) = (208, 44.0);
@@ -370,10 +374,17 @@ pub fn prepare(
 }
 
 fn png(rendered: &Rendered) -> Result<Vec<u8>> {
-    let image = RgbaImage::from_raw(rendered.width, rendered.height, rendered.rgba.clone())
-        .context("the rendered image has the wrong size")?;
+    let expected = u64::from(rendered.width) * u64::from(rendered.height) * 4;
+    if rendered.rgba.len() as u64 != expected {
+        return Err(anyhow!("the rendered image has the wrong size"));
+    }
     let mut bytes = Vec::new();
-    image.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)?;
+    PngEncoder::new(&mut bytes).write_image(
+        &rendered.rgba,
+        rendered.width,
+        rendered.height,
+        ExtendedColorType::Rgba8,
+    )?;
     Ok(bytes)
 }
 
@@ -422,18 +433,25 @@ pub struct RenderArgs {
 }
 
 impl RenderArgs {
-    pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
-        let mut args = args.into_iter();
+    pub fn parse<I>(args: I) -> Result<Self, String>
+    where
+        I: IntoIterator,
+        I::Item: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
         let mut folder = None;
         let mut cached = false;
         let mut count = None;
         let mut show_lost_in_top = false;
         while let Some(arg) = args.next() {
-            match arg.as_str() {
+            match arg.to_str().unwrap_or_default() {
                 "--cached" => cached = true,
                 "--show-lost-in-top" => show_lost_in_top = true,
                 "--count" => {
-                    let value = args.next().unwrap_or_default();
+                    let value = args
+                        .next()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     count = Some(
                         setup::parse_scores_to_show(&value)
                             .map(usize::from)
@@ -465,6 +483,22 @@ impl RenderArgs {
     }
 }
 
+pub fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "the renderer stopped unexpectedly".to_owned())
+}
+
+pub fn guarded<T>(work: impl FnOnce() -> Result<T>) -> Result<T, String> {
+    match panic::catch_unwind(AssertUnwindSafe(work)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(format!("{error:#}")),
+        Err(payload) => Err(panic_message(payload.as_ref())),
+    }
+}
+
 pub fn render_folder(args: &RenderArgs) -> Result<Output> {
     let scan = history::load(&args.folder)?;
     let settings = setup::config_file()
@@ -490,7 +524,9 @@ pub fn render_folder(args: &RenderArgs) -> Result<Output> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{BADGE_FILE, Choice, LOST_FILE, Prepared, RenderArgs, images_in};
+    use super::{
+        BADGE_FILE, Choice, LOST_FILE, Prepared, RenderArgs, Rendered, guarded, images_in, png,
+    };
 
     fn parse(args: &[&str]) -> Result<RenderArgs, String> {
         RenderArgs::parse(args.iter().map(|arg| (*arg).to_owned()))
@@ -568,5 +604,46 @@ mod tests {
                 "The avatar could not be downloaded: network down"
             ]
         );
+    }
+
+    #[test]
+    fn a_panic_becomes_an_error_message() {
+        let caught: Result<(), String> = guarded(|| panic!("boom {}", 7));
+        assert_eq!(caught, Err("boom 7".to_owned()));
+        let caught: Result<(), String> = guarded(|| panic!("plain"));
+        assert_eq!(caught, Err("plain".to_owned()));
+        let failed: Result<(), String> = guarded(|| Err(anyhow::anyhow!("no folder")));
+        assert_eq!(failed, Err("no folder".to_owned()));
+        assert_eq!(guarded(|| Ok(3)), Ok(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_is_not_utf8_is_kept_as_it_is() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let folder = OsString::from_vec(b"/scans/\xff\xfe".to_vec());
+        let parsed = RenderArgs::parse([OsString::from("--cached"), folder.clone()]).unwrap();
+        assert_eq!(parsed.folder, PathBuf::from(folder));
+        assert!(parsed.cached);
+    }
+
+    #[test]
+    fn the_png_carries_the_pixels_of_the_frame() {
+        let rendered = Rendered {
+            file: LOST_FILE,
+            width: 3,
+            height: 2,
+            rgba: (0..24).map(|value| value as u8 * 9).collect(),
+        };
+        let bytes = png(&rendered).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (3, 2));
+        assert_eq!(decoded.as_raw(), &rendered.rgba);
+        let short = Rendered {
+            rgba: vec![0; 5],
+            ..rendered
+        };
+        assert!(png(&short).is_err());
     }
 }
