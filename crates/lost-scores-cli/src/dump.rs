@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::Path;
 
 use lost_scores_core::{LocalBeatmap, Scan, ScannedReplay};
 use serde::Serialize;
@@ -121,12 +122,7 @@ impl<'a> From<&'a LocalBeatmap> for Beatmap<'a> {
     fn from(beatmap: &'a LocalBeatmap) -> Self {
         let metadata = &beatmap.metadata;
         Self {
-            path: beatmap
-                .path
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
+            path: slashed(&beatmap.path),
             beatmap_id: metadata.beatmap_id,
             beatmapset_id: metadata.beatmapset_id,
             artist: &metadata.artist,
@@ -135,6 +131,16 @@ impl<'a> From<&'a LocalBeatmap> for Beatmap<'a> {
             creator: &metadata.creator,
         }
     }
+}
+
+fn slashed(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.display().to_string();
+    }
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 impl fmt::Display for Stats {
@@ -169,7 +175,7 @@ mod tests {
     use osu_formats::{BeatmapMetadata, Mods, ReplayError, ReplayHeader};
     use serde_json::{Value, json};
 
-    use super::Dump;
+    use super::{Beatmap, Dump};
 
     fn header(beatmap_md5: &str, timestamp_ticks: i64) -> ReplayHeader {
         ReplayHeader {
@@ -252,6 +258,16 @@ mod tests {
                 "pp_failed_beatmaps": 2,
             })
         );
+    }
+
+    #[test]
+    fn an_absolute_beatmap_path_is_printed_as_it_is() {
+        let path = std::env::temp_dir().join("osu").join("aaaa.osu");
+        let beatmap = LocalBeatmap {
+            path: path.clone(),
+            metadata: BeatmapMetadata::default(),
+        };
+        assert_eq!(Beatmap::from(&beatmap).path, path.display().to_string());
     }
 
     #[test]
