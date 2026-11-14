@@ -1,0 +1,197 @@
+import { T } from "theme.slint";
+import { State } from "state.slint";
+import { PrimaryButton, SecondaryButton, IconButton } from "widgets.slint";
+
+component Label inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> note;
+    in property <bool> missing;
+    spacing: 8px;
+    Text {
+        text: root.text;
+        color: T.lbl;
+        font-size: 14px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    if root.note != "": Text {
+        text: root.note;
+        color: T.logts;
+        font-size: 12px;
+        font-italic: true;
+        vertical-alignment: center;
+    }
+    Rectangle { horizontal-stretch: 1; }
+    if root.missing: Text {
+        text: "required";
+        color: T.down;
+        font-size: 12px;
+        font-weight: 500;
+        vertical-alignment: center;
+    }
+}
+
+component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret;
+    in property <bool> missing;
+    in property <bool> enabled: true;
+    property <bool> reveal;
+    height: 40px;
+    border-radius: 8px;
+    background: T.field;
+    border-width: 2px;
+    border-color: root.missing ? T.down : (input.has-focus || area.has-hover ? T.acc : transparent);
+    animate border-color { duration: 150ms; }
+    area := TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            input.focus();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 4px;
+        spacing: 4px;
+        Rectangle {
+            horizontal-stretch: 1;
+            if root.text == "": Text {
+                text: root.placeholder;
+                color: T.logts;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+            input := TextInput {
+                text <=> root.text;
+                enabled: root.enabled;
+                color: T.ftext;
+                font-size: 14px;
+                vertical-alignment: center;
+                single-line: true;
+                input-type: root.secret && !root.reveal ? InputType.password : InputType.text;
+                edited => {
+                    State.keys-error = "";
+                }
+            }
+        }
+        if root.secret: VerticalLayout {
+            alignment: center;
+            IconButton {
+                width: 28px;
+                height: 28px;
+                icon: root.reveal ? @image-url("../assets/i-eye-slash.svg") : @image-url("../assets/i-eye.svg");
+                tip: root.reveal ? "Hide the secret" : "Show the secret";
+                clicked => {
+                    root.reveal = !root.reveal;
+                }
+            }
+        }
+    }
+}
+
+export component KeysSheet inherits Rectangle {
+    background: #000000b0;
+    TouchArea {
+        clicked => {
+            if (!State.keys-busy) {
+                State.cancel-keys();
+            }
+        }
+    }
+    Rectangle {
+        width: min(560px, parent.width - 40px);
+        height: min(card.preferred-height, parent.height - 24px);
+        border-radius: 12px;
+        background: T.card;
+        border-width: 2px;
+        border-color: T.togb;
+        TouchArea { }
+        card := VerticalLayout {
+            padding: 22px;
+            spacing: 6px;
+            Text {
+                text: "API Keys & User Configuration";
+                color: #ffffff;
+                font-size: 22px;
+                font-weight: 600;
+            }
+            Rectangle { height: 4px; }
+            Text {
+                text: "Create an OAuth application on the osu! website: any name, callback URL http://localhost. Then paste its keys here. They stay on this computer.";
+                color: T.k2;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 4px; }
+            SecondaryButton {
+                height: 36px;
+                text: "Open osu! account settings";
+                text-size: 15px;
+                clicked => {
+                    State.open-account-settings();
+                }
+            }
+            Rectangle { height: 8px; }
+            Label {
+                text: "Username or ID";
+                note: State.keys-user-from-config ? "from your osu! config" : "";
+                missing: State.keys-user-missing;
+            }
+            TextField {
+                text <=> State.keys-user;
+                enabled: !State.keys-busy;
+                missing: State.keys-user-missing;
+            }
+            Rectangle { height: 4px; }
+            Label {
+                text: "Client ID";
+                missing: State.keys-id-missing;
+            }
+            TextField {
+                text <=> State.keys-id;
+                placeholder: "e.g. 41234";
+                enabled: !State.keys-busy;
+                missing: State.keys-id-missing;
+            }
+            Rectangle { height: 4px; }
+            Label {
+                text: "Client Secret";
+                missing: State.keys-secret-missing;
+            }
+            TextField {
+                text <=> State.keys-secret;
+                placeholder: "40 characters";
+                secret: true;
+                enabled: !State.keys-busy;
+                missing: State.keys-secret-missing;
+            }
+            if State.keys-error != "": Text {
+                text: State.keys-error;
+                color: T.down;
+                font-size: 13px;
+                font-weight: 500;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 10px; }
+            HorizontalLayout {
+                spacing: 10px;
+                SecondaryButton {
+                    text: "Cancel";
+                    enabled: !State.keys-busy;
+                    clicked => {
+                        State.cancel-keys();
+                    }
+                }
+                PrimaryButton {
+                    height: 44px;
+                    text: "Save";
+                    enabled: !State.keys-busy;
+                    clicked => {
+                        State.save-keys();
+                    }
+                }
+            }
+        }
+    }
+}

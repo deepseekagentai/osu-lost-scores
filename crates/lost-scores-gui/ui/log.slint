@@ -1,0 +1,55 @@
+import { T } from "theme.slint";
+import { State } from "state.slint";
+import { HoverBox } from "widgets.slint";
+
+component LogLine inherits HorizontalLayout {
+    in property <string> time;
+    in property <string> message;
+    spacing: 6px;
+    alignment: start;
+    Text {
+        text: root.time;
+        color: T.logts;
+        font-size: 12.5px;
+        font-italic: true;
+    }
+    Text {
+        text: root.message;
+        color: T.logt;
+        font-size: 12.5px;
+        font-italic: true;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
+export component LogBox inherits HoverBox {
+    min-height: 64px;
+    preferred-height: 112px;
+    vertical-stretch: 1;
+    border-radius: 10px;
+    background: T.field;
+    property <length> content: lines.preferred-height;
+    changed content => {
+        flick.content-y = Math.min(0px, flick.height - root.content);
+    }
+    flick := Flickable {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        content-height: root.content;
+        lines := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 4px;
+            alignment: start;
+            for entry in State.log: LogLine {
+                time: entry.time;
+                message: entry.text;
+            }
+        }
+    }
+}

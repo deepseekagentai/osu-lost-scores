@@ -1,4 +1,7 @@
+pub mod account;
 pub mod app;
+pub mod avatar;
+pub mod log;
 
 use std::path::Path;
 

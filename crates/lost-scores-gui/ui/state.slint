@@ -1,6 +1,45 @@
+export struct LogEntry {
+    time: string,
+    text: string,
+}
+
 export global State {
     in-out property <string> osu-dir;
+    in-out property <bool> busy;
     in-out property <string> status;
+    in-out property <[LogEntry]> log;
+
+    in-out property <bool> connected;
+    in-out property <string> user-name;
+    in-out property <image> avatar;
+    in-out property <bool> has-avatar;
+    in-out property <bool> stats-ready;
+    in-out property <string> perf-now;
+    in-out property <string> perf-potential;
+    in-out property <string> acc-now;
+    in-out property <string> acc-potential;
+    in-out property <string> rank;
+
+
+    in-out property <bool> keys-open;
+    in-out property <string> keys-user;
+    in-out property <string> keys-id;
+    in-out property <string> keys-secret;
+    in-out property <bool> keys-user-from-config;
+    in-out property <bool> keys-user-missing;
+    in-out property <bool> keys-id-missing;
+    in-out property <bool> keys-secret-missing;
+    in-out property <string> keys-error;
+    in-out property <bool> keys-busy;
+    in-out property <bool> confirm-open;
 
     callback pick-folder();
+    callback start-scan();
+    callback open-keys();
+    callback cancel-keys();
+    callback save-keys();
+    callback open-account-settings();
+    callback ask-logout();
+    callback cancel-logout();
+    callback confirm-logout();
 }
