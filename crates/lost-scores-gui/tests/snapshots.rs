@@ -781,7 +781,6 @@ fn preview_from(state: &State<'_>, folder: &std::path::Path, room: f32) {
                 height: buffer.height() as f32 / SCALE,
                 image: slint::Image::from_rgba8(buffer),
                 ready: true,
-                centered: label == &"Badge",
             }
         })
         .collect();

@@ -23,9 +23,7 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::clipboard::Clipboard;
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
-use crate::previews::{
-    BADGE_LOGICAL, Wanted, natural_width, picture_tops, plan, render_all, step_target,
-};
+use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::scans::{older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
@@ -1399,8 +1397,6 @@ impl Session {
         for (item, result) in made {
             let preview = match result {
                 Ok(buffer) => Preview {
-                    centered: natural_width(&item.path) == BADGE_LOGICAL
-                        || buffer.width() < item.width,
                     label: item.label.into(),
                     width: buffer.width() as f32 / scale,
                     height: buffer.height() as f32 / scale,
@@ -1408,7 +1404,6 @@ impl Session {
                     ready: true,
                 },
                 Err(_) => Preview {
-                    centered: false,
                     label: item.label.into(),
                     image: slint::Image::default(),
                     width: 0.0,

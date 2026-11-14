@@ -618,7 +618,7 @@ component PreviewCard inherits Rectangle {
     in property <Preview> item;
     in property <int> index;
     property <length> span: max(root.item.width, 160px);
-    property <length> shift: root.item.centered ? max(0px, (root.width - root.span) / 2) : 0px;
+    property <length> shift: max(0px, (root.width - root.span) / 2);
     height: 40px + root.item.height + 18px;
     SecondaryButton {
         x: root.shift + root.span - 72px - 6px - self.width;
@@ -690,24 +690,16 @@ component PictureArrows inherits HorizontalLayout {
 component ModeSegment inherits Rectangle {
     in property <string> text;
     in property <bool> active;
-    callback clicked;
+    in property <bool> hovered;
     border-radius: 8px;
     background: root.active ? T.tog-on : transparent;
     border-width: 2px;
     border-color: root.active ? T.acc : transparent;
     Text {
         text: root.text;
-        color: root.active || ta.has-hover ? #ffffff : T.k;
+        color: root.active || root.hovered ? #ffffff : T.k;
         font-size: 14px;
         font-weight: 600;
-    }
-    ta := TouchArea {
-        accessible-role: button;
-        accessible-label: root.text;
-        mouse-cursor: pointer;
-        clicked => {
-            root.clicked();
-        }
     }
 }
 
@@ -722,15 +714,23 @@ component ModeSwitch inherits Rectangle {
         ModeSegment {
             text: "Images";
             active: State.images-shown;
-            clicked => {
-                State.show-images();
-            }
+            hovered: ta.has-hover;
         }
         ModeSegment {
             text: "Table";
             active: !State.images-shown;
-            clicked => {
+            hovered: ta.has-hover;
+        }
+    }
+    ta := TouchArea {
+        accessible-role: button;
+        accessible-label: State.images-shown ? "Show the table" : "Show the images";
+        mouse-cursor: pointer;
+        clicked => {
+            if (State.images-shown) {
                 State.set-tab(State.tab);
+            } else {
+                State.show-images();
             }
         }
     }

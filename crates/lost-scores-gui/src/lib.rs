@@ -265,7 +265,6 @@ mod tests {
                 width: 0.0,
                 height: 0.0,
                 ready: false,
-                centered: false,
             })
             .collect();
         state.set_previews(ModelRc::new(VecModel::from(previews)));
@@ -347,13 +346,30 @@ mod tests {
             "{width}: {}",
             images.x
         );
-        for label in ["Images", "Table"] {
+    }
+
+    #[test]
+    fn a_click_anywhere_on_the_switch_flips_the_mode() {
+        let window = images_window(650.0, &["Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_tab(1);
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (images, tables) = (calls.clone(), calls.clone());
+        state.on_show_images(move || images.borrow_mut().push(-1));
+        state.on_set_tab(move |index| tables.borrow_mut().push(index));
+        let click = |label: &str| {
             ElementHandle::find_by_accessible_label(&window, label)
                 .next()
                 .unwrap()
                 .mock_single_click(PointerEventButton::Left);
-        }
-        assert_eq!(*calls.borrow(), [-1, 1]);
+        };
+        state.set_images_shown(false);
+        click("Table");
+        click("Images");
+        state.set_images_shown(true);
+        click("Images");
+        click("Table");
+        assert_eq!(*calls.borrow(), [-1, -1, 1, 1]);
     }
 
     fn arrows(window: &MainWindow) -> usize {
@@ -509,10 +525,10 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_is_centred_and_its_buttons_follow_its_right_edge() {
+    fn every_picture_is_centred_and_its_buttons_follow_its_right_edge() {
         let window = images_window(650.0, &[]);
         let state = window.global::<State>();
-        let make = |label: &str, width: f32, centered: bool| Preview {
+        let make = |label: &str, width: f32| Preview {
             label: label.into(),
             image: slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
                 width as u32,
@@ -521,12 +537,11 @@ mod tests {
             width,
             height: 60.0,
             ready: true,
-            centered,
         };
         state.set_has_images(true);
         state.set_previews(ModelRc::new(VecModel::from(vec![
-            make("Badge", 300.0, true),
-            make("Lost Scores", 500.0, false),
+            make("Badge", 300.0),
+            make("Lost Scores", 500.0),
         ])));
         state.set_images_shown(true);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
@@ -543,7 +558,7 @@ mod tests {
         let wide = image(500.0);
         let centre = card.absolute_position().x + card.size().width / 2.0;
         assert!((badge.absolute_position().x + 150.0 - centre).abs() < 1.0);
-        assert_eq!(wide.absolute_position().x, card.absolute_position().x);
+        assert!((wide.absolute_position().x + 250.0 - centre).abs() < 1.0);
         let mut catboxes: Vec<_> = ElementHandle::find_by_accessible_label(&window, "catbox")
             .map(|button| {
                 (
