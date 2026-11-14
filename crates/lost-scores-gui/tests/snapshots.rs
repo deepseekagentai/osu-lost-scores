@@ -813,6 +813,19 @@ fn render_share_snapshots() {
         state.set_share_open(false);
     }
 
+    state.set_scans_open(false);
+    state.set_has_results(true);
+    state.set_show_results(true);
+    draw_sized(&surface, LOGICAL, &dir.join("s650-settle.png"));
     state.set_scans_open(true);
+    surface.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(200.0, 191.0),
+    });
     draw_sized(&surface, LOGICAL, &dir.join("s650-scan-list.png"));
+    std::fs::remove_file(dir.join("s650-settle.png")).unwrap();
+
+    state.set_scans_open(false);
+    state.set_copied_text("Link copied".into());
+    state.set_copied(true);
+    draw_sized(&surface, LOGICAL, &dir.join("s650-toast.png"));
 }
