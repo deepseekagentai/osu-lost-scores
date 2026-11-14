@@ -5,6 +5,7 @@ pub mod layout;
 pub mod log;
 pub mod scan;
 pub mod table;
+pub mod update;
 pub mod view;
 pub mod worker;
 

@@ -210,6 +210,23 @@ component Profile inherits HorizontalLayout {
                     State.commit-scores(text);
                 }
             }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: @image-url("../assets/i-trash.svg");
+                tip: "Clear cache";
+                enabled: !State.busy;
+                clicked => {
+                    State.ask-clear-cache();
+                }
+            }
+            IconButton {
+                icon: @image-url("../assets/i-rotate.svg");
+                tip: "Check for updates";
+                enabled: !State.checking-updates;
+                clicked => {
+                    State.check-updates();
+                }
+            }
         }
     }
 }

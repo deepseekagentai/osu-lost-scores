@@ -529,4 +529,12 @@ fn render_results_snapshots() {
         LOGICAL,
         &dir.join("19-results-overlay-with-back.png"),
     );
+
+    state.set_show_results(false);
+    state.set_version("0.1.0".into());
+    state.set_about_open(true);
+    draw(&surface, &dir.join("20-about-sheet.png"));
+    state.set_about_open(false);
+    state.set_cache_confirm_open(true);
+    draw(&surface, &dir.join("21-clear-cache-confirm.png"));
 }

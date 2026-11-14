@@ -77,6 +77,10 @@ export global State {
     in-out property <string> keys-error;
     in-out property <bool> keys-busy;
     in-out property <bool> confirm-open;
+    in-out property <bool> cache-confirm-open;
+    in-out property <bool> about-open;
+    in-out property <bool> checking-updates;
+    in-out property <string> version;
 
     in-out property <bool> has-results;
     in-out property <bool> show-results;
@@ -116,6 +120,13 @@ export global State {
     callback open-scan-folder();
     callback open-beatmap(int);
     callback copy-row(int);
+    callback ask-clear-cache();
+    callback cancel-clear-cache();
+    callback confirm-clear-cache();
+    callback check-updates();
+    callback open-about();
+    callback close-about();
+    callback open-developer-site();
     callback see-full-results();
     callback back();
 }

@@ -316,3 +316,27 @@ export component ScoresBox inherits Rectangle {
         }
     }
 }
+
+export component Link inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+    width: label.preferred-width;
+    height: label.preferred-height + 3px;
+    label := Text {
+        y: 0;
+        text: root.text;
+        color: ta.has-hover ? T.acc : T.link;
+        font-size: 13px;
+    }
+    Rectangle {
+        y: label.preferred-height + 1px;
+        height: 1px;
+        background: ta.has-hover ? T.acc : T.link;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}

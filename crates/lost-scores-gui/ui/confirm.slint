@@ -1,12 +1,15 @@
 import { T } from "theme.slint";
-import { State } from "state.slint";
 import { PrimaryButton, SecondaryButton } from "widgets.slint";
 
 export component ConfirmSheet inherits Rectangle {
+    in property <string> message;
+    in property <string> ok-text;
+    callback cancel();
+    callback ok();
     background: #000000b0;
     TouchArea {
         clicked => {
-            State.cancel-logout();
+            root.cancel();
         }
     }
     Rectangle {
@@ -21,7 +24,7 @@ export component ConfirmSheet inherits Rectangle {
             padding: 22px;
             spacing: 18px;
             Text {
-                text: "Are you sure you want to log out?";
+                text: root.message;
                 color: #ffffff;
                 font-size: 18px;
                 font-weight: 600;
@@ -34,14 +37,14 @@ export component ConfirmSheet inherits Rectangle {
                     text: "Cancel";
                     text-size: 16px;
                     clicked => {
-                        State.cancel-logout();
+                        root.cancel();
                     }
                 }
                 PrimaryButton {
                     height: 40px;
-                    text: "Log out";
+                    text: root.ok-text;
                     clicked => {
-                        State.confirm-logout();
+                        root.ok();
                     }
                 }
             }

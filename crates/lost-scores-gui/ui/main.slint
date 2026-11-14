@@ -1,12 +1,13 @@
 import { T, Tip } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, GhostIconButton, SecondaryButton } from "widgets.slint";
+import { HoverBox, GhostIconButton, SecondaryButton, Link } from "widgets.slint";
 import { AccountCard } from "account.slint";
 import { LogBox } from "log.slint";
 import { StartScan, ProgressBar, StatusLine } from "controls.slint";
 import { KeysSheet } from "keys.slint";
 import { ConfirmSheet } from "confirm.slint";
 import { ResultsPanel } from "results.slint";
+import { AboutSheet } from "about.slint";
 
 export { State }
 
@@ -169,6 +170,23 @@ export component MainWindow inherits Window {
                     State.see-full-results();
                 }
             }
+            Rectangle { height: 10px; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 18px;
+                Link {
+                    text: "Developer Website";
+                    clicked => {
+                        State.open-developer-site();
+                    }
+                }
+                Link {
+                    text: "About";
+                    clicked => {
+                        State.open-about();
+                    }
+                }
+            }
         }
         if !root.two-columns: Rectangle { horizontal-stretch: 1; }
         if root.two-columns: Rectangle {
@@ -195,6 +213,30 @@ export component MainWindow inherits Window {
         height: root.height;
     }
     if State.confirm-open: ConfirmSheet {
+        width: root.width;
+        height: root.height;
+        message: "Are you sure you want to log out?";
+        ok-text: "Log out";
+        cancel => {
+            State.cancel-logout();
+        }
+        ok => {
+            State.confirm-logout();
+        }
+    }
+    if State.cache-confirm-open: ConfirmSheet {
+        width: root.width;
+        height: root.height;
+        message: "Remove downloaded avatars and covers? Scan history, the map catalog and your settings stay.";
+        ok-text: "Clear cache";
+        cancel => {
+            State.cancel-clear-cache();
+        }
+        ok => {
+            State.confirm-clear-cache();
+        }
+    }
+    if State.about-open: AboutSheet {
         width: root.width;
         height: root.height;
     }

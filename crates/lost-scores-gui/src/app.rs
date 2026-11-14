@@ -13,6 +13,7 @@ use lost_scores_app::pipeline::Api;
 use lost_scores_app::pipeline::Source;
 use lost_scores_app::rows::thousands;
 use lost_scores_app::setup::Settings;
+use lost_scores_app::updates::latest_release;
 use lost_scores_app::{cache, history, keys, setup};
 use osu_api::Credentials;
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -24,6 +25,7 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::scan::{NEEDS_KEYS, Phase, ScanState};
 use crate::table::{Column, Tab, Table, when, wrap};
+use crate::update::update_message;
 use crate::view::{RowsModel, foot};
 use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
@@ -33,6 +35,8 @@ const START_MESSAGE: &str =
 const AVATAR_LOGICAL: f32 = 120.0;
 const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
 const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
+const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
 struct Session {
@@ -178,6 +182,7 @@ impl Session {
         let state = window.global::<State>();
         state.set_log(ModelRc::from(self.log.clone()));
         state.set_rows(ModelRc::from(self.rows.clone()));
+        state.set_version(env!("CARGO_PKG_VERSION").into());
         match setup::resolve_osu_dir(None) {
             Ok(dir) => state.set_osu_dir(show_path(&dir).into()),
             Err(_) => state.set_status(START_MESSAGE.into()),
@@ -188,6 +193,7 @@ impl Session {
         state.set_show_lost(settings.show_lost_in_top_image);
         state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
         self.bind(&state);
+        self.bind_extras(&state);
         self.load_newest();
         *self.credentials.borrow_mut() = stored_credentials();
         let name = saved_player().or_else(config_player);
@@ -262,6 +268,76 @@ impl Session {
         });
         let session = self.clone();
         state.on_copy_row(move |index| session.copy_row(index as usize));
+    }
+
+    fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
+        state.on_open_developer_site(|| {
+            let _ = open::that(DEVELOPER_SITE);
+        });
+        let session = self.clone();
+        state.on_open_about(move || session.window.global::<State>().set_about_open(true));
+        let session = self.clone();
+        state.on_close_about(move || session.window.global::<State>().set_about_open(false));
+        let session = self.clone();
+        state.on_ask_clear_cache(move || {
+            session
+                .window
+                .global::<State>()
+                .set_cache_confirm_open(true);
+        });
+        let session = self.clone();
+        state.on_cancel_clear_cache(move || {
+            session
+                .window
+                .global::<State>()
+                .set_cache_confirm_open(false);
+        });
+        let session = self.clone();
+        state.on_confirm_clear_cache(move || session.clear_cache());
+        let session = self.clone();
+        state.on_check_updates(move || session.check_updates());
+    }
+
+    fn clear_cache(&self) {
+        self.window.global::<State>().set_cache_confirm_open(false);
+        let Some(root) = setup::cache_root() else {
+            self.log("Could not find the cache folder");
+            return;
+        };
+        match cache::clear(&root) {
+            Ok(removed) => self.log(&format!("Cache cleared: {removed} files removed")),
+            Err(error) => self.log(&format!("Could not clear the cache: {error:#}")),
+        }
+    }
+
+    fn check_updates(self: &Rc<Self>) {
+        let state = self.window.global::<State>();
+        if state.get_checking_updates() {
+            return;
+        }
+        state.set_checking_updates(true);
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(UPDATE_TIMEOUT))
+                .user_agent(lost_scores_app::online::USER_AGENT)
+                .build()
+                .into();
+            let result = latest_release(&agent);
+            on_ui(&weak, move |app| {
+                app.window.global::<State>().set_checking_updates(false);
+                match result {
+                    Ok(release) => {
+                        let message = update_message(env!("CARGO_PKG_VERSION"), release.as_ref());
+                        app.log(&message.text);
+                        if let Some(url) = message.open {
+                            let _ = open::that(url);
+                        }
+                    }
+                    Err(error) => app.log(&format!("Could not check for updates: {error:#}")),
+                }
+            });
+        });
     }
 
     fn load_newest(self: &Rc<Self>) {
