@@ -25,6 +25,8 @@ use slint::{ComponentHandle, ModelRc, PhysicalSize, VecModel};
 const SCALE: f32 = 1.25;
 const LOGICAL: (f32, f32) = (650.0, 800.0);
 const WIDE: (f32, f32) = (1100.0, 800.0);
+const COMPACT: (f32, f32) = (650.0, 720.0);
+const TWO_COLUMNS: (f32, f32) = (1600.0, 800.0);
 
 struct Offscreen(Rc<MinimalSoftwareWindow>);
 
@@ -497,4 +499,34 @@ fn render_results_snapshots() {
     let results = Results::new(&unicode);
     results.present(&state, &unicode, Tab::Lost);
     draw(&surface, &dir.join("15-results-cyrillic-japanese.png"));
+
+    let scan = fake_scan(false);
+    let results = Results::new(&scan);
+    results.present(&state, &scan, Tab::Lost);
+    state.set_connected(true);
+    state.set_user_name("SamplePlayer".into());
+    state.set_avatar(avatar());
+    state.set_has_avatar(true);
+    state.set_stats_ready(true);
+    state.set_perf_now("8,557".into());
+    state.set_perf_potential("8,668".into());
+    state.set_acc_now("98.38%".into());
+    state.set_acc_potential("97.95%".into());
+    state.set_rank("#14,856".into());
+    state.set_status("Scan finished: 7 lost plays, 4 on ranked maps".into());
+    state.set_progress(1.0);
+    state.set_log(log(&[
+        ("[17:50:02]", "player: SamplePlayer"),
+        ("[17:50:15]", "7 lost plays found, 4 of them on ranked maps"),
+    ]));
+    state.set_show_results(false);
+    draw(&surface, &dir.join("16-main-one-column.png"));
+    draw_sized(&surface, COMPACT, &dir.join("17-main-compact.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("18-main-two-columns.png"));
+    state.set_show_results(true);
+    draw_sized(
+        &surface,
+        LOGICAL,
+        &dir.join("19-results-overlay-with-back.png"),
+    );
 }

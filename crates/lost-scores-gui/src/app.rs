@@ -124,6 +124,7 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
         closed.store(true, Ordering::Relaxed);
         slint::CloseRequestResponse::HideWindow
     });
+    crate::layout::bind(&window);
     session.setup(&window);
     SESSION.with(|slot| *slot.borrow_mut() = Some(session.clone()));
     let timer = slint::Timer::default();
@@ -261,14 +262,6 @@ impl Session {
         });
         let session = self.clone();
         state.on_copy_row(move |index| session.copy_row(index as usize));
-        let session = self.clone();
-        state.on_see_full_results(move || {
-            session.window.global::<State>().set_show_results(true);
-        });
-        let session = self.clone();
-        state.on_back(move || {
-            session.window.global::<State>().set_show_results(false);
-        });
     }
 
     fn load_newest(self: &Rc<Self>) {

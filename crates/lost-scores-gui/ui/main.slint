@@ -13,8 +13,16 @@ export { State }
 export component MainWindow inherits Window {
     out property <string> product: "osu! Lost Scores Analyzer";
     in-out property <bool> compact: false;
+    in-out property <bool> two-columns: false;
     init => {
         root.compact = root.height < 790px;
+        root.two-columns = root.width >= 1480px;
+    }
+    changed width => {
+        root.two-columns = root.width >= 1480px;
+        if (root.two-columns) {
+            State.show-results = false;
+        }
     }
     changed height => {
         root.compact = root.height < 790px;
@@ -50,11 +58,11 @@ export component MainWindow inherits Window {
         }
     }
     HorizontalLayout {
-        Rectangle { horizontal-stretch: 1; }
+        if !root.two-columns: Rectangle { horizontal-stretch: 1; }
         VerticalLayout {
             min-width: 650px;
-            max-width: 720px;
-            horizontal-stretch: 1;
+            max-width: root.two-columns ? 650px : 720px;
+            horizontal-stretch: root.two-columns ? 0 : 1;
             padding-left: 50px;
             padding-right: 50px;
             padding-top: 22px;
@@ -143,18 +151,18 @@ export component MainWindow inherits Window {
             ProgressBar { }
             Rectangle { height: 10px; }
             StatusLine { }
-            if !root.compact: Rectangle { height: 20px; }
-            if !root.compact: Text {
+            if !root.compact || root.two-columns: Rectangle { height: 20px; }
+            if !root.compact || root.two-columns: Text {
                 text: "Log";
                 color: T.lbl;
                 font-size: 17px;
                 font-weight: 600;
             }
-            if !root.compact: Rectangle { height: 8px; }
-            if !root.compact: LogBox { }
-            if root.compact: Rectangle { vertical-stretch: 1; }
-            Rectangle { height: 14px; }
-            SecondaryButton {
+            if !root.compact || root.two-columns: Rectangle { height: 8px; }
+            if !root.compact || root.two-columns: LogBox { }
+            if root.compact && !root.two-columns: Rectangle { vertical-stretch: 1; }
+            if !root.two-columns: Rectangle { height: 14px; }
+            if !root.two-columns: SecondaryButton {
                 text: "See Full Results";
                 enabled: State.has-results;
                 clicked => {
@@ -162,10 +170,17 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        Rectangle { horizontal-stretch: 1; }
+        if !root.two-columns: Rectangle { horizontal-stretch: 1; }
+        if root.two-columns: Rectangle {
+            width: 2px;
+            background: T.divider;
+        }
+        if root.two-columns: ResultsPanel {
+            horizontal-stretch: 1;
+        }
     }
 
-    if State.show-results: Rectangle {
+    if State.show-results && !root.two-columns: Rectangle {
         width: root.width;
         height: root.height;
         background: T.bg;
