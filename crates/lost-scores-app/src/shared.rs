@@ -30,7 +30,11 @@ pub struct Shared<T = Http> {
 
 impl Shared<Http> {
     pub fn new() -> Self {
-        Self::with_transport(Http::new(USER_AGENT), &server_url())
+        Self::at(&server_url())
+    }
+
+    pub fn at(base: &str) -> Self {
+        Self::with_transport(Http::new(USER_AGENT), base)
     }
 }
 

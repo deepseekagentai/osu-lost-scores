@@ -71,7 +71,7 @@ impl std::fmt::Display for PlayerLookup {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "could not look the player {} up on the osu! API: {}",
+            "could not look the player {} up: {}",
             printable(&self.player),
             self.error
         )
@@ -173,7 +173,7 @@ pub fn read(
             }
             Err(error) => {
                 events(Event::Log(format!(
-                    "could not look the player up on the osu! API: {}",
+                    "could not look the player up: {}",
                     printable(&error.to_string())
                 )));
                 (vec![player.clone()], None)

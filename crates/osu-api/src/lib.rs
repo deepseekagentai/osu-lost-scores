@@ -56,6 +56,8 @@ pub enum ApiError {
         url: String,
         source: serde_json::Error,
     },
+    #[error("cannot reach the Lost Scores server: {0}")]
+    Server(String),
     #[error("the Lost Scores server is busy; try again in {retry_after} s")]
     Busy { retry_after: u64 },
     #[error("the Lost Scores server is busy today; add your own API keys to scan now")]
@@ -342,7 +344,7 @@ impl<T: Transport> Server<T> {
                 url: url.clone(),
                 source,
             })?;
-        let response = self.transport.post_json(&url, &body)?;
+        let response = self.transport.post_json(&url, &body).map_err(unreached)?;
         match answer(&url, response)? {
             Some(body) => parse(&url, &body),
             None => Err(ApiError::Status { status: 404, url }),
@@ -383,11 +385,18 @@ impl<T: Transport> Server<T> {
     }
 
     fn get_json<D: DeserializeOwned>(&mut self, url: &str) -> Result<Option<D>, ApiError> {
-        let response = self.transport.get(url, "")?;
+        let response = self.transport.get(url, "").map_err(unreached)?;
         match answer(url, response)? {
             Some(body) => parse(url, &body).map(Some),
             None => Ok(None),
         }
+    }
+}
+
+fn unreached(error: ApiError) -> ApiError {
+    match error {
+        ApiError::Network(reason) => ApiError::Server(reason),
+        other => other,
     }
 }
 
@@ -596,6 +605,36 @@ mod tests {
 
     fn server(fake: Fake) -> Server<Fake> {
         Server::new(fake, "https://api.test/")
+    }
+
+    struct Down;
+
+    impl Transport for Down {
+        fn post_form(&mut self, _: &str, _: &[(&str, &str)]) -> Result<Response, ApiError> {
+            Err(ApiError::Network("refused".into()))
+        }
+
+        fn get(&mut self, _: &str, _: &str) -> Result<Response, ApiError> {
+            Err(ApiError::Network("refused".into()))
+        }
+
+        fn post_json(&mut self, _: &str, _: &[u8]) -> Result<Response, ApiError> {
+            Err(ApiError::Network("refused".into()))
+        }
+    }
+
+    #[test]
+    fn a_server_out_of_reach_is_named_and_osu_files_still_blame_osu() {
+        let mut api = Server::new(Down, "https://api.test");
+        let maps = api.maps(&[1], &[]).unwrap_err();
+        assert_eq!(
+            maps.to_string(),
+            "cannot reach the Lost Scores server: refused"
+        );
+        let user = api.user_by(UserKey::Id, "7").unwrap_err();
+        assert!(matches!(user, ApiError::Server(_)));
+        let file = api.osu_file(1).unwrap_err();
+        assert_eq!(file.to_string(), "cannot reach the osu! API: refused");
     }
 
     #[test]

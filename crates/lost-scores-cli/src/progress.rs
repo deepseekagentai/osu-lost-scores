@@ -1,13 +1,44 @@
+use std::sync::{Arc, Mutex, PoisonError};
+
 use indicatif::{ProgressBar, ProgressStyle};
 use lost_scores_app::pipeline::{Event, Step};
 
+#[derive(Clone, Default)]
+pub struct Notes(Arc<Mutex<Option<ProgressBar>>>);
+
+impl Notes {
+    pub fn say(&self, line: &str) {
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(bar) => bar.suspend(|| eprintln!("{line}")),
+            None => eprintln!("{line}"),
+        }
+    }
+
+    fn show(&self, bar: Option<ProgressBar>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = bar;
+    }
+}
+
 pub struct Printer {
     bar: Option<(Step, ProgressBar)>,
+    notes: Notes,
 }
 
 impl Printer {
     pub fn new() -> Self {
-        Self { bar: None }
+        Self {
+            bar: None,
+            notes: Notes::default(),
+        }
+    }
+
+    pub fn notes(&self) -> Notes {
+        self.notes.clone()
     }
 
     pub fn handle(&mut self, event: Event) {
@@ -27,7 +58,14 @@ impl Printer {
                 {
                     self.clear();
                 }
-                let (_, bar) = self.bar.get_or_insert_with(|| (step, bar(label)));
+                if self.bar.is_none() {
+                    let created = bar(label);
+                    self.notes.show(Some(created.clone()));
+                    self.bar = Some((step, created));
+                }
+                let Some((_, bar)) = &self.bar else {
+                    return;
+                };
                 bar.update(|state| {
                     state.set_len(total as u64);
                     state.set_pos(done as u64);
@@ -38,6 +76,7 @@ impl Printer {
 
     pub fn clear(&mut self) {
         if let Some((_, bar)) = self.bar.take() {
+            self.notes.show(None);
             bar.finish_and_clear();
         }
     }

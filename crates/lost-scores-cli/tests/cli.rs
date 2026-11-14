@@ -10,6 +10,7 @@ fn lost_scores(home: &Path, args: &[&str]) -> Output {
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env_remove("LOST_SCORES_CLIENT_ID")
         .env_remove("LOST_SCORES_CLIENT_SECRET")
+        .env("LOST_SCORES_SERVER", "http://127.0.0.1:9")
         .output()
         .unwrap()
 }
@@ -87,11 +88,15 @@ fn potential_offline_with_saved_keys_says_to_drop_offline() {
 }
 
 #[test]
-fn potential_without_keys_says_to_log_in() {
+fn potential_without_keys_asks_the_shared_server() {
     let home = tempfile::tempdir().unwrap();
     let output = potential(home.path(), &[]);
+    let log = text(&output.stderr);
     assert!(!output.status.success());
-    assert!(text(&output.stderr).contains("run `lost-scores login` first"));
+    assert!(
+        !log.contains("login") && !log.contains("--offline"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -158,11 +163,11 @@ fn check_offline_with_saved_keys_says_to_drop_offline_not_to_log_in() {
 }
 
 #[test]
-fn check_offline_without_keys_says_to_log_in() {
+fn check_offline_without_keys_says_to_drop_offline() {
     let home = tempfile::tempdir().unwrap();
     let log = check_missing_offline(home.path());
     assert!(
-        log.contains("needs the osu! API: run `lost-scores login` first"),
+        log.contains("needs the osu! API: run without --offline"),
         "{log}"
     );
 }

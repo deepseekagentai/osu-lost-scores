@@ -15,12 +15,16 @@ use lost_scores_app::online::Online;
 use lost_scores_app::pipeline::{self, Api, Event};
 use lost_scores_app::rows;
 use lost_scores_app::setup;
+use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::timings::Timings;
 use osu_api::Credentials;
 use serde::Serialize;
 
 use crate::dump::Dump;
-use crate::progress::Printer;
+use crate::progress::{Notes, Printer};
+
+const OFFLINE_HINT: &str = "run without --offline";
+const QUIET_WAIT_S: u64 = 10;
 
 #[derive(Parser)]
 #[command(
@@ -50,8 +54,13 @@ struct Source {
     player: Option<String>,
     #[arg(long, help = "Songs folder; read from the osu! config by default")]
     songs_dir: Option<PathBuf>,
-    #[arg(long, help = "Do not use the osu! API, even with saved keys")]
+    #[arg(
+        long,
+        help = "Do not go online: use only the map statuses saved earlier, without the profile"
+    )]
     offline: bool,
+    #[arg(long, hide = true)]
+    server: Option<String>,
     #[arg(
         long,
         help = "Also find lost plays on maps missing from Songs by downloading them (slow the first time)"
@@ -123,7 +132,10 @@ const EXAMPLES: [(&str, &str); 5] = [
         "lost-scores potential",
         "your top 200 with the lost plays put back",
     ),
-    ("lost-scores login", "save your osu! API keys, needed once"),
+    (
+        "lost-scores login",
+        "use your own osu! API keys instead of the shared server",
+    ),
 ];
 
 fn guide() -> String {
@@ -181,10 +193,11 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<()> {
     let mut timings = Timings::new();
     let mut printer = Printer::new();
+    let notes = printer.notes();
     let mut events = |event| printer.handle(event);
     let (result, source) = match &cli.command {
         Some(Command::Scan { output, source }) => (
-            dump_replays(source, output.as_deref(), &mut timings, &mut events),
+            dump_replays(source, output.as_deref(), &notes, &mut timings, &mut events),
             Some(source),
         ),
         Some(Command::Potential {
@@ -196,8 +209,8 @@ fn run(cli: Cli) -> Result<()> {
             show_potential(
                 source,
                 maps.as_deref(),
-                *limit,
-                *json,
+                (*limit, *json),
+                &notes,
                 &mut timings,
                 &mut events,
             ),
@@ -206,7 +219,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Login) => (login(), None),
         Some(Command::Logout) => (logout(), None),
         None => (
-            show_lost(&cli.source, &cli.view, &mut timings, &mut events),
+            show_lost(&cli.source, &cli.view, &notes, &mut timings, &mut events),
             Some(&cli.source),
         ),
     };
@@ -229,11 +242,35 @@ fn saved_keys() -> Option<Credentials> {
     keys::from_env().or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
 }
 
-fn connect(source: &Source) -> Option<Online> {
-    if source.offline {
+fn connect(source: &Source, notes: &Notes) -> Option<Box<dyn Api>> {
+    client(
+        saved_keys(),
+        source.offline,
+        source.server.as_deref(),
+        notes.clone(),
+    )
+}
+
+fn client(
+    keys: Option<Credentials>,
+    offline: bool,
+    server: Option<&str>,
+    notes: Notes,
+) -> Option<Box<dyn Api>> {
+    if offline {
         return None;
     }
-    saved_keys().map(Online::new)
+    if let (Some(keys), None) = (&keys, server) {
+        return Some(Box::new(Online::new(keys.clone())));
+    }
+    let base = server.map_or_else(shared::server_url, str::to_owned);
+    Some(Box::new(Shared::at(&base).on_wait(move |seconds| {
+        if seconds >= QUIET_WAIT_S {
+            notes.say(&format!(
+                "waiting in the shared queue of the Lost Scores server: about {seconds} s"
+            ));
+        }
+    })))
 }
 
 fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {
@@ -247,25 +284,18 @@ fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {
     }
 }
 
-fn api_hint(source: &Source) -> &'static str {
-    if source.offline && saved_keys().is_some() {
-        "run without --offline"
-    } else {
-        "run `lost-scores login` first"
-    }
-}
-
 fn dump_replays(
     source: &Source,
     output: Option<&Path>,
+    notes: &Notes,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source);
+    let mut api = connect(source, notes);
     let read = pipeline::read(
         &pipeline_source(source, None),
-        api.as_mut().map(|api| api as &mut dyn Api),
-        api_hint(source),
+        api.as_deref_mut().map(|api| api as &mut dyn Api),
+        OFFLINE_HINT,
         timings,
         events,
     )?;
@@ -284,28 +314,28 @@ fn dump_replays(
 fn show_lost(
     source: &Source,
     view: &View,
+    notes: &Notes,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source);
-    let hint = api_hint(source);
+    let mut api = connect(source, notes);
     let read = pipeline::read(
         &pipeline_source(source, view.maps.as_deref()),
-        api.as_mut().map(|api| api as &mut dyn Api),
-        hint,
+        api.as_deref_mut().map(|api| api as &mut dyn Api),
+        OFFLINE_HINT,
         timings,
         events,
     )?;
     let mut catalog = pipeline::load_catalog(
         view.maps.as_deref(),
         &read.scan,
-        api.as_mut().map(|api| api as &mut dyn Api),
-        hint,
+        api.as_deref_mut().map(|api| api as &mut dyn Api),
+        OFFLINE_HINT,
         pipeline::unix_now(),
         timings,
         events,
     )?;
-    if let Some(api) = api.as_mut() {
+    if let Some(api) = api.as_deref_mut().map(|api| api as &mut dyn Api) {
         pipeline::refresh_statuses(
             view.maps.as_deref(),
             &mut catalog,
@@ -353,18 +383,17 @@ fn show_lost(
 fn show_potential(
     source: &Source,
     maps: Option<&Path>,
-    limit: usize,
-    json: bool,
+    (limit, json): (usize, bool),
+    notes: &Notes,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source)
-        .with_context(|| format!("the potential top needs the osu! API: {}", api_hint(source)))?;
-    let hint = api_hint(source);
+    let mut api = connect(source, notes)
+        .with_context(|| format!("the potential top needs the osu! API: {OFFLINE_HINT}"))?;
     let read = pipeline::read(
         &pipeline_source(source, maps),
-        Some(&mut api),
-        hint,
+        Some(api.as_mut() as &mut dyn Api),
+        OFFLINE_HINT,
         timings,
         events,
     )?;
@@ -374,8 +403,8 @@ fn show_potential(
     let mut catalog = pipeline::load_catalog(
         maps,
         &read.scan,
-        Some(&mut api),
-        hint,
+        Some(api.as_mut() as &mut dyn Api),
+        OFFLINE_HINT,
         pipeline::unix_now(),
         timings,
         events,
@@ -383,13 +412,13 @@ fn show_potential(
     pipeline::refresh_statuses(
         maps,
         &mut catalog,
-        &mut api,
+        api.as_mut(),
         pipeline::unix_now(),
         timings,
         events,
     )?;
     let scores = pipeline::find(&read.scan, &catalog, timings);
-    let result = pipeline::potential(&mut api, &player, &scores, &catalog, timings, events)?;
+    let result = pipeline::potential(api.as_mut(), &player, &scores, &catalog, timings, events)?;
     if json {
         write_json(
             io::stdout().lock(),
@@ -471,11 +500,46 @@ fn write_json(mut writer: impl Write, value: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
+    use osu_api::Credentials;
 
-    use super::Cli;
+    use super::{Cli, client};
+    use crate::progress::Notes;
 
     #[test]
     fn arguments_are_consistent() {
         Cli::command().debug_assert();
+    }
+
+    fn keys() -> Credentials {
+        Credentials {
+            client_id: "1".into(),
+            client_secret: "x".into(),
+        }
+    }
+
+    #[test]
+    fn without_keys_the_scan_goes_through_the_server() {
+        let api = client(None, false, None, Notes::default()).unwrap();
+        assert!(api.shared());
+    }
+
+    #[test]
+    fn saved_keys_keep_the_own_client_unless_a_server_is_given() {
+        let own = client(Some(keys()), false, None, Notes::default()).unwrap();
+        assert!(!own.shared());
+        let server = client(
+            Some(keys()),
+            false,
+            Some("http://127.0.0.1:9"),
+            Notes::default(),
+        )
+        .unwrap();
+        assert!(server.shared());
+    }
+
+    #[test]
+    fn offline_goes_nowhere() {
+        assert!(client(Some(keys()), true, None, Notes::default()).is_none());
+        assert!(client(None, true, None, Notes::default()).is_none());
     }
 }

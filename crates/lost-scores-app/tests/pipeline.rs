@@ -243,7 +243,7 @@ fn a_failed_lookup_still_reads_the_replays_with_the_config_name() {
     assert!(read.player.is_none());
     assert_eq!(read.scan.replays.len(), 2);
     let lines = log_lines(&events);
-    assert!(lines[0].starts_with("could not look the player up on the osu! API"));
+    assert!(lines[0].starts_with("could not look the player up: cannot reach the osu! API"));
     assert!(lines.iter().any(|line| line.starts_with("player: Lemon")));
     assert!(lines.iter().any(|line| line.contains("replays read")));
 }
