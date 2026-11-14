@@ -3,6 +3,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     write_through_temp(path, data, OpenOptions::new())
@@ -47,7 +50,11 @@ fn write_through_temp(path: &Path, data: &[u8], mut options: OpenOptions) -> io:
 fn temp_path(path: &Path) -> PathBuf {
     let mut name = OsString::from(".");
     name.push(path.file_name().unwrap_or_default());
-    name.push(format!(".{}.tmp", process::id()));
+    name.push(format!(
+        ".{}.{}.tmp",
+        process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     path.with_file_name(name)
 }
 
@@ -69,6 +76,32 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["maps.json"]);
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_file_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let payloads: Vec<String> = (0..8).map(|n| format!("writer-{n}")).collect();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = payloads
+                .iter()
+                .map(|payload| {
+                    let path = &path;
+                    scope.spawn(move || {
+                        for _ in 0..50 {
+                            write_atomic(path, payload.as_bytes()).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        assert!(payloads.contains(&fs::read_to_string(&path).unwrap()));
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1);
     }
 
     #[cfg(unix)]
