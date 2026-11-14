@@ -789,7 +789,7 @@ fn preview_from(state: &State<'_>, folder: &std::path::Path, room: f32) {
 
 #[test]
 #[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
-fn render_images_tab_snapshots() {
+fn render_switch_snapshots() {
     let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
     std::fs::create_dir_all(&dir).unwrap();
     let scratch = PathBuf::from(
@@ -834,25 +834,36 @@ fn render_images_tab_snapshots() {
     state.set_scan_date(labels[0].into());
     state.set_has_images(true);
 
-    draw(&surface, &dir.join("status-images-ready.png"));
-
     state.set_show_results(true);
-    draw_sized(&surface, LOGICAL, &dir.join("header-no-share-650.png"));
-    draw_sized(&surface, TWO_COLUMNS, &dir.join("header-no-share-1600.png"));
+    draw_sized(&surface, LOGICAL, &dir.join("switch-table-650.png"));
 
-    state.set_show_results(true);
     state.set_images_shown(true);
-    draw_sized(&surface, LOGICAL, &dir.join("images-tab-650-overlay.png"));
-    draw_sized(
-        &surface,
-        TWO_COLUMNS,
-        &dir.join("images-tab-1600-columns.png"),
-    );
+    draw_sized(&surface, LOGICAL, &dir.join("switch-images-650.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("switch-images-1600.png"));
 
-    state.set_has_images(false);
-    state.set_previews(ModelRc::new(VecModel::from(Vec::new())));
+    state.set_images_shown(false);
     state.set_show_results(true);
-    draw_sized(&surface, LOGICAL, &dir.join("images-tab-none-650.png"));
+    results.present(&state, &scan, Tab::Potential);
+    draw_sized(&surface, LOGICAL, &dir.join("potential-foot-650.png"));
+    results.present(&state, &scan, Tab::Lost);
+
+    let many: Vec<slint::SharedString> = (0..14)
+        .map(|n| format!("{} November 2026 \u{b7} 09:{:02}", 14 - n, 40 - n).into())
+        .collect();
+    state.set_scans(ModelRc::new(VecModel::from(many)));
+    state.set_scans_open(true);
+    surface.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(300.0, 150.0),
+    });
+    surface.dispatch_event(WindowEvent::PointerScrolled {
+        position: slint::LogicalPosition::new(300.0, 150.0),
+        delta_x: 0.0,
+        delta_y: -60.0,
+    });
+    surface.dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(300.0, 152.0),
+    });
+    draw_sized(&surface, LOGICAL, &dir.join("scanlist-scroll-650.png"));
 }
 
 #[test]

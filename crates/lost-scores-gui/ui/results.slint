@@ -617,18 +617,8 @@ component OpenFolder inherits VerticalLayout {
 component PreviewCard inherits Rectangle {
     in property <Preview> item;
     in property <int> index;
-    property <length> span: max(root.item.width, 300px);
+    property <length> span: max(root.item.width, 160px);
     height: 40px + root.item.height + 18px;
-    Text {
-        x: 0px;
-        y: 0px;
-        height: 32px;
-        text: root.item.label;
-        color: #ffffff;
-        font-size: 16px;
-        font-weight: 600;
-        vertical-alignment: center;
-    }
     SecondaryButton {
         x: root.span - 72px - 6px - self.width;
         y: 1px;
@@ -665,7 +655,7 @@ component PreviewCard inherits Rectangle {
     if !root.item.ready: Text {
         x: 0px;
         y: 40px;
-        text: "The preview could not be made. Open the image to see it.";
+        text: "The " + root.item.label + " preview could not be made. Open the image to see it.";
         color: T.k;
         font-size: 14px;
         font-italic: true;
@@ -674,21 +664,7 @@ component PreviewCard inherits Rectangle {
 
 component ImagesView inherits VerticalLayout {
     spacing: 10px;
-    padding-top: 12px;
-    HorizontalLayout {
-        alignment: start;
-        vertical-stretch: 0;
-        SecondaryButton {
-            width: 130px;
-            height: 36px;
-            text: "Open folder";
-            text-size: 14px;
-            tip: "Open the scan's folder";
-            clicked => {
-                State.open-scan-folder();
-            }
-        }
-    }
+    padding-top: 6px;
     if !State.has-images: Text {
         vertical-stretch: 0;
         text: "This scan has no images. Images are made after every scan from now on.";
@@ -706,6 +682,55 @@ component ImagesView inherits VerticalLayout {
     }
     if !State.has-images: Rectangle {
         vertical-stretch: 1;
+    }
+}
+
+component ModeSegment inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked;
+    border-radius: 8px;
+    background: root.active ? T.tog-on : transparent;
+    border-width: 2px;
+    border-color: root.active ? T.acc : transparent;
+    Text {
+        text: root.text;
+        color: root.active || ta.has-hover ? #ffffff : T.k;
+        font-size: 14px;
+        font-weight: 600;
+    }
+    ta := TouchArea {
+        accessible-role: button;
+        accessible-label: root.text;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component ModeSwitch inherits Rectangle {
+    width: 152px;
+    height: 40px;
+    border-radius: 10px;
+    background: T.btn;
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        ModeSegment {
+            text: "Table";
+            active: !State.images-shown;
+            clicked => {
+                State.set-tab(State.tab);
+            }
+        }
+        ModeSegment {
+            text: "Images";
+            active: State.images-shown;
+            clicked => {
+                State.show-images();
+            }
+        }
     }
 }
 
@@ -731,6 +756,13 @@ component FootPair inherits HorizontalLayout {
     }
     Text {
         text: root.item.value;
+        color: root.item.tail == "" && root.item.tone > 0 ? T.up : (root.item.tail == "" && root.item.tone < 0 ? T.down : #ffffff);
+        font-size: 14.5px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    if root.item.tail != "": Text {
+        text: root.item.tail;
         color: root.item.tone > 0 ? T.up : (root.item.tone < 0 ? T.down : #ffffff);
         font-size: 14.5px;
         font-weight: 600;
@@ -741,6 +773,7 @@ component FootPair inherits HorizontalLayout {
 export component ResultsPanel inherits Rectangle {
     in property <bool> show-back: false;
     property <bool> narrow: true;
+    property <bool> switch-up: root.width >= 800px;
     property <bool> split-foot: root.narrow && State.foot.length > 3;
     property <int> jump: State.jump-serial;
     init => {
@@ -799,8 +832,13 @@ export component ResultsPanel inherits Rectangle {
             if State.has-results: ScanSelector { }
             if State.has-results: OpenFolder { }
             Rectangle { horizontal-stretch: 1; }
-            if !State.images-shown: SearchField { width: 260px; }
+            if !State.images-shown: SearchField {
+                horizontal-stretch: 1;
+                min-width: 140px;
+                max-width: 260px;
+            }
             if !State.images-shown: SearchButtons { }
+            if State.has-results: ModeSwitch { }
         }
         if root.narrow: VerticalLayout {
             spacing: 8px;
@@ -815,11 +853,14 @@ export component ResultsPanel inherits Rectangle {
                 if State.has-results: ScanSelector { }
                 if State.has-results: OpenFolder { }
                 Rectangle { horizontal-stretch: 1; }
+                if State.has-results && root.switch-up: ModeSwitch { }
             }
-            if !State.images-shown: HorizontalLayout {
+            if !(root.switch-up && State.images-shown): HorizontalLayout {
                 spacing: 6px;
-                SearchField { horizontal-stretch: 1; }
-                SearchButtons { }
+                if !State.images-shown: SearchField { horizontal-stretch: 1; }
+                if !State.images-shown: SearchButtons { }
+                if State.images-shown: Rectangle { horizontal-stretch: 1; }
+                if State.has-results && !root.switch-up: ModeSwitch { }
             }
         }
         if !State.has-results: Text {
@@ -832,36 +873,29 @@ export component ResultsPanel inherits Rectangle {
             vertical-alignment: center;
             wrap: word-wrap;
         }
-        if State.has-results: VerticalLayout {
+        if State.has-results && !State.images-shown: VerticalLayout {
             spacing: 0px;
             vertical-stretch: 0;
             HorizontalLayout {
                 spacing: 28px;
                 alignment: start;
                 Tab {
-                    text: "Images";
-                    active: State.images-shown;
-                    clicked => {
-                        State.show-images();
-                    }
-                }
-                Tab {
                     text: "Lost Scores";
-                    active: !State.images-shown && State.tab == 0;
+                    active: State.tab == 0;
                     clicked => {
                         State.set-tab(0);
                     }
                 }
                 Tab {
                     text: "Online Top";
-                    active: !State.images-shown && State.tab == 1;
+                    active: State.tab == 1;
                     clicked => {
                         State.set-tab(1);
                     }
                 }
                 Tab {
                     text: "Potential Top";
-                    active: !State.images-shown && State.tab == 2;
+                    active: State.tab == 2;
                     clicked => {
                         State.set-tab(2);
                     }
@@ -944,7 +978,7 @@ export component ResultsPanel inherits Rectangle {
                 height: parent.height;
             }
         }
-        if State.has-results: Rectangle {
+        if State.has-results && !State.images-shown: Rectangle {
             height: root.split-foot ? 76px : 46px;
             border-radius: 10px;
             background: T.card;
@@ -990,7 +1024,7 @@ export component ResultsPanel inherits Rectangle {
         TouchArea { }
         VerticalLayout {
             padding: 8px;
-            ListView {
+            scans-list := ListView {
                 for label[i] in State.scans: VerticalLayout {
                     if i == 1: Text {
                         height: 26px;
@@ -1020,7 +1054,7 @@ export component ResultsPanel inherits Rectangle {
                             }
                         }
                         if i > 0: RowTrash {
-                            x: parent.width - self.width - 4px;
+                            x: parent.width - self.width - 4px - (scans-list.viewport-height > scans-list.visible-height ? 16px : 0px);
                             y: 3px;
                             lit: ta.has-hover;
                             over <=> row.trash-over;

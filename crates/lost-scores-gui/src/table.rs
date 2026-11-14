@@ -621,7 +621,7 @@ fn potential_tab(zone: &TimeZone, potential: &PotentialResult) -> TabRows {
         0,
         tone(0.0, gain, 2),
         tone(potential.current_accuracy, potential.potential_accuracy, 2),
-        0,
+        -1,
     ];
     TabRows {
         items,
@@ -1063,7 +1063,7 @@ mod tests {
         );
         assert_eq!(table.rows(Tab::Potential).len(), 2);
         assert_eq!(table.rows(Tab::Online).len(), 1);
-        assert_eq!(table.footer_tones(Tab::Potential), [0, 0, 1, -1, 0]);
+        assert_eq!(table.footer_tones(Tab::Potential), [0, 0, 1, -1, -1]);
         assert_eq!(table.footer_tones(Tab::Lost), [0, 0, 0]);
     }
 

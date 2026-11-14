@@ -40,7 +40,7 @@ mod tests {
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, VecModel};
 
-    use super::{MainWindow, Preview, State, choose_folder};
+    use super::{FootItem, MainWindow, Preview, State, choose_folder};
 
     fn click_start_scan(window: &MainWindow) {
         ElementHandle::find_by_element_type_name(window, "StartScan")
@@ -108,6 +108,39 @@ mod tests {
 
         find(labels[2]).mock_single_click(PointerEventButton::Left);
         assert_eq!(selected.get(), 2);
+    }
+
+    #[test]
+    fn the_crosses_stay_left_of_the_scan_lists_scrollbar() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let labels: Vec<SharedString> = (0..14)
+            .map(|n| SharedString::from(format!("{} Nov 2026 · 09:00", 14 - n)))
+            .collect();
+        let state = window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(labels)));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_scans_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let bars: Vec<_> = ElementHandle::find_by_element_type_name(&window, "ScrollBar")
+            .map(|bar| bar.absolute_position().x)
+            .collect();
+        assert!(!bars.is_empty(), "no scrollbar found");
+        let popup_bar = bars.iter().copied().fold(f32::MIN, f32::max);
+        let crosses: Vec<_> =
+            ElementHandle::find_by_accessible_label(&window, "Move to trash").collect();
+        assert!(!crosses.is_empty());
+        for cross in crosses {
+            let right = cross.absolute_position().x + cross.size().width;
+            assert!(
+                right <= popup_bar,
+                "cross right {right}, scrollbar {popup_bar}"
+            );
+        }
     }
 
     #[test]
@@ -244,44 +277,104 @@ mod tests {
     }
 
     #[test]
-    fn the_results_have_an_images_tab_before_the_tables() {
+    fn table_mode_has_the_three_tabs_and_images_mode_has_none() {
         let window = images_window(650.0, &["Lost Scores"]);
         let mut tabs: Vec<_> = ElementHandle::find_by_element_type_name(&window, "Tab")
             .map(|tab| (tab.absolute_position().x, tab.accessible_label().unwrap()))
             .collect();
         tabs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let labels: Vec<_> = tabs.iter().map(|(_, label)| label.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["Images", "Lost Scores", "Online Top", "Potential Top"]
-        );
+        assert_eq!(labels, ["Lost Scores", "Online Top", "Potential Top"]);
+        window.global::<State>().set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        assert_eq!(count(&window, "Tab"), 0);
     }
 
     #[test]
-    fn the_tab_buttons_ask_for_the_images_and_for_the_tables() {
+    fn the_tab_buttons_ask_for_the_tables() {
         let window = images_window(650.0, &["Lost Scores"]);
         let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let (images, tables) = (calls.clone(), calls.clone());
-        let state = window.global::<State>();
-        state.on_show_images(move || images.borrow_mut().push(-1));
-        state.on_set_tab(move |index| tables.borrow_mut().push(index));
-        for label in ["Images", "Lost Scores", "Online Top", "Potential Top"] {
+        let tables = calls.clone();
+        window
+            .global::<State>()
+            .on_set_tab(move |index| tables.borrow_mut().push(index));
+        for label in ["Lost Scores", "Online Top", "Potential Top"] {
             ElementHandle::find_by_element_type_name(&window, "Tab")
                 .find(|tab| tab.accessible_label().as_deref() == Some(label))
                 .unwrap()
                 .mock_single_click(PointerEventButton::Left);
         }
-        assert_eq!(*calls.borrow(), [-1, 0, 1, 2]);
+        assert_eq!(*calls.borrow(), [0, 1, 2]);
+    }
+
+    fn switch_places(width: f32) {
+        let window = make_images_window(width, &["Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_tab(1);
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (images, tables) = (calls.clone(), calls.clone());
+        state.on_show_images(move || images.borrow_mut().push(-1));
+        state.on_set_tab(move |index| tables.borrow_mut().push(index));
+        let label_y = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+                .absolute_position()
+        };
+        let table = label_y("Table");
+        let images = label_y("Images");
+        assert!(table.x < images.x, "{width}");
+        assert_eq!(table.y, images.y);
+        let selector = ElementHandle::find_by_element_type_name(&window, "ScanSelector")
+            .next()
+            .unwrap();
+        if width >= 1480.0 {
+            assert!(
+                table.y >= selector.absolute_position().y
+                    && table.y < selector.absolute_position().y + selector.size().height,
+                "the switch is not in the first row: {} vs {}",
+                table.y,
+                selector.absolute_position().y
+            );
+        }
+        let panel = ElementHandle::find_by_element_type_name(&window, "ResultsPanel")
+            .next()
+            .unwrap();
+        let edge = panel.absolute_position().x + panel.size().width;
+        assert!(
+            images.x < edge && images.x > edge - 220.0,
+            "{width}: {}",
+            images.x
+        );
+        for label in ["Images", "Table"] {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+                .mock_single_click(PointerEventButton::Left);
+        }
+        assert_eq!(*calls.borrow(), [-1, 1]);
     }
 
     #[test]
-    fn the_images_tab_hides_the_search_and_the_column_header_in_one_column() {
+    fn the_switch_sits_at_the_right_of_the_header_in_one_column() {
+        i_slint_backend_testing::init_no_event_loop();
+        switch_places(650.0);
+    }
+
+    #[test]
+    fn the_switch_sits_at_the_right_of_the_header_in_two_columns() {
+        i_slint_backend_testing::init_no_event_loop();
+        switch_places(1600.0);
+    }
+
+    #[test]
+    fn images_mode_hides_the_search_the_header_the_tabs_and_the_foot_in_one_column() {
         i_slint_backend_testing::init_no_event_loop();
         search_and_header_follow_the_tab(650.0);
     }
 
     #[test]
-    fn the_images_tab_hides_the_search_and_the_column_header_in_two_columns() {
+    fn images_mode_hides_the_search_the_header_the_tabs_and_the_foot_in_two_columns() {
         i_slint_backend_testing::init_no_event_loop();
         search_and_header_follow_the_tab(1600.0);
     }
@@ -290,6 +383,15 @@ mod tests {
         {
             let window = make_images_window(width, &["Lost Scores"]);
             let state = window.global::<State>();
+            state.set_foot(ModelRc::new(VecModel::from(vec![FootItem {
+                label: "Lost plays".into(),
+                value: "9".into(),
+                tail: "".into(),
+                tone: 0,
+            }])));
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+            assert_eq!(count(&window, "FootPair"), 1, "{width} tables");
+            assert_eq!(count(&window, "Tab"), 3, "{width} tables");
             assert_eq!(count(&window, "SearchField"), 1, "{width} tables");
             assert_eq!(count(&window, "SearchButtons"), 1, "{width} tables");
             assert!(count(&window, "HeaderCell") > 0, "{width} tables");
@@ -298,11 +400,13 @@ mod tests {
             assert_eq!(count(&window, "SearchField"), 0, "{width} images");
             assert_eq!(count(&window, "SearchButtons"), 0, "{width} images");
             assert_eq!(count(&window, "HeaderCell"), 0, "{width} images");
+            assert_eq!(count(&window, "FootPair"), 0, "{width} images");
+            assert_eq!(count(&window, "Tab"), 0, "{width} images");
         }
     }
 
     #[test]
-    fn each_picture_has_a_title_with_open_and_catbox() {
+    fn each_picture_has_an_open_and_catbox_row() {
         let window = images_window(650.0, &["Lost Scores", "Potential Top", "Badge"]);
         let state = window.global::<State>();
         state.set_images_shown(true);
@@ -314,9 +418,6 @@ mod tests {
 
         let labelled =
             |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
-        for title in ["Lost Scores", "Potential Top", "Badge"] {
-            assert!(labelled(title) >= 1, "{title}");
-        }
         assert_eq!(labelled("Open"), 3);
         assert_eq!(labelled("catbox"), 3);
         assert_eq!(labelled("Copy"), 0);
@@ -328,23 +429,18 @@ mod tests {
     }
 
     #[test]
-    fn the_open_folder_button_sits_above_the_pictures() {
-        let window = images_window(650.0, &["Lost Scores"]);
-        let state = window.global::<State>();
-        state.set_images_shown(true);
-        let opened = Rc::new(Cell::new(0));
-        let counter = opened.clone();
-        state.on_open_scan_folder(move || counter.set(counter.get() + 1));
+    fn images_mode_has_no_open_folder_button_and_no_picture_titles() {
+        let window = images_window(650.0, &["Lost Scores", "Badge"]);
+        window.global::<State>().set_images_shown(true);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
-        let button = ElementHandle::find_by_accessible_label(&window, "Open folder")
-            .next()
-            .unwrap();
-        let card = ElementHandle::find_by_element_type_name(&window, "PreviewCard")
-            .next()
-            .unwrap();
-        assert!(button.absolute_position().y < card.absolute_position().y);
-        button.mock_single_click(PointerEventButton::Left);
-        assert_eq!(opened.get(), 1);
+        let labelled =
+            |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
+        assert_eq!(labelled("Open folder"), 0);
+        assert_eq!(labelled("Open the scan's folder"), 1);
+        assert_eq!(labelled("Lost Scores"), 0);
+        assert_eq!(labelled("Badge"), 0);
+        assert_eq!(labelled("Open"), 2);
+        assert_eq!(labelled("catbox"), 2);
     }
 
     #[test]

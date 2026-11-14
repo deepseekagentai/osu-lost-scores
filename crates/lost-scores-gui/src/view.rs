@@ -152,10 +152,19 @@ pub fn foot(table: &Table, tab: Tab) -> ModelRc<FootItem> {
         .footer(tab)
         .into_iter()
         .zip(table.footer_tones(tab))
-        .map(|((label, value), tone)| FootItem {
-            tone,
-            label: label.into(),
-            value: value.into(),
+        .map(|((label, value), tone)| match value.split_once(" → ") {
+            Some((now, potential)) => FootItem {
+                tone,
+                label: label.into(),
+                value: format!("{now} →").into(),
+                tail: potential.into(),
+            },
+            None => FootItem {
+                tone,
+                label: label.into(),
+                value: value.into(),
+                tail: "".into(),
+            },
         })
         .collect();
     ModelRc::new(VecModel::from(items))
@@ -216,10 +225,58 @@ mod tests {
     use slint::Model;
 
     use super::{
-        beatmap_link, lost_text, mod_acronyms, mod_color, mods_width, rank_style, row, status_chip,
-        weighted_text,
+        beatmap_link, foot, lost_text, mod_acronyms, mod_color, mods_width, rank_style, row,
+        status_chip, weighted_text,
     };
     use crate::table::{Tab, Table};
+
+    fn potential_foot() -> Vec<crate::FootItem> {
+        let mut scan = SavedScan {
+            version: VERSION,
+            made_at: 1_794_649_471,
+            player_id: 1,
+            player_name: "Player".into(),
+            include_all: false,
+            check_missing: false,
+            lost: Vec::new(),
+            lost_total: 0,
+            lost_ranked: 0,
+            potential: None,
+        };
+        scan.potential = Some(lost_scores_app::pipeline::PotentialResult {
+            current_pp: 8479.0,
+            potential_pp: 8668.0,
+            current_accuracy: 98.38,
+            potential_accuracy: 97.95,
+            global_rank: Some(14_856),
+            lost_in_top: 2,
+            rows: Vec::new(),
+            online: Vec::new(),
+        });
+        let table = Table::in_zone(&scan, &TimeZone::UTC);
+        foot(&table, Tab::Potential).iter().collect()
+    }
+
+    #[test]
+    fn only_the_potential_accuracy_takes_the_tone_in_the_potential_foot() {
+        let items = potential_foot();
+        let accuracy = &items[3];
+        assert_eq!(accuracy.label, "Accuracy");
+        assert_eq!(accuracy.value, "98.38% →");
+        assert_eq!(accuracy.tail, "97.95%");
+        assert_eq!(accuracy.tone, -1);
+        assert_eq!(items[0].value, "8,479 pp");
+        assert_eq!(items[0].tone, 0);
+        assert_eq!(items[0].tail, "");
+    }
+
+    #[test]
+    fn the_lost_plays_number_in_the_top_is_red() {
+        let items = potential_foot();
+        assert_eq!(items[4].label, "Lost plays in the top");
+        assert_eq!(items[4].value, "2");
+        assert_eq!(items[4].tone, -1);
+    }
 
     #[test]
     fn grades_use_the_osu_colours() {
