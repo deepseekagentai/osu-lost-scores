@@ -1,5 +1,7 @@
 use lost_scores_app::updates::Release;
 
+const RELEASES_URL: &str = "https://github.com/kz-lemon4ik/osu-lost-scores/releases/";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateMessage {
     pub text: String,
@@ -29,7 +31,10 @@ pub fn update_message(current: &str, release: Option<&Release>) -> UpdateMessage
         },
         Some(release) if is_newer(&release.tag, current) => UpdateMessage {
             text: format!("Version {} is available", release.tag),
-            open: Some(release.url.clone()),
+            open: release
+                .url
+                .starts_with(RELEASES_URL)
+                .then(|| release.url.clone()),
         },
         Some(_) => UpdateMessage {
             text: "You have the latest version".to_owned(),
@@ -47,7 +52,27 @@ mod tests {
     fn release(tag: &str) -> Release {
         Release {
             tag: tag.to_owned(),
-            url: format!("https://github.com/example/releases/tag/{tag}"),
+            url: format!("https://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/{tag}"),
+        }
+    }
+
+    #[test]
+    fn only_release_pages_of_this_project_are_opened() {
+        for url in [
+            "https://example.com/phish",
+            "http://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/v9",
+            "https://github.com/kz-lemon4ik/osu-lost-scores-evil/releases/tag/v9",
+            "file:///etc/passwd",
+        ] {
+            let message = update_message(
+                "0.1.0",
+                Some(&Release {
+                    tag: "v9.0.0".to_owned(),
+                    url: url.to_owned(),
+                }),
+            );
+            assert_eq!(message.text, "Version v9.0.0 is available");
+            assert_eq!(message.open, None, "{url}");
         }
     }
 
@@ -57,7 +82,9 @@ mod tests {
             update_message("0.1.0", Some(&release("v0.2.0"))),
             UpdateMessage {
                 text: "Version v0.2.0 is available".to_owned(),
-                open: Some("https://github.com/example/releases/tag/v0.2.0".to_owned()),
+                open: Some(
+                    "https://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/v0.2.0".to_owned()
+                ),
             }
         );
         assert_eq!(

@@ -100,6 +100,7 @@ pub struct Item {
     pub pp: f64,
     pub unix_time: i64,
     pub date: String,
+    pub date_short: String,
     pub status: Option<MapStatus>,
     pub beatmap_id: Option<u32>,
     pub detail: Detail,
@@ -128,6 +129,7 @@ impl Item {
         zone: &TimeZone,
     ) -> Self {
         let date = when(unix_time, zone);
+        let date_short = when_short(unix_time, zone);
         let haystack = [title, artist, version, creator, mods, &date]
             .join("\n")
             .to_lowercase();
@@ -144,6 +146,7 @@ impl Item {
             pp,
             unix_time,
             date,
+            date_short,
             status,
             beatmap_id,
             detail,
@@ -190,6 +193,8 @@ struct TabRows {
 #[derive(Clone, Debug, Default)]
 pub struct Table {
     tabs: [TabRows; 3],
+    lost_pool: Vec<Item>,
+    include_all: bool,
 }
 
 const MONTHS: [&str; 12] = [
@@ -222,6 +227,19 @@ pub fn when(unix: i64, zone: &TimeZone) -> String {
     )
 }
 
+pub fn when_short(unix: i64, zone: &TimeZone) -> String {
+    let Ok(time) = Timestamp::from_second(unix) else {
+        return String::new();
+    };
+    let local = time.to_zoned(zone.clone());
+    format!(
+        "{} {} {}",
+        local.day(),
+        &MONTHS[local.month() as usize - 1][..3],
+        local.year()
+    )
+}
+
 pub fn wrap(current: usize, total: usize, step: i32) -> usize {
     if total == 0 {
         return 0;
@@ -235,8 +253,12 @@ impl Table {
     }
 
     pub fn in_zone(scan: &SavedScan, zone: &TimeZone) -> Self {
-        let mut table = Table::default();
-        table.tabs[Tab::Lost.index()] = lost_tab(scan, zone);
+        let mut table = Table {
+            lost_pool: lost_items(scan, zone),
+            include_all: true,
+            ..Table::default()
+        };
+        table.rebuild_lost();
         if let Some(potential) = &scan.potential {
             table.tabs[Tab::Online.index()] = online_tab(scan, zone);
             table.tabs[Tab::Potential.index()] = potential_tab(zone, potential);
@@ -245,6 +267,31 @@ impl Table {
             table.apply(tab, Column::Pp, true);
         }
         table
+    }
+
+    pub fn set_include_all(&mut self, include_all: bool) {
+        if self.include_all != include_all {
+            self.include_all = include_all;
+            self.rebuild_lost();
+        }
+    }
+
+    fn rebuild_lost(&mut self) {
+        let items: Vec<Item> = self
+            .lost_pool
+            .iter()
+            .filter(|item| self.include_all || item.status.is_some_and(MapStatus::gives_pp))
+            .cloned()
+            .collect();
+        let footer = lost_footer(&items);
+        let sort = self.tabs[Tab::Lost.index()].sort;
+        self.tabs[Tab::Lost.index()] = TabRows {
+            items,
+            footer,
+            sort: None,
+        };
+        let (column, descending) = sort.unwrap_or((Column::Pp, true));
+        self.apply(Tab::Lost, column, descending);
     }
 
     pub fn rows(&self, tab: Tab) -> &[Item] {
@@ -315,9 +362,8 @@ fn pair(label: &str, value: String) -> (String, String) {
     (label.to_owned(), value)
 }
 
-fn lost_tab(scan: &SavedScan, zone: &TimeZone) -> TabRows {
-    let items: Vec<Item> = scan
-        .lost
+fn lost_items(scan: &SavedScan, zone: &TimeZone) -> Vec<Item> {
+    scan.lost
         .iter()
         .map(|row| {
             Item::new(
@@ -340,26 +386,31 @@ fn lost_tab(scan: &SavedScan, zone: &TimeZone) -> TabRows {
                 zone,
             )
         })
-        .collect();
-    let average = if scan.lost.is_empty() {
+        .collect()
+}
+
+fn lost_footer(items: &[Item]) -> Vec<(String, String)> {
+    let ranked = items
+        .iter()
+        .filter(|item| item.status.is_some_and(MapStatus::gives_pp))
+        .count();
+    let lost_pp: f64 = items
+        .iter()
+        .map(|item| match item.detail {
+            Detail::Lost { kept_pp } => item.pp - kept_pp,
+            Detail::Weighted { .. } => 0.0,
+        })
+        .sum();
+    let average = if items.is_empty() {
         0.0
     } else {
-        scan.lost
-            .iter()
-            .map(|row| row.pp - row.kept_pp)
-            .sum::<f64>()
-            / scan.lost.len() as f64
+        lost_pp / items.len() as f64
     };
-    let footer = vec![
-        pair("Lost plays", thousands(scan.lost_total as f64)),
-        pair("On ranked maps", thousands(scan.lost_ranked as f64)),
+    vec![
+        pair("Lost plays", thousands(items.len() as f64)),
+        pair("On ranked maps", thousands(ranked as f64)),
         pair("Average pp lost", format!("{average:.2}")),
-    ];
-    TabRows {
-        items,
-        footer,
-        sort: None,
-    }
+    ]
 }
 
 fn online_tab(scan: &SavedScan, zone: &TimeZone) -> TabRows {
@@ -477,7 +528,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{Column, Tab, Table, wrap};
+    use super::{Column, Tab, Table, when_short, wrap};
 
     const SEPTEMBER_2024: i64 = 1_725_406_740;
 
@@ -637,6 +688,11 @@ mod tests {
     }
 
     #[test]
+    fn the_short_date_has_a_three_letter_month_and_no_time() {
+        assert_eq!(when_short(SEPTEMBER_2024, &TimeZone::UTC), "3 Sep 2024");
+    }
+
+    #[test]
     fn copy_text_has_title_mods_accuracy_pp_and_date() {
         let table = table(vec![lost(411.87, 400.0, "Artist", "Title", "HDDT")]);
         assert_eq!(
@@ -691,6 +747,66 @@ mod tests {
         }
     }
 
+    fn mixed_table() -> Table {
+        let mut loved = lost(200.0, 190.0, "B", "loved", "");
+        loved.status = MapStatus::Loved;
+        let mut approved = lost(150.0, 140.0, "C", "approved", "");
+        approved.status = MapStatus::Approved;
+        let mut graveyard = lost(100.0, 100.0, "D", "grave", "");
+        graveyard.status = MapStatus::Graveyard;
+        table(vec![
+            lost(300.0, 280.0, "A", "ranked", ""),
+            loved,
+            approved,
+            graveyard,
+        ])
+    }
+
+    fn titles(table: &Table) -> Vec<&str> {
+        table
+            .rows(Tab::Lost)
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn the_lost_tab_shows_ranked_plays_unless_include() {
+        let mut table = mixed_table();
+        assert_eq!(table.rows(Tab::Lost).len(), 4);
+        table.set_include_all(false);
+        assert_eq!(titles(&table), ["ranked", "approved"]);
+        table.sort(Tab::Lost, Column::Beatmap);
+        table.set_include_all(true);
+        assert_eq!(titles(&table), ["ranked", "loved", "approved", "grave"]);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Beatmap, false));
+        table.set_include_all(false);
+        assert_eq!(titles(&table), ["ranked", "approved"]);
+    }
+
+    #[test]
+    fn the_footer_counts_the_shown_rows() {
+        let mut table = mixed_table();
+        table.set_include_all(false);
+        assert_eq!(
+            table.footer(Tab::Lost),
+            [
+                ("Lost plays".to_owned(), "2".to_owned()),
+                ("On ranked maps".to_owned(), "2".to_owned()),
+                ("Average pp lost".to_owned(), "15.00".to_owned()),
+            ]
+        );
+        table.set_include_all(true);
+        assert_eq!(
+            table.footer(Tab::Lost),
+            [
+                ("Lost plays".to_owned(), "4".to_owned()),
+                ("On ranked maps".to_owned(), "2".to_owned()),
+                ("Average pp lost".to_owned(), "10.00".to_owned()),
+            ]
+        );
+    }
+
     #[test]
     fn footers_match_the_saved_scan() {
         let potential = PotentialResult {
@@ -703,12 +819,14 @@ mod tests {
             rows: vec![weighted(1, 400.0, true), weighted(2, 380.0, false)],
             online: vec![online(1, 380.0)],
         };
+        let mut loved = lost(100.0, 99.0, "C", "z", "");
+        loved.status = MapStatus::Loved;
         let table = Table::in_zone(
             &scan(
                 vec![
                     lost(300.0, 280.0, "A", "x", ""),
                     lost(200.0, 190.0, "B", "y", ""),
-                    lost(100.0, 99.0, "C", "z", ""),
+                    loved,
                 ],
                 Some(potential),
             ),

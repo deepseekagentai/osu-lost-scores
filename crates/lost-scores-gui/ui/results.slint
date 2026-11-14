@@ -24,10 +24,177 @@ component Hit inherits HorizontalLayout {
     }
 }
 
+component TitleLine inherits Rectangle {
+    in property <string> title;
+    in property <string> artist;
+    in property <bool> lost;
+    height: 20px;
+    property <length> gap: 8px;
+    property <length> lead: root.lost ? 46px : 0px;
+    property <length> room: root.width - root.lead;
+    property <length> t-pref: min(ttl.preferred-width, 420px);
+    property <length> a-pref: art.preferred-width;
+    property <bool> show-artist: root.artist != "" && root.room - root.gap - min(root.a-pref, 90px) >= 140px;
+    property <length> a-w: root.show-artist ? min(root.a-pref, max(90px, root.room - root.gap - root.t-pref)) : 0px;
+    property <length> t-w: max(0px, min(root.t-pref, root.room - (root.show-artist ? root.a-w + root.gap : 0px)));
+    if root.lost: Rectangle {
+        x: 0px;
+        y: 1px;
+        width: 38px;
+        height: 17px;
+        border-radius: 5px;
+        background: T.lost;
+        Text {
+            text: "LOST";
+            color: #2b1218;
+            font-size: 10.5px;
+            font-weight: 600;
+        }
+    }
+    ttl := Text {
+        x: root.lead;
+        width: root.t-w;
+        height: root.height;
+        text: root.title;
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 500;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    art := Text {
+        x: root.lead + root.t-w + root.gap;
+        width: root.a-w;
+        height: root.height;
+        visible: root.show-artist;
+        text: "by " + root.artist;
+        color: T.by;
+        font-size: 13px;
+        overflow: elide;
+        vertical-alignment: bottom;
+    }
+}
+
+component DetailLine inherits Rectangle {
+    in property <ScoreRow> item;
+    callback open-link();
+    height: 17px;
+    property <length> gap: 12px;
+    property <length> link-w: root.item.link != "" ? lprobe.preferred-width : 0px;
+    property <length> chip-w: root.item.status != "" ? sprobe.preferred-width + 12px : 0px;
+    property <length> chip-part: root.chip-w > 0px ? root.chip-w + root.gap : 0px;
+    property <length> v-pref: min(ver.preferred-width, 260px);
+    property <length> v-min: min(root.v-pref, 110px);
+    property <length> m-pref: root.item.creator != "" ? map.preferred-width : 0px;
+    property <length> d-full: full.preferred-width;
+    property <length> d-short: short.preferred-width;
+    property <bool> show-link: root.link-w > 0px && root.width - root.chip-part - root.link-w - root.gap >= root.v-min + root.gap + root.d-short;
+    property <length> link-part: root.show-link ? root.link-w + root.gap : 0px;
+    property <length> room: root.width - root.chip-part - root.link-part;
+    property <bool> full-date: root.room >= root.v-pref + root.gap + root.d-full;
+    property <bool> short-fits: root.room >= root.v-min + root.gap + root.d-short;
+    property <length> d-w: root.full-date ? root.d-full : (root.short-fits ? root.d-short : 0px);
+    property <bool> show-date: root.d-w > 0px;
+    property <length> left: root.room - (root.show-date ? root.d-w + root.gap : 0px);
+    property <length> m-avail: root.left - root.v-pref - root.gap;
+    property <bool> show-map: root.m-pref > 0px && root.m-avail >= 110px;
+    property <length> m-w: root.show-map ? min(root.m-pref, root.m-avail) : 0px;
+    property <length> v-w: max(0px, min(root.v-pref, root.left));
+    property <length> d-x: root.v-w + (root.show-map ? root.gap + root.m-w : 0px) + root.gap;
+    property <length> end-x: root.show-date ? root.d-x + root.d-w : root.v-w + (root.show-map ? root.gap + root.m-w : 0px);
+    ver := Text {
+        x: 0px;
+        width: root.v-w;
+        height: root.height;
+        text: root.item.version;
+        color: T.acc;
+        font-size: 12.5px;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    map := Text {
+        x: root.v-w + root.gap;
+        width: root.m-w;
+        height: root.height;
+        visible: root.show-map;
+        text: "mapped by " + root.item.creator;
+        color: T.meta;
+        font-size: 12.5px;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    full := Text {
+        visible: false;
+        text: root.item.date;
+        font-size: 12.5px;
+    }
+    short := Text {
+        visible: false;
+        text: root.item.date-short;
+        font-size: 12.5px;
+    }
+    if root.show-date: Text {
+        x: root.d-x;
+        width: root.d-w;
+        height: root.height;
+        text: root.full-date ? root.item.date : root.item.date-short;
+        color: T.meta;
+        font-size: 12.5px;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    if root.show-link: Rectangle {
+        x: root.end-x + root.gap;
+        width: root.link-w;
+        height: root.height;
+        bid := Text {
+            y: 0;
+            text: root.item.link;
+            color: T.bid;
+            font-size: 12.5px;
+        }
+        Rectangle {
+            y: bid.preferred-height;
+            height: 1px;
+            background: #6b6380;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.open-link();
+            }
+        }
+    }
+    lprobe := Text {
+        visible: false;
+        text: root.item.link;
+        font-size: 12.5px;
+    }
+    sprobe := Text {
+        visible: false;
+        text: root.item.status;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    if root.item.status != "": Rectangle {
+        x: root.end-x + root.gap + root.link-part;
+        y: 0px;
+        width: root.chip-w;
+        height: 16px;
+        border-radius: 4px;
+        background: root.item.status-color;
+        status := Text {
+            text: root.item.status;
+            color: root.item.status-text;
+            font-size: 11px;
+            font-weight: 600;
+        }
+    }
+}
+
 component RowView inherits Rectangle {
     in property <ScoreRow> item;
     in property <bool> narrow;
-    in property <bool> roomy;
     in property <bool> highlighted;
     callback copy();
     callback open-link();
@@ -77,97 +244,16 @@ component RowView inherits Rectangle {
             spacing: 4px;
             horizontal-stretch: 1;
             min-width: 140px;
-            HorizontalLayout {
-                spacing: 8px;
-                if root.item.lost: VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 38px;
-                        height: 17px;
-                        border-radius: 5px;
-                        background: T.lost;
-                        Text {
-                            text: "LOST";
-                            color: #2b1218;
-                            font-size: 10.5px;
-                            font-weight: 600;
-                        }
-                    }
-                }
-                Text {
-                    text: root.item.title;
-                    color: #ffffff;
-                    font-size: 15px;
-                    font-weight: 500;
-                    overflow: elide;
-                    max-width: 420px;
-                }
-                Text {
-                    text: "by " + root.item.artist;
-                    color: T.by;
-                    font-size: 13px;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                    vertical-alignment: bottom;
-                }
+            TitleLine {
+                title: root.item.title;
+                artist: root.item.artist;
+                lost: root.item.lost;
             }
-            HorizontalLayout {
-                spacing: 12px;
-                Text {
-                    text: root.item.version;
-                    color: T.acc;
-                    font-size: 12.5px;
-                    overflow: elide;
-                    max-width: 260px;
+            DetailLine {
+                item: root.item;
+                open-link => {
+                    root.open-link();
                 }
-                if root.item.creator != "" && root.roomy: Text {
-                    text: "mapped by " + root.item.creator;
-                    color: T.meta;
-                    font-size: 12.5px;
-                    overflow: elide;
-                    max-width: 220px;
-                }
-                if !root.narrow: Text {
-                    text: root.item.date;
-                    color: T.meta;
-                    font-size: 12.5px;
-                }
-                if root.item.link != "": Rectangle {
-                    width: bid.preferred-width;
-                    bid := Text {
-                        y: 0;
-                        text: root.item.link;
-                        color: T.bid;
-                        font-size: 12.5px;
-                    }
-                    Rectangle {
-                        y: bid.preferred-height;
-                        height: 1px;
-                        background: #6b6380;
-                    }
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.open-link();
-                        }
-                    }
-                }
-                if root.item.status != "": VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: status.preferred-width + 12px;
-                        height: 16px;
-                        border-radius: 4px;
-                        background: root.item.status-color;
-                        status := Text {
-                            text: root.item.status;
-                            color: root.item.status-text;
-                            font-size: 11px;
-                            font-weight: 600;
-                        }
-                    }
-                }
-                Rectangle { horizontal-stretch: 1; }
             }
         }
         HorizontalLayout {
@@ -390,8 +476,8 @@ component ScanSelector inherits Rectangle {
             alignment: center;
             Image {
                 source: @image-url("../assets/i-history.svg");
-                width: 15px;
-                height: 15px;
+                width: 16px;
+                height: 16px;
                 image-fit: contain;
                 colorize: T.ibicon;
             }
@@ -439,6 +525,7 @@ component SearchField inherits Rectangle {
         vertical-alignment: center;
     }
     input := TextInput {
+        text <=> State.search-text;
         x: 14px;
         width: parent.width - 28px - counter.preferred-width - 6px;
         color: #ffffff;
@@ -681,7 +768,6 @@ export component ResultsPanel inherits Rectangle {
                     width: parent.width - 14px;
                     item: entry;
                     narrow: root.narrow;
-                    roomy: root.width >= 1300px;
                     highlighted: i == State.search-index;
                     copy => {
                         State.copy-row(i);

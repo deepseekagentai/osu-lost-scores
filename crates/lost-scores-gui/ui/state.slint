@@ -17,6 +17,7 @@ export struct ScoreRow {
     version: string,
     creator: string,
     date: string,
+    date-short: string,
     link: string,
     beatmap-id: int,
     mods: [ModPill],
@@ -93,6 +94,7 @@ export global State {
     in-out property <[string]> scans;
     in-out property <int> scan-selected;
     in-out property <bool> scans-open;
+    in-out property <string> search-text;
     in-out property <string> search-label;
     in-out property <int> search-index: -1;
     in-out property <int> jump-to;
@@ -129,4 +131,5 @@ export global State {
     callback open-developer-site();
     callback see-full-results();
     callback back();
+    callback columns-took-over();
 }

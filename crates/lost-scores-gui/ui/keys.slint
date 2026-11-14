@@ -126,7 +126,19 @@ export component KeysSheet inherits Rectangle {
             }
             Rectangle { height: 4px; }
             Text {
-                text: "Create an OAuth application on the osu! website: any name, callback URL http://localhost. Then paste its keys here. They stay on this computer.";
+                text: "Create an OAuth application on the osu! website. Use any name and this callback URL:";
+                color: T.k2;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "http://localhost";
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: "Then paste its keys here. They stay on this computer.";
                 color: T.k2;
                 font-size: 13px;
                 wrap: word-wrap;

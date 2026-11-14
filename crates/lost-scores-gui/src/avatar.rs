@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use image::imageops::{self, FilterType};
+use lost_scores_core::files::write_atomic;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 const CORNER_RATIO: f32 = 16.0 / 120.0;
@@ -51,29 +52,53 @@ fn round_corners(image: &mut image::RgbaImage, radius: f32) {
 }
 
 pub fn fetch(id: u32, cache: Option<&Path>) -> Result<Vec<u8>> {
-    let file = cache.map(|dir| dir.join(id.to_string()));
-    if let Some(bytes) = file.as_ref().and_then(|file| fs::read(file).ok()) {
-        return Ok(bytes);
-    }
+    fetch_with(id, cache, download)
+}
+
+fn download(id: u32) -> Result<Vec<u8>> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .user_agent(lost_scores_app::online::USER_AGENT)
         .build()
         .into();
-    let bytes = agent
+    Ok(agent
         .get(format!("https://a.ppy.sh/{id}"))
         .call()?
         .body_mut()
         .with_config()
         .limit(MAX_BYTES)
-        .read_to_vec()?;
+        .read_to_vec()?)
+}
+
+fn fetch_with(
+    id: u32,
+    cache: Option<&Path>,
+    download: impl FnOnce(u32) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let file = cache.map(|dir| dir.join(id.to_string()));
+    if let Some(file) = &file
+        && let Ok(bytes) = fs::read(file)
+    {
+        if is_image(&bytes) {
+            return Ok(bytes);
+        }
+        let _ = fs::remove_file(file);
+    }
+    let bytes = download(id)?;
+    if !is_image(&bytes) {
+        anyhow::bail!("the avatar download is not an image");
+    }
     if let Some(file) = &file {
         if let Some(parent) = file.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(file, &bytes);
+        let _ = write_atomic(file, &bytes);
     }
     Ok(bytes)
+}
+
+fn is_image(bytes: &[u8]) -> bool {
+    image::load_from_memory(bytes).is_ok()
 }
 
 #[cfg(test)]
@@ -82,7 +107,7 @@ mod tests {
 
     use image::{ImageFormat, Rgba, RgbaImage};
 
-    use super::{avatar_pixels, render_avatar};
+    use super::{avatar_pixels, fetch_with, render_avatar};
 
     fn png(size: u32) -> Vec<u8> {
         let image = RgbaImage::from_pixel(size, size, Rgba([200, 120, 40, 255]));
@@ -119,5 +144,26 @@ mod tests {
     #[test]
     fn a_broken_image_is_an_error() {
         assert!(render_avatar(b"not an image", 60).is_err());
+    }
+
+    #[test]
+    fn a_bad_download_is_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = fetch_with(7, Some(dir.path()), |_| Ok(b"<html>oops</html>".to_vec()));
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_good_download_is_cached_and_a_broken_cache_is_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = png(8);
+        let bytes = fetch_with(7, Some(dir.path()), |_| Ok(good.clone())).unwrap();
+        assert_eq!(bytes, good);
+        assert_eq!(std::fs::read(dir.path().join("7")).unwrap(), good);
+        std::fs::write(dir.path().join("7"), b"broken").unwrap();
+        let again = fetch_with(7, Some(dir.path()), |_| Ok(good.clone())).unwrap();
+        assert_eq!(again, good);
+        assert_eq!(std::fs::read(dir.path().join("7")).unwrap(), good);
     }
 }

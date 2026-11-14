@@ -537,4 +537,33 @@ fn render_results_snapshots() {
     state.set_about_open(false);
     state.set_cache_confirm_open(true);
     draw(&surface, &dir.join("21-clear-cache-confirm.png"));
+
+    state.set_cache_confirm_open(false);
+    state.set_show_results(true);
+    draw_sized(
+        &surface,
+        (1470.0, 800.0),
+        &dir.join("22-results-overlay-1470.png"),
+    );
+    state.set_show_results(false);
+    draw_sized(
+        &surface,
+        (1480.0, 800.0),
+        &dir.join("23-two-columns-1480.png"),
+    );
+    draw_sized(
+        &surface,
+        (1480.0, 660.0),
+        &dir.join("24-two-columns-660-high.png"),
+    );
+    state.set_keys_open(true);
+    state.set_keys_user("SamplePlayer".into());
+    state.set_keys_id("41234".into());
+    state.set_keys_secret("hidden-secret".into());
+    draw(&surface, &dir.join("25-keys-sheet.png"));
+    draw_sized(
+        &surface,
+        (650.0, 660.0),
+        &dir.join("26-keys-sheet-short.png"),
+    );
 }

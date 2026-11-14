@@ -7,22 +7,25 @@ use crate::{MainWindow, State};
 
 #[derive(Default)]
 pub struct Fullscreen {
-    before: Option<LogicalSize>,
+    undo: Option<LogicalSize>,
 }
 
 impl Fullscreen {
     pub fn enter(&mut self, window: &slint::Window) {
-        if !window.is_maximized() {
-            self.before = Some(window.size().to_logical(window.scale_factor()));
-        }
+        self.undo =
+            (!window.is_maximized()).then(|| window.size().to_logical(window.scale_factor()));
         window.set_maximized(true);
     }
 
     pub fn leave(&mut self, window: &slint::Window) {
-        window.set_maximized(false);
-        if let Some(size) = self.before.take() {
+        if let Some(size) = self.undo.take() {
+            window.set_maximized(false);
             window.set_size(size);
         }
+    }
+
+    pub fn forget(&mut self) {
+        self.undo = None;
     }
 }
 
@@ -38,12 +41,14 @@ pub fn bind(window: &MainWindow) {
         }
     });
     let weak = window.as_weak();
+    let leaving = fullscreen.clone();
     state.on_back(move || {
         if let Some(window) = weak.upgrade() {
             window.global::<State>().set_show_results(false);
-            fullscreen.borrow_mut().leave(window.window());
+            leaving.borrow_mut().leave(window.window());
         }
     });
+    state.on_columns_took_over(move || fullscreen.borrow_mut().forget());
 }
 
 #[cfg(test)]
@@ -69,5 +74,26 @@ mod tests {
         state.invoke_back();
         assert!(!state.get_show_results());
         assert_eq!(window.window().size(), PhysicalSize::new(700, 800));
+        assert!(!window.window().is_maximized());
+    }
+
+    #[test]
+    fn back_keeps_a_window_the_user_had_maximized() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(700.0, 800.0));
+        bind(&window);
+        let state = window.global::<State>();
+
+        state.invoke_see_full_results();
+        state.invoke_back();
+        window.window().set_maximized(true);
+        window.window().set_size(LogicalSize::new(1400.0, 900.0));
+
+        state.invoke_see_full_results();
+        state.invoke_back();
+        assert!(window.window().is_maximized());
+        assert_eq!(window.window().size(), PhysicalSize::new(1400, 900));
     }
 }

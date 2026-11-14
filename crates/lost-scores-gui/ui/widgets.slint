@@ -14,6 +14,14 @@ export component TipArea inherits TouchArea {
     }
 
     Timer {
+        running: root.shown;
+        interval: 150ms;
+        triggered => {
+            Tip.beat += 1;
+        }
+    }
+
+    Timer {
         running: root.has-hover && !root.shown && root.tip != "";
         interval: 450ms;
         triggered => {
@@ -51,8 +59,10 @@ export component IconButton inherits Rectangle {
     }
     Image {
         source: root.icon;
-        width: 17px;
-        height: 17px;
+        x: round((root.width - self.width) / 8px) * 4px;
+        y: round((root.height - self.height) / 8px) * 4px;
+        width: 16px;
+        height: 16px;
         image-fit: contain;
         colorize: root.enabled && ta.has-hover ? #ffffff : T.ibicon;
     }
@@ -82,8 +92,10 @@ export component GhostIconButton inherits Rectangle {
     }
     Image {
         source: root.icon;
-        width: 18px;
-        height: 18px;
+        x: round((root.width - self.width) / 8px) * 4px;
+        y: round((root.height - self.height) / 8px) * 4px;
+        width: 16px;
+        height: 16px;
         image-fit: contain;
         colorize: root.enabled && ta.has-hover ? #ffffff : T.link;
     }
@@ -116,8 +128,10 @@ export component Toggle inherits Rectangle {
     }
     Image {
         source: root.on ? root.icon-on : root.icon-off;
-        width: 22px;
-        height: 22px;
+        x: round((root.width - self.width) / 8px) * 4px;
+        y: round((root.height - self.height) / 8px) * 4px;
+        width: 20px;
+        height: 20px;
         image-fit: contain;
         colorize: root.on ? T.acc : T.togicon;
     }
@@ -202,7 +216,13 @@ export component HoverBox inherits Rectangle {
     border-width: 2px;
     border-color: root.enabled && ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
-    ta := TouchArea { mouse-cursor: root.cursor; }
+    callback clicked;
+    ta := TouchArea {
+        mouse-cursor: root.cursor;
+        clicked => {
+            root.clicked();
+        }
+    }
     @children
 }
 
@@ -277,6 +297,11 @@ export component ScoresBox inherits Rectangle {
             horizontal-stretch: 1;
             input-type: number;
             single-line: true;
+            changed has-focus => {
+                if (!self.has-focus && root.editing) {
+                    root.confirm();
+                }
+            }
             init => {
                 root.draft = self.text;
                 self.focus();
@@ -292,12 +317,14 @@ export component ScoresBox inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 14px;
-                height: 14px;
+                width: 20px;
+                height: 20px;
                 Image {
                     source: root.editing ? @image-url("../assets/i-check.svg") : @image-url("../assets/i-pen.svg");
-                    width: 13px;
-                    height: 13px;
+                    width: 12px;
+                    height: 12px;
+                    x: 4px;
+                    y: 4px;
                     image-fit: contain;
                     colorize: root.hovered || root.editing ? #ffffff : T.link;
                 }

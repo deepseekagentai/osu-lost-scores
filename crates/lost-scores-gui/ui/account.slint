@@ -84,9 +84,12 @@ component Profile inherits HorizontalLayout {
             background: T.field;
             if State.has-avatar: Image {
                 source: State.avatar;
+                x: round(parent.absolute-position.x / 4px) * 4px - parent.absolute-position.x;
+                y: round(parent.absolute-position.y / 4px) * 4px - parent.absolute-position.y;
                 width: 120px;
                 height: 120px;
                 image-fit: fill;
+                image-rendering: pixelated;
             }
         }
     }

@@ -1,9 +1,29 @@
+use std::path::Path;
+
 use lost_scores_app::pipeline::{Event, Step};
 use lost_scores_app::rows::thousands;
+use lost_scores_app::{detect, setup};
 
 use crate::log::stamp;
 
 pub const NEEDS_KEYS: &str = "Log in or add your own API keys to start";
+pub const NEEDS_FOLDER: &str =
+    "Could not find your osu! folder: pick it with the button next to the path";
+
+pub fn check_folders(osu_dir: &str) -> Result<(), String> {
+    if osu_dir.is_empty() || !detect::is_osu_dir(Path::new(osu_dir)) {
+        return Err(NEEDS_FOLDER.to_owned());
+    }
+    let dir = Path::new(osu_dir);
+    let config = setup::read_user_config(dir);
+    match setup::songs_dir(dir, &config) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "The Songs folder set in osu! does not exist: {}",
+            config.beatmap_directory.unwrap_or_default()
+        )),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -50,11 +70,11 @@ impl ScanState {
             format!("Scan finished: {lost_total} lost plays, {lost_ranked} on ranked maps");
     }
 
-    pub fn fail(&mut self, error: &str) {
+    pub fn fail(&mut self, error: &str, clock: (u8, u8, u8)) {
         self.phase = Phase::Failed;
         self.progress = 0.0;
         self.status = "Operation failed".to_owned();
-        self.log.push(format!("Error: {error}"));
+        self.log.push(stamp(clock, &format!("Error: {error}")));
     }
 
     pub fn can_start(&self, connected: bool) -> bool {
@@ -105,7 +125,7 @@ pub fn progress_value(step: Step, done: usize, total: usize) -> f32 {
 mod tests {
     use lost_scores_app::pipeline::{Event, Step};
 
-    use super::{Phase, ScanState, progress_value, status_text};
+    use super::{Phase, ScanState, check_folders, progress_value, status_text};
 
     const CLOCK: (u8, u8, u8) = (9, 30, 5);
 
@@ -118,15 +138,38 @@ mod tests {
         let mut state = ScanState::default();
         state.start();
         state.apply(&progress(Step::Pp, 5, 10), CLOCK);
-        state.fail("the osu! API answered 401");
+        state.fail("the osu! API answered 401", CLOCK);
         assert_eq!(state.phase, Phase::Failed);
         assert_eq!(state.progress, 0.0);
         assert_eq!(state.status, "Operation failed");
         assert_eq!(
             state.log.last().map(String::as_str),
-            Some("Error: the osu! API answered 401")
+            Some("[09:30:05] Error: the osu! API answered 401")
         );
         assert!(state.can_start(true));
+    }
+
+    #[test]
+    fn starting_without_a_valid_folder_shows_a_window_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = check_folders("").unwrap_err();
+        assert!(missing.contains("pick it with the button"), "{missing}");
+        let invalid = check_folders(&dir.path().display().to_string()).unwrap_err();
+        assert!(invalid.contains("pick it with the button"), "{invalid}");
+        std::fs::create_dir_all(dir.path().join("Data").join("r")).unwrap();
+        assert_eq!(check_folders(&dir.path().display().to_string()), Ok(()));
+        let gone = dir.path().join("elsewhere");
+        std::fs::write(
+            dir.path().join("osu!.Bob.cfg"),
+            format!("BeatmapDirectory = {}\r\n", gone.display()),
+        )
+        .unwrap();
+        let songs = check_folders(&dir.path().display().to_string());
+        let songs = songs.unwrap_err();
+        assert!(songs.contains("Songs folder"), "{songs}");
+        for text in [&missing, &invalid, &songs] {
+            assert!(!text.contains("--"), "{text}");
+        }
     }
 
     #[test]

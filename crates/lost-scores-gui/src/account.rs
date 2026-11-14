@@ -2,6 +2,7 @@ use std::fmt;
 
 use lost_scores_app::online::Player;
 use lost_scores_app::rows::thousands;
+use osu_api::ApiError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -24,6 +25,7 @@ impl Field {
 pub enum KeysError {
     Missing(Field),
     Rejected,
+    Unreachable,
 }
 
 impl fmt::Display for KeysError {
@@ -31,6 +33,7 @@ impl fmt::Display for KeysError {
         match self {
             KeysError::Missing(field) => write!(formatter, "{} is required", field.label()),
             KeysError::Rejected => formatter.write_str("User not found or API keys are invalid"),
+            KeysError::Unreachable => formatter.write_str("Could not reach the osu! API"),
         }
     }
 }
@@ -58,16 +61,94 @@ pub fn check_fields(
     }
 }
 
-pub fn username_from_input(input: &str) -> String {
+pub fn keys_error(error: &ApiError) -> KeysError {
+    match error {
+        ApiError::Status { status, .. } if *status < 500 => KeysError::Rejected,
+        _ => KeysError::Unreachable,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Account {
+    Name(String),
+    Id(u32),
+}
+
+const MODES: [&str; 4] = ["osu", "taiko", "fruits", "mania"];
+
+pub fn parse_account(input: &str) -> Account {
     let trimmed = input.trim();
-    if !trimmed.contains("://") && !trimmed.starts_with("osu.ppy.sh/") {
-        return trimmed.to_owned();
+    let is_link = trimmed.contains("://") || trimmed.starts_with("osu.ppy.sh/");
+    if !is_link {
+        return from_part(trimmed, trimmed);
     }
     let path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
-    path.rsplit('/')
-        .find(|part| !part.is_empty())
-        .unwrap_or(trimmed)
-        .to_owned()
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let after_marker = parts
+        .iter()
+        .position(|part| part.eq_ignore_ascii_case("users") || part.eq_ignore_ascii_case("u"))
+        .and_then(|index| parts.get(index + 1));
+    let part = after_marker.or_else(|| {
+        parts
+            .iter()
+            .rev()
+            .find(|part| !MODES.contains(&part.to_ascii_lowercase().as_str()))
+    });
+    match part {
+        Some(part) => from_part(&decode(part), trimmed),
+        None => Account::Name(trimmed.to_owned()),
+    }
+}
+
+fn from_part(part: &str, fallback: &str) -> Account {
+    if part.is_empty() {
+        return Account::Name(fallback.to_owned());
+    }
+    match part.parse::<u32>() {
+        Ok(id) if part.bytes().all(|byte| byte.is_ascii_digit()) => Account::Id(id),
+        _ => Account::Name(part.to_owned()),
+    }
+}
+
+fn decode(part: &str) -> String {
+    let bytes = part.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let decoded = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match decoded {
+            Some(byte) => {
+                out.push(byte);
+                index += 3;
+            }
+            None => {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    pub player_id: u32,
+    pub username: String,
+    pub texts: ProfileTexts,
+}
+
+impl Profile {
+    pub fn from_player(player: &Player) -> Self {
+        Self {
+            player_id: player.id,
+            username: player.names.first().cloned().unwrap_or_default(),
+            texts: profile_texts(player),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,7 +173,11 @@ pub fn profile_texts(player: &Player) -> ProfileTexts {
 mod tests {
     use lost_scores_app::online::Player;
 
-    use super::{Field, KeysError, check_fields, profile_texts, username_from_input};
+    use osu_api::ApiError;
+
+    use super::{
+        Account, Field, KeysError, Profile, check_fields, keys_error, parse_account, profile_texts,
+    };
 
     #[test]
     fn empty_key_fields_are_reported() {
@@ -105,20 +190,70 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_url_becomes_its_last_part() {
+    fn a_profile_url_with_a_mode_gives_the_id() {
+        for input in [
+            "https://osu.ppy.sh/users/12345/osu",
+            "https://osu.ppy.sh/users/12345/mania/",
+            "https://osu.ppy.sh/u/12345",
+            "osu.ppy.sh/users/12345?mode=osu#top",
+            "  12345  ",
+        ] {
+            assert_eq!(parse_account(input), Account::Id(12345), "{input}");
+        }
+    }
+
+    #[test]
+    fn a_profile_url_or_plain_text_gives_the_name() {
         assert_eq!(
-            username_from_input("https://osu.ppy.sh/users/12345"),
-            "12345"
+            parse_account("https://osu.ppy.sh/users/Lemon/"),
+            Account::Name("Lemon".into())
         );
         assert_eq!(
-            username_from_input("https://osu.ppy.sh/users/Lemon/"),
-            "Lemon"
+            parse_account("https://osu.ppy.sh/users/Some%20Name/taiko"),
+            Account::Name("Some Name".into())
         );
         assert_eq!(
-            username_from_input("osu.ppy.sh/users/12345?mode=osu#top"),
-            "12345"
+            parse_account("  My Name  "),
+            Account::Name("My Name".into())
         );
-        assert_eq!(username_from_input("  My Name  "), "My Name");
+        assert_eq!(
+            parse_account("12 Monkeys"),
+            Account::Name("12 Monkeys".into())
+        );
+    }
+
+    #[test]
+    fn the_saved_name_is_the_api_username() {
+        let player = Player {
+            id: 12345,
+            names: vec!["Real Name".into(), "Old Name".into()],
+            pp: 1.0,
+            accuracy: 99.0,
+            global_rank: None,
+        };
+        let profile = Profile::from_player(&player);
+        assert_eq!(profile.username, "Real Name");
+        assert_eq!(profile.player_id, 12345);
+    }
+
+    #[test]
+    fn network_errors_do_not_blame_the_keys() {
+        let status = |status| ApiError::Status {
+            status,
+            url: "u".into(),
+        };
+        assert_eq!(
+            keys_error(&ApiError::Network("down".into())),
+            KeysError::Unreachable
+        );
+        assert_eq!(keys_error(&status(503)), KeysError::Unreachable);
+        assert_eq!(keys_error(&status(500)), KeysError::Unreachable);
+        assert_eq!(keys_error(&status(401)), KeysError::Rejected);
+        assert_eq!(keys_error(&status(404)), KeysError::Rejected);
+        assert_eq!(
+            KeysError::Unreachable.to_string(),
+            "Could not reach the osu! API"
+        );
     }
 
     #[test]

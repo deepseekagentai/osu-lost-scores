@@ -9,29 +9,25 @@ use std::time::Duration;
 use anyhow::Result;
 use jiff::tz::TimeZone;
 use lost_scores_app::online::Online;
-use lost_scores_app::pipeline::Api;
 use lost_scores_app::pipeline::Source;
 use lost_scores_app::rows::thousands;
 use lost_scores_app::setup::Settings;
 use lost_scores_app::updates::latest_release;
 use lost_scores_app::{cache, history, keys, setup};
-use osu_api::Credentials;
+use osu_api::{Credentials, UserKey};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
-use crate::account::{
-    Field, KeysError, ProfileTexts, check_fields, profile_texts, username_from_input,
-};
+use crate::account::{Account, Field, KeysError, Profile, check_fields, keys_error, parse_account};
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
-use crate::scan::{NEEDS_KEYS, Phase, ScanState};
+use crate::newest::load_newest;
+use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::table::{Column, Tab, Table, when, wrap};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot};
 use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
 
-const START_MESSAGE: &str =
-    "Could not find your osu! folder: pick it with the button next to the path";
 const AVATAR_LOGICAL: f32 = 120.0;
 const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
 const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
@@ -51,6 +47,10 @@ struct Session {
     refreshing: Cell<bool>,
     counts: Cell<(usize, usize)>,
     closed: Arc<AtomicBool>,
+    settings: RefCell<Settings>,
+    player: Cell<Option<u32>>,
+    epoch: Cell<u64>,
+    dialog: Arc<AtomicBool>,
     table: Rc<RefCell<Table>>,
     rows: Rc<RowsModel>,
     tab: Cell<Tab>,
@@ -86,11 +86,6 @@ impl Sink for LoopSink {
     }
 }
 
-struct Profile {
-    player_id: u32,
-    texts: ProfileTexts,
-}
-
 pub fn run() -> Result<()> {
     run_with(|_| {})
 }
@@ -122,6 +117,10 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
         refreshing: Cell::new(false),
         counts: Cell::new((0, 0)),
         closed: Arc::new(AtomicBool::new(false)),
+        settings: RefCell::new(Settings::default()),
+        player: Cell::new(None),
+        epoch: Cell::new(0),
+        dialog: Arc::new(AtomicBool::new(false)),
     });
     let closed = session.closed.clone();
     window.window().on_close_requested(move || {
@@ -155,26 +154,10 @@ fn config_player() -> Option<String> {
     setup::player(&setup::read_user_config(&osu_dir)).ok()
 }
 
-fn saved_player() -> Option<String> {
-    load_settings().player
-}
-
-fn update_settings(change: impl FnOnce(&mut Settings)) {
-    if let Some(path) = setup::config_file() {
-        let mut settings = setup::load_settings(&path);
-        change(&mut settings);
-        let _ = setup::save_settings(&path, &settings);
-    }
-}
-
 fn load_settings() -> Settings {
     setup::config_file()
         .map(|path| setup::load_settings(&path))
         .unwrap_or_default()
-}
-
-fn save_player(name: &str) {
-    update_settings(|settings| settings.player = Some(name.to_owned()));
 }
 
 impl Session {
@@ -185,18 +168,21 @@ impl Session {
         state.set_version(env!("CARGO_PKG_VERSION").into());
         match setup::resolve_osu_dir(None) {
             Ok(dir) => state.set_osu_dir(show_path(&dir).into()),
-            Err(_) => state.set_status(START_MESSAGE.into()),
+            Err(_) => state.set_status(NEEDS_FOLDER.into()),
         }
-        let settings = load_settings();
-        state.set_include_all(settings.include_all);
-        state.set_check_missing(settings.check_missing);
-        state.set_show_lost(settings.show_lost_in_top_image);
-        state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
+        *self.settings.borrow_mut() = load_settings();
+        {
+            let settings = self.settings.borrow();
+            state.set_include_all(settings.include_all);
+            state.set_check_missing(settings.check_missing);
+            state.set_show_lost(settings.show_lost_in_top_image);
+            state.set_scores_to_show(i32::from(clamped_scores(settings.scores_to_show)));
+        }
         self.bind(&state);
         self.bind_extras(&state);
         self.load_newest();
         *self.credentials.borrow_mut() = stored_credentials();
-        let name = saved_player().or_else(config_player);
+        let name = self.saved_player().or_else(config_player);
         if let (Some(credentials), Some(name)) = (self.credentials.borrow().clone(), name) {
             state.set_connected(true);
             state.set_user_name(name.clone().into());
@@ -204,9 +190,24 @@ impl Session {
         }
     }
 
+    fn saved_player(&self) -> Option<String> {
+        self.settings.borrow().player.clone()
+    }
+
+    fn change_settings(&self, change: impl FnOnce(&mut Settings)) {
+        let saved = {
+            let mut settings = self.settings.borrow_mut();
+            change(&mut settings);
+            setup::config_file().map(|path| setup::save_settings(&path, &settings))
+        };
+        if let Some(Err(error)) = saved {
+            self.log(&format!("Could not save the settings: {error:#}"));
+        }
+    }
+
     fn bind(self: &Rc<Self>, state: &State<'_>) {
-        let weak = self.weak.clone();
-        state.on_pick_folder(move || pick_folder(weak.clone()));
+        let session = self.clone();
+        state.on_pick_folder(move || session.pick_folder());
         let session = self.clone();
         state.on_open_keys(move || session.open_keys());
         let session = self.clone();
@@ -225,17 +226,19 @@ impl Session {
         let session = self.clone();
         state.on_set_include_all(move |value| {
             session.window.global::<State>().set_include_all(value);
-            update_settings(|settings| settings.include_all = value);
+            session.change_settings(|settings| settings.include_all = value);
+            session.table.borrow_mut().set_include_all(value);
+            session.show_tab(session.tab.get());
         });
         let session = self.clone();
         state.on_set_check_missing(move |value| {
             session.window.global::<State>().set_check_missing(value);
-            update_settings(|settings| settings.check_missing = value);
+            session.change_settings(|settings| settings.check_missing = value);
         });
         let session = self.clone();
         state.on_set_show_lost(move |value| {
             session.window.global::<State>().set_show_lost(value);
-            update_settings(|settings| settings.show_lost_in_top_image = value);
+            session.change_settings(|settings| settings.show_lost_in_top_image = value);
         });
         let session = self.clone();
         state.on_commit_scores(move |text| {
@@ -244,7 +247,7 @@ impl Session {
                     .window
                     .global::<State>()
                     .set_scores_to_show(i32::from(count));
-                update_settings(|settings| settings.scores_to_show = count);
+                session.change_settings(|settings| settings.scores_to_show = count);
             }
         });
         let session = self.clone();
@@ -347,13 +350,22 @@ impl Session {
         let weak = self.weak.clone();
         thread::spawn(move || {
             let entries = history::list(&dir);
-            let loaded = entries
-                .first()
-                .and_then(|entry| history::load(&entry.folder).ok());
+            let newest = load_newest(&entries, history::load);
             on_ui(&weak, move |app| {
-                if let Some(scan) = loaded {
-                    *app.entries.borrow_mut() = entries;
-                    app.show_scan(0, &scan);
+                let zone = TimeZone::system();
+                for (made_at, error) in &newest.failures {
+                    app.log(&format!(
+                        "Could not load the scan from {}: {error}",
+                        when(*made_at, &zone)
+                    ));
+                }
+                let folder = newest
+                    .loaded
+                    .as_ref()
+                    .map(|(index, _)| entries[*index].folder.clone());
+                *app.entries.borrow_mut() = entries;
+                if let Some((index, scan)) = newest.loaded {
+                    app.show_scan(index, folder, &scan);
                 }
             });
         });
@@ -369,7 +381,7 @@ impl Session {
         thread::spawn(move || {
             let loaded = history::load(&entry.folder);
             on_ui(&weak, move |app| match loaded {
-                Ok(scan) => app.show_scan(index, &scan),
+                Ok(scan) => app.show_scan(index, Some(entry.folder), &scan),
                 Err(error) => app.log(&format!("Could not open the scan: {error:#}")),
             });
         });
@@ -379,23 +391,24 @@ impl Session {
         if let Some(dir) = history::scans_dir() {
             *self.entries.borrow_mut() = history::list(&dir);
         }
-        let index = self
-            .entries
-            .borrow()
-            .iter()
-            .position(|entry| entry.folder == folder)
-            .unwrap_or(0);
-        self.show_scan(index, scan);
+        self.show_scan(0, Some(folder.to_path_buf()), scan);
     }
 
-    fn show_scan(&self, index: usize, scan: &history::SavedScan) {
+    fn show_scan(&self, index: usize, folder: Option<PathBuf>, scan: &history::SavedScan) {
         let zone = TimeZone::system();
-        *self.table.borrow_mut() = Table::from_scan(scan);
-        *self.folder.borrow_mut() = self
-            .entries
-            .borrow()
-            .get(index)
-            .map(|entry| entry.folder.clone());
+        let mut table = Table::from_scan(scan);
+        table.set_include_all(self.window.global::<State>().get_include_all());
+        *self.table.borrow_mut() = table;
+        let index = folder
+            .as_ref()
+            .and_then(|folder| {
+                self.entries
+                    .borrow()
+                    .iter()
+                    .position(|entry| &entry.folder == folder)
+            })
+            .unwrap_or(index);
+        *self.folder.borrow_mut() = folder;
         let labels: Vec<slint::SharedString> = self
             .entries
             .borrow()
@@ -417,8 +430,14 @@ impl Session {
         state.set_foot(foot(&self.table.borrow(), tab));
         self.rows.show(tab);
         self.show_sorting();
-        self.rerun_search(true);
+        self.reset_search();
         self.jump(0);
+    }
+
+    fn reset_search(&self) {
+        self.query.borrow_mut().clear();
+        self.window.global::<State>().set_search_text("".into());
+        self.rerun_search(false);
     }
 
     fn show_sorting(&self) {
@@ -429,11 +448,31 @@ impl Session {
     }
 
     fn sort_by(&self, column: Column) {
-        self.table.borrow_mut().sort(self.tab.get(), column);
+        let tab = self.tab.get();
+        let current = self
+            .matches
+            .borrow()
+            .get(self.position.get())
+            .and_then(|&row| self.table.borrow().rows(tab).get(row).cloned());
+        self.table.borrow_mut().sort(tab, column);
         self.rows.refresh();
         self.show_sorting();
-        self.rerun_search(true);
-        self.jump(0);
+        self.rerun_search(false);
+        let position = current.and_then(|item| {
+            let table = self.table.borrow();
+            self.matches
+                .borrow()
+                .iter()
+                .position(|&row| table.rows(tab).get(row) == Some(&item))
+        });
+        match position {
+            Some(position) => {
+                self.position.set(position);
+                self.show_match(true);
+            }
+            None if self.matches.borrow().is_empty() => self.jump(0),
+            None => self.show_match(true),
+        }
     }
 
     fn jump(&self, row: i32) {
@@ -528,7 +567,7 @@ impl Session {
 
     fn open_keys(&self) {
         let state = self.window.global::<State>();
-        let saved = saved_player();
+        let saved = self.saved_player();
         let from_config = saved.is_none();
         let name = saved.or_else(config_player).unwrap_or_default();
         let credentials = self.credentials.borrow().clone();
@@ -559,29 +598,28 @@ impl Session {
             state.set_keys_secret_missing(missing.contains(&Field::ClientSecret));
             return;
         }
-        let name = username_from_input(&user);
+        let account = parse_account(&user);
+        let shown = match &account {
+            Account::Name(name) => name.clone(),
+            Account::Id(id) => id.to_string(),
+        };
         state.set_keys_busy(true);
-        state.set_status(format!("Validating user '{name}' and API keys...").into());
+        state.set_status(format!("Validating user '{shown}' and API keys...").into());
         let credentials = Credentials {
             client_id: id,
             client_secret: secret,
         };
         let weak = self.weak.clone();
         thread::spawn(move || {
-            let result = validate(&credentials, &name);
+            let result = validate(&credentials, &account);
             on_ui(&weak, move |app| {
                 app.window.global::<State>().set_keys_busy(false);
-                app.keys_checked(credentials, name, result);
+                app.keys_checked(credentials, result);
             });
         });
     }
 
-    fn keys_checked(
-        self: &Rc<Self>,
-        credentials: Credentials,
-        name: String,
-        result: Result<Profile, KeysError>,
-    ) {
+    fn keys_checked(self: &Rc<Self>, credentials: Credentials, result: Result<Profile, KeysError>) {
         let state = self.window.global::<State>();
         state.set_status("".into());
         match result {
@@ -592,8 +630,13 @@ impl Session {
                     state.set_keys_error(format!("Could not save the keys: {error:#}").into());
                     return;
                 }
-                save_player(&name);
+                let name = profile.username.clone();
+                self.change_settings(|settings| settings.player = Some(name.clone()));
                 *self.credentials.borrow_mut() = Some(credentials);
+                self.epoch.set(self.epoch.get() + 1);
+                *self.avatar.borrow_mut() = None;
+                state.set_has_avatar(false);
+                self.rendered.set(0);
                 state.set_keys_open(false);
                 state.set_connected(true);
                 state.set_user_name(name.clone().into());
@@ -606,6 +649,7 @@ impl Session {
     }
 
     fn show_profile(&self, profile: &Profile) {
+        self.player.set(Some(profile.player_id));
         let state = self.window.global::<State>();
         state.set_perf_now(profile.texts.performance.clone().into());
         state.set_acc_now(profile.texts.accuracy.clone().into());
@@ -617,9 +661,14 @@ impl Session {
 
     fn fetch_profile(self: &Rc<Self>, credentials: Credentials, name: String) {
         let weak = self.weak.clone();
+        let epoch = self.epoch.get();
         thread::spawn(move || {
-            let result = validate(&credentials, &name);
-            on_ui(&weak, move |app| app.profile_fetched(result));
+            let result = validate(&credentials, &Account::Name(name));
+            on_ui(&weak, move |app| {
+                if app.epoch.get() == epoch {
+                    app.profile_fetched(result);
+                }
+            });
         });
     }
 
@@ -646,7 +695,9 @@ impl Session {
             let cache = cache::avatars_dir();
             let bytes = fetch(player_id, cache.as_deref()).ok();
             on_ui(&weak, move |app| {
-                if let Some(bytes) = bytes {
+                if let Some(bytes) = bytes
+                    && app.player.get() == Some(player_id)
+                {
                     *app.avatar.borrow_mut() = Some(bytes);
                     app.rendered.set(0);
                     app.refresh_avatar();
@@ -660,15 +711,58 @@ impl Session {
         if pixels == self.rendered.get() {
             return;
         }
-        let bytes = self.avatar.borrow();
-        let Some(bytes) = bytes.as_ref() else {
-            return;
+        let rendered = match self.avatar.borrow().as_ref() {
+            Some(bytes) => render_avatar(bytes, pixels),
+            None => return,
         };
-        if let Ok(buffer) = render_avatar(bytes, pixels) {
-            let state = self.window.global::<State>();
-            state.set_avatar(slint::Image::from_rgba8(buffer));
-            state.set_has_avatar(true);
-            self.rendered.set(pixels);
+        match rendered {
+            Ok(buffer) => {
+                let state = self.window.global::<State>();
+                state.set_avatar(slint::Image::from_rgba8(buffer));
+                state.set_has_avatar(true);
+                self.rendered.set(pixels);
+            }
+            Err(error) => {
+                *self.avatar.borrow_mut() = None;
+                self.log(&format!("Could not show the avatar: {error:#}"));
+            }
+        }
+    }
+
+    fn pick_folder(self: &Rc<Self>) {
+        if self.dialog.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let weak = self.weak.clone();
+        let dialog = self.dialog.clone();
+        let spawned = thread::Builder::new().spawn(move || {
+            let picked = std::panic::catch_unwind(|| {
+                rfd::FileDialog::new()
+                    .set_title("Select osu! Game Directory")
+                    .pick_folder()
+            });
+            dialog.store(false, Ordering::Relaxed);
+            on_ui(&weak, move |app| match picked {
+                Ok(Some(dir)) => app.folder_picked(&dir),
+                Ok(None) => {}
+                Err(_) => app.log("Could not open the folder dialog"),
+            });
+        });
+        if spawned.is_err() {
+            self.dialog.store(false, Ordering::Relaxed);
+            self.log("Could not open the folder dialog");
+        }
+    }
+
+    fn folder_picked(&self, dir: &Path) {
+        let state = self.window.global::<State>();
+        match choose_folder(dir) {
+            Ok(path) => {
+                self.settings.borrow_mut().osu_dir = Some(PathBuf::from(&path));
+                state.set_osu_dir(path.into());
+                state.set_status("".into());
+            }
+            Err(error) => state.set_status(error.to_string().into()),
         }
     }
 
@@ -690,23 +784,29 @@ impl Session {
         let Some(credentials) = credentials else {
             return;
         };
+        let osu_dir = state.get_osu_dir().to_string();
+        if let Err(message) = check_folders(&osu_dir) {
+            state.set_status(message.into());
+            return;
+        }
         let Some(scans_dir) = history::scans_dir() else {
             state.set_status("Operation failed".into());
             self.log("Error: cannot find a folder for the scan history");
             return;
         };
-        let settings = load_settings();
-        let osu_dir = state.get_osu_dir().to_string();
-        let job = Job {
-            source: Source {
-                osu_dir: (!osu_dir.is_empty()).then(|| PathBuf::from(osu_dir)),
-                player: Some(state.get_user_name().to_string()),
-                songs_dir: None,
-                check_missing: settings.check_missing,
-                maps: None,
-            },
-            scans_dir,
-            include_all: settings.include_all,
+        let job = {
+            let settings = self.settings.borrow();
+            Job {
+                source: Source {
+                    osu_dir: Some(PathBuf::from(osu_dir)),
+                    player: Some(state.get_user_name().to_string()),
+                    songs_dir: None,
+                    check_missing: settings.check_missing,
+                    maps: None,
+                },
+                scans_dir,
+                include_all: settings.include_all,
+            }
         };
         self.scan.borrow_mut().start();
         self.sync();
@@ -763,7 +863,7 @@ impl Session {
             }
             Message::Failed(error) => {
                 self.refreshing.set(false);
-                self.scan.borrow_mut().fail(&error);
+                self.scan.borrow_mut().fail(&error, clock_now());
             }
         }
         self.sync();
@@ -800,6 +900,8 @@ impl Session {
             return;
         }
         *self.credentials.borrow_mut() = None;
+        self.epoch.set(self.epoch.get() + 1);
+        self.player.set(None);
         *self.avatar.borrow_mut() = None;
         self.rendered.set(0);
         state.set_connected(false);
@@ -822,34 +924,13 @@ fn on_ui(weak: &Weak<MainWindow>, action: impl FnOnce(&Rc<Session>) + Send + 'st
     });
 }
 
-fn validate(credentials: &Credentials, name: &str) -> Result<Profile, KeysError> {
+fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, KeysError> {
     let mut online = Online::new(credentials.clone());
-    online.check().map_err(|_| KeysError::Rejected)?;
-    let player = online.player(name).map_err(|_| KeysError::Rejected)?;
-    Ok(Profile {
-        player_id: player.id,
-        texts: profile_texts(&player),
-    })
-}
-
-fn pick_folder(weak: Weak<MainWindow>) {
-    thread::spawn(move || {
-        let Some(dir) = rfd::FileDialog::new()
-            .set_title("Select osu! Game Directory")
-            .pick_folder()
-        else {
-            return;
-        };
-        let result = choose_folder(Path::new(&dir)).map_err(|error| error.to_string());
-        let _ = weak.upgrade_in_event_loop(move |window| {
-            let state = window.global::<State>();
-            match result {
-                Ok(path) => {
-                    state.set_osu_dir(path.into());
-                    state.set_status("".into());
-                }
-                Err(message) => state.set_status(message.into()),
-            }
-        });
-    });
+    online.check().map_err(|error| keys_error(&error))?;
+    let player = match account {
+        Account::Name(name) => online.account(UserKey::Username, name),
+        Account::Id(id) => online.account(UserKey::Id, &id.to_string()),
+    }
+    .map_err(|error| keys_error(&error))?;
+    Ok(Profile::from_player(&player))
 }

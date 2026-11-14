@@ -3,6 +3,7 @@ pub mod app;
 pub mod avatar;
 pub mod layout;
 pub mod log;
+pub mod newest;
 pub mod scan;
 pub mod table;
 pub mod update;
@@ -28,7 +29,44 @@ pub fn choose_folder(dir: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MainWindow, choose_folder};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use i_slint_backend_testing::ElementHandle;
+    use slint::platform::{PointerEventButton, WindowEvent};
+    use slint::{ComponentHandle, LogicalPosition, LogicalSize};
+
+    use super::{MainWindow, State, choose_folder};
+
+    fn click_start_scan(window: &MainWindow) {
+        ElementHandle::find_by_element_type_name(window, "StartScan")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+    }
+
+    #[test]
+    fn clicks_do_not_reach_the_controls_under_the_results_overlay() {
+        i_slint_backend_testing::init_integration_test_with_mock_time();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let started = Rc::new(Cell::new(0));
+        let counter = started.clone();
+        window
+            .global::<State>()
+            .on_start_scan(move || counter.set(counter.get() + 1));
+
+        window.window().dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(1.0, 1.0),
+        });
+        click_start_scan(&window);
+        assert_eq!(started.get(), 1);
+
+        window.global::<State>().set_show_results(true);
+        click_start_scan(&window);
+        assert_eq!(started.get(), 1);
+    }
 
     #[test]
     fn a_folder_without_data_r_is_refused_with_the_cli_message() {

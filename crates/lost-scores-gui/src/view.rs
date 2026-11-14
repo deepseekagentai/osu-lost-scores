@@ -125,6 +125,7 @@ pub fn row(item: &Item) -> ScoreRow {
         version: item.version.as_str().into(),
         creator: item.creator.as_str().into(),
         date: item.date.as_str().into(),
+        date_short: item.date_short.as_str().into(),
         link: beatmap_link(item.beatmap_id).into(),
         beatmap_id: item.beatmap_id.map_or(0, |id| id as i32),
         mods: ModelRc::new(VecModel::from(mods)),
