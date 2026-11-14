@@ -82,7 +82,7 @@ pub fn mods_width(items: &[Item]) -> f32 {
     longest as f32 * MOD_PILL_WIDTH + (longest - 1) as f32 * MOD_PILL_GAP
 }
 
-fn color(rgb: u32) -> Color {
+pub(crate) fn color(rgb: u32) -> Color {
     Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 

@@ -1,0 +1,700 @@
+import { T } from "theme.slint";
+
+export struct ShareMod {
+    icon: image,
+    has-icon: bool,
+    text: string,
+}
+
+export struct ShareItem {
+    place: string,
+    title: string,
+    artist: string,
+    version: string,
+    creator: string,
+    ago: string,
+    accuracy: string,
+    pp: string,
+    sub: string,
+    sub-red: string,
+    lost: bool,
+    grade: image,
+    cover: image,
+    has-cover: bool,
+    mods: [ShareMod],
+    status: string,
+    status-color: color,
+    status-text: color,
+}
+
+export struct ShareArt {
+    lemon-small: image,
+    lemon-large: image,
+    clock: image,
+    trend-down: image,
+}
+
+component Dot inherits Text {
+    text: "·";
+    color: #6f6a7c;
+    font-size: 12.5px;
+    vertical-alignment: center;
+}
+
+component ShareRow inherits Rectangle {
+    in property <ShareItem> item;
+    in property <ShareArt> art;
+    in property <length> mods-width;
+    width: 932px;
+    height: 58px;
+    border-radius: 8px;
+    background: root.item.lost ? T.row-lost : T.row;
+    if root.item.has-cover: Image {
+        x: 0;
+        y: 0;
+        width: 306px;
+        height: 58px;
+        source: root.item.cover;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 2px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 14px;
+        if root.item.place != "": Text {
+            width: 34px;
+            text: root.item.place;
+            color: root.item.has-cover ? T.k2 : T.meta;
+            font-size: 13px;
+            font-weight: 500;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            Image {
+                width: 48px;
+                height: 24px;
+                source: root.item.grade;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+            min-width: 140px;
+            HorizontalLayout {
+                spacing: 8px;
+                if root.item.lost: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 38px;
+                        height: 17px;
+                        border-radius: 5px;
+                        background: T.lost;
+                        Text {
+                            text: "LOST";
+                            color: #2b1218;
+                            font-size: 10.5px;
+                            font-weight: 600;
+                        }
+                    }
+                }
+                Text {
+                    text: root.item.title;
+                    color: #ffffff;
+                    font-size: 15px;
+                    font-weight: 500;
+                    overflow: elide;
+                    max-width: 420px;
+                }
+                Text {
+                    text: "by " + root.item.artist;
+                    color: T.by;
+                    font-size: 13px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: bottom;
+                }
+            }
+            HorizontalLayout {
+                spacing: 7px;
+                Text {
+                    text: root.item.version;
+                    color: #c9b8ff;
+                    font-size: 12.5px;
+                    font-weight: 600;
+                    overflow: elide;
+                    max-width: 240px;
+                    vertical-alignment: center;
+                }
+                Dot { }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "by";
+                        color: T.meta;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.item.creator;
+                        color: T.k2;
+                        font-size: 12.5px;
+                        font-weight: 500;
+                        overflow: elide;
+                        max-width: 170px;
+                        vertical-alignment: center;
+                    }
+                }
+                Dot { }
+                HorizontalLayout {
+                    spacing: 4px;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: root.art.clock;
+                            width: 11px;
+                            height: 11px;
+                            colorize: T.meta;
+                        }
+                    }
+                    Text {
+                        text: root.item.ago;
+                        color: T.meta;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.item.status != "": VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: status.preferred-width + 12px;
+                        height: 16px;
+                        border-radius: 4px;
+                        background: root.item.status-color;
+                        status := Text {
+                            text: root.item.status;
+                            color: root.item.status-text;
+                            font-size: 11px;
+                            font-weight: 600;
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        HorizontalLayout {
+            width: root.mods-width;
+            spacing: 2px;
+            alignment: end;
+            for m in root.item.mods: VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 30px;
+                    height: 21px;
+                    if m.has-icon: Image {
+                        source: m.icon;
+                        width: 30px;
+                        height: 21px;
+                    }
+                    if !m.has-icon: Rectangle {
+                        border-radius: 5px;
+                        background: #9aa0aa;
+                        Text {
+                            text: m.text;
+                            color: T.ink;
+                            font-size: 10px;
+                            font-weight: 600;
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            width: 76px;
+            text: root.item.accuracy;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 500;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 126px;
+            background: T.bg;
+            border-radius: 6px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text {
+                        text: root.item.pp;
+                        color: root.item.lost ? T.lost : #ffffff;
+                        font-size: 18px;
+                        font-weight: 600;
+                        vertical-alignment: bottom;
+                    }
+                    Text {
+                        text: "pp";
+                        color: root.item.lost ? T.lost : T.k;
+                        font-size: 12px;
+                        vertical-alignment: bottom;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    if root.item.sub != "": Text {
+                        text: root.item.sub;
+                        color: T.k;
+                        font-size: 11.5px;
+                    }
+                    if root.item.sub-red != "": VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: root.art.trend-down;
+                            width: 12px;
+                            height: 11px;
+                            colorize: T.down;
+                        }
+                    }
+                    if root.item.sub-red != "": Text {
+                        text: root.item.sub-red;
+                        color: T.down;
+                        font-size: 12px;
+                        font-weight: 500;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ShareFrame inherits Rectangle {
+    in property <image> backdrop;
+    in property <length> backdrop-height: 440px;
+    border-radius: 18px;
+    background: T.bg;
+    Image {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: root.backdrop-height;
+        source: root.backdrop;
+    }
+    @children
+}
+
+component ShareHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> nick;
+    in property <string> date;
+    in property <image> avatar;
+    height: 64px;
+    HorizontalLayout {
+        spacing: 16px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                color: #ffffff;
+                font-size: 40px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.subtitle;
+                color: T.acc;
+                font-size: 16px;
+                font-italic: true;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.nick;
+                color: #ffffff;
+                font-size: 22px;
+                font-weight: 600;
+                horizontal-alignment: right;
+            }
+            Text {
+                text: root.date;
+                color: T.meta;
+                font-size: 13px;
+                horizontal-alignment: right;
+            }
+        }
+        Image {
+            source: root.avatar;
+            width: 64px;
+            height: 64px;
+        }
+    }
+}
+
+component ShareFooter inherits Rectangle {
+    in property <ShareArt> art;
+    height: 18px;
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Image {
+            source: root.art.lemon-small;
+            width: 18px;
+            height: 18px;
+        }
+        Text {
+            text: "osu!";
+            color: T.osu;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "Lost Scores Analyzer";
+            color: T.k2;
+            font-size: 14px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component BigStat inherits VerticalLayout {
+    in property <string> label;
+    in property <string> from;
+    in property <string> to;
+    in property <string> delta;
+    in property <color> to-color: #ffffff;
+    spacing: 2px;
+    Text {
+        text: root.label;
+        color: T.k;
+        font-size: 12.5px;
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        Text {
+            text: root.from;
+            color: #ffffff;
+            font-size: 19px;
+            font-weight: 600;
+            vertical-alignment: bottom;
+        }
+        if root.to != "": Text {
+            text: "→";
+            color: T.arrow;
+            font-size: 19px;
+            vertical-alignment: bottom;
+        }
+        if root.to != "": Text {
+            text: root.to;
+            color: root.to-color;
+            font-size: 19px;
+            font-weight: 600;
+            vertical-alignment: bottom;
+        }
+        if root.delta != "": Text {
+            text: root.delta;
+            color: root.to-color;
+            font-size: 14px;
+            vertical-alignment: bottom;
+        }
+    }
+}
+
+component Rows inherits Rectangle {
+    in property <[ShareItem]> rows;
+    in property <ShareArt> art;
+    in property <length> mods-width;
+    in property <string> empty-text;
+    height: max(root.rows.length, 1) * 64px;
+    if root.rows.length == 0: Text {
+        text: root.empty-text;
+        color: T.k2;
+        font-size: 18px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    for item[index] in root.rows: ShareRow {
+        x: 0px;
+        y: index * 64px + 3px;
+        item: item;
+        art: root.art;
+        mods-width: root.mods-width;
+    }
+}
+
+export component ShareLost inherits Window {
+    default-font-family: "Fredoka";
+    default-font-size: 14px;
+    in property <image> backdrop;
+    in property <image> avatar;
+    in property <ShareArt> art;
+    in property <length> mods-width;
+    in property <[ShareItem]> rows;
+    in property <string> nick;
+    in property <string> subtitle;
+    in property <string> date;
+    out property <length> image-height: 150px + max(root.rows.length, 1) * 64px;
+    width: 980px;
+    height: root.image-height;
+    background: transparent;
+    ShareFrame {
+        backdrop: root.backdrop;
+        ShareHeader {
+            x: 24px;
+            y: 22px;
+            width: 932px;
+            title: "Lost Scores";
+            subtitle: root.subtitle;
+            nick: root.nick;
+            date: root.date;
+            avatar: root.avatar;
+        }
+        Rows {
+            x: 24px;
+            y: 100px;
+            width: 932px;
+            rows: root.rows;
+            art: root.art;
+            mods-width: root.mods-width;
+            empty-text: "No lost plays found";
+        }
+        ShareFooter {
+            x: 24px;
+            y: root.image-height - 40px;
+            width: 932px;
+            art: root.art;
+        }
+    }
+}
+
+export component SharePotential inherits Window {
+    default-font-family: "Fredoka";
+    default-font-size: 14px;
+    in property <image> backdrop;
+    in property <image> avatar;
+    in property <ShareArt> art;
+    in property <length> mods-width;
+    in property <[ShareItem]> rows;
+    in property <string> nick;
+    in property <string> date;
+    in property <string> pp-from;
+    in property <string> pp-to;
+    in property <string> pp-delta;
+    in property <string> accuracy-from;
+    in property <string> accuracy-to;
+    in property <string> accuracy-delta;
+    in property <string> lost-in-top;
+    out property <length> image-height: 222px + max(root.rows.length, 1) * 64px;
+    width: 980px;
+    height: root.image-height;
+    background: transparent;
+    ShareFrame {
+        backdrop: root.backdrop;
+        ShareHeader {
+            x: 24px;
+            y: 22px;
+            width: 932px;
+            title: "Potential Top";
+            subtitle: "if ScoreV1 had kept my best plays";
+            nick: root.nick;
+            date: root.date;
+            avatar: root.avatar;
+        }
+        Rectangle {
+            x: 24px;
+            y: 98px;
+            width: 932px;
+            height: 62px;
+            border-radius: 12px;
+            background: T.card;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                spacing: 40px;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    BigStat {
+                        label: "Performance";
+                        from: root.pp-from;
+                        to: root.pp-to;
+                        delta: root.pp-delta;
+                        to-color: T.up;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    BigStat {
+                        label: "Accuracy";
+                        from: root.accuracy-from;
+                        to: root.accuracy-to;
+                        delta: root.accuracy-delta;
+                        to-color: T.down;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    BigStat {
+                        label: "Lost plays in the top 200";
+                        from: root.lost-in-top;
+                    }
+                }
+            }
+        }
+        Rows {
+            x: 24px;
+            y: 172px;
+            width: 932px;
+            rows: root.rows;
+            art: root.art;
+            mods-width: root.mods-width;
+            empty-text: "";
+        }
+        ShareFooter {
+            x: 24px;
+            y: root.image-height - 40px;
+            width: 932px;
+            art: root.art;
+        }
+    }
+}
+
+export component ShareBadge inherits Window {
+    default-font-family: "Fredoka";
+    default-font-size: 14px;
+    in property <image> backdrop;
+    in property <image> avatar;
+    in property <ShareArt> art;
+    in property <string> nick;
+    in property <string> pp-from;
+    in property <string> pp-to;
+    in property <string> pp-delta;
+    in property <string> accuracy-from;
+    in property <string> accuracy-to;
+    in property <string> accuracy-delta;
+    in property <string> lost;
+    in property <string> rank-date;
+    out property <length> image-height: 140px;
+    width: 520px;
+    height: 140px;
+    background: transparent;
+    ShareFrame {
+        backdrop: root.backdrop;
+        backdrop-height: 140px;
+        Image {
+            x: 18px;
+            y: 18px;
+            width: 104px;
+            height: 104px;
+            source: root.avatar;
+        }
+        VerticalLayout {
+            x: 140px;
+            y: 18px;
+            width: 362px;
+            height: 104px;
+            alignment: center;
+            spacing: 3px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.nick;
+                    color: #ffffff;
+                    font-size: 26px;
+                    font-weight: 600;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.art.lemon-large;
+                        width: 24px;
+                        height: 24px;
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 5px;
+                alignment: start;
+                Text {
+                    text: root.pp-from;
+                    color: #ffffff;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "→";
+                    color: T.arrow;
+                    font-size: 15px;
+                }
+                Text {
+                    text: root.pp-to;
+                    color: T.up;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.pp-delta;
+                    color: T.up;
+                    font-size: 13px;
+                    vertical-alignment: bottom;
+                }
+            }
+            HorizontalLayout {
+                spacing: 5px;
+                alignment: start;
+                Text {
+                    text: root.accuracy-from;
+                    color: #ffffff;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "→";
+                    color: T.arrow;
+                    font-size: 15px;
+                }
+                Text {
+                    text: root.accuracy-to;
+                    color: T.down;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.accuracy-delta;
+                    color: T.down;
+                    font-size: 13px;
+                    vertical-alignment: bottom;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.lost;
+                    color: T.meta;
+                    font-size: 12.5px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.rank-date;
+                    color: T.meta;
+                    font-size: 12.5px;
+                }
+            }
+        }
+    }
+}

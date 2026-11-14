@@ -267,6 +267,19 @@ pub fn when(unix: i64, zone: &TimeZone) -> String {
     )
 }
 
+pub fn when_day(unix: i64, zone: &TimeZone) -> String {
+    let Ok(time) = Timestamp::from_second(unix) else {
+        return String::new();
+    };
+    let local = time.to_zoned(zone.clone());
+    format!(
+        "{} {} {}",
+        local.day(),
+        MONTHS[local.month() as usize - 1],
+        local.year()
+    )
+}
+
 pub fn when_short(unix: i64, zone: &TimeZone) -> String {
     let Ok(time) = Timestamp::from_second(unix) else {
         return String::new();
@@ -629,7 +642,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{Column, Tab, Table, anchor_index, tone, when_short, wrap};
+    use super::{Column, Tab, Table, anchor_index, tone, when_day, when_short, wrap};
 
     const SEPTEMBER_2024: i64 = 1_725_406_740;
 
@@ -855,6 +868,12 @@ mod tests {
         assert_eq!(wrap(1, 2, 1), 0);
         assert_eq!(wrap(0, 2, -1), 1);
         assert_eq!(wrap(0, 0, 1), 0);
+    }
+
+    #[test]
+    fn the_day_date_has_the_month_in_words_and_no_time() {
+        assert_eq!(when_day(SEPTEMBER_2024, &TimeZone::UTC), "3 September 2024");
+        assert_eq!(when_day(1_794_649_471, &TimeZone::UTC), "14 November 2026");
     }
 
     #[test]
