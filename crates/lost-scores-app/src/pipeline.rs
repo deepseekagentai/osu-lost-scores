@@ -388,6 +388,10 @@ pub fn potential(
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<PotentialResult> {
+    let (current_pp, current_accuracy) = player
+        .pp
+        .zip(player.accuracy)
+        .context("the osu! API returned no statistics for this player")?;
     let lost = potential::lost_plays(found, catalog);
     let scores: Vec<Score> = timings
         .time("online top", || api.top(player.id))?
@@ -405,13 +409,13 @@ pub fn potential(
         .collect();
     let lost_only: Vec<Play> = lost.iter().map(|(_, play)| *play).collect();
     let result = timings.time("potential top", || {
-        potential::potential(&online, &lost_only, player.pp)
+        potential::potential(&online, &lost_only, current_pp)
     });
     finished(events, Step::Potential);
     Ok(PotentialResult {
-        current_pp: player.pp,
+        current_pp,
         potential_pp: result.pp,
-        current_accuracy: player.accuracy,
+        current_accuracy,
         potential_accuracy: result.accuracy,
         global_rank: player.global_rank,
         lost_in_top: result.lost_in_top,

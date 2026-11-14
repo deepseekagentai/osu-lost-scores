@@ -12,8 +12,8 @@ pub struct Online {
 pub struct Player {
     pub id: u32,
     pub names: Vec<String>,
-    pub pp: f64,
-    pub accuracy: f64,
+    pub pp: Option<f64>,
+    pub accuracy: Option<f64>,
     pub global_rank: Option<u32>,
 }
 
@@ -76,8 +76,8 @@ fn player_from(name: &str, user: User) -> Player {
     Player {
         id: user.id,
         names: all_names(name, user.username, user.previous_usernames),
-        pp: statistics.as_ref().map_or(0.0, |s| s.pp),
-        accuracy: statistics.as_ref().map_or(0.0, |s| s.hit_accuracy),
+        pp: statistics.as_ref().map(|s| s.pp),
+        accuracy: statistics.as_ref().map(|s| s.hit_accuracy),
         global_rank: statistics.and_then(|s| s.global_rank),
     }
 }
@@ -118,7 +118,33 @@ mod tests {
     use lost_scores_core::maps::{FetchedMap, MapInfo, MapStatus};
     use osu_api::{Beatmap, Beatmapset};
 
-    use super::{all_names, fetched};
+    use osu_api::{User, UserStatistics};
+
+    use super::{all_names, fetched, player_from};
+
+    #[test]
+    fn a_player_without_statistics_has_no_pp_or_accuracy() {
+        let user = |statistics| User {
+            id: 1,
+            username: "Name".into(),
+            previous_usernames: Vec::new(),
+            statistics,
+        };
+        let bare = player_from("Name", user(None));
+        assert_eq!(
+            (bare.pp, bare.accuracy, bare.global_rank),
+            (None, None, None)
+        );
+        let ranked = player_from(
+            "Name",
+            user(Some(UserStatistics {
+                pp: 0.0,
+                hit_accuracy: 0.0,
+                global_rank: Some(3),
+            })),
+        );
+        assert_eq!((ranked.pp, ranked.accuracy), (Some(0.0), Some(0.0)));
+    }
 
     #[test]
     fn api_beatmap_becomes_a_catalog_entry() {

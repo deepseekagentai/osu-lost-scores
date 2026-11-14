@@ -158,10 +158,16 @@ pub struct ProfileTexts {
     pub rank: String,
 }
 
+fn unknown() -> String {
+    "unknown".to_owned()
+}
+
 pub fn profile_texts(player: &Player) -> ProfileTexts {
     ProfileTexts {
-        performance: thousands(player.pp),
-        accuracy: format!("{:.2}%", player.accuracy),
+        performance: player.pp.map_or_else(unknown, thousands),
+        accuracy: player
+            .accuracy
+            .map_or_else(unknown, |value| format!("{value:.2}%")),
         rank: player.global_rank.map_or_else(
             || "unranked".to_owned(),
             |rank| format!("#{}", thousands(f64::from(rank))),
@@ -227,8 +233,8 @@ mod tests {
         let player = Player {
             id: 12345,
             names: vec!["Real Name".into(), "Old Name".into()],
-            pp: 1.0,
-            accuracy: 99.0,
+            pp: Some(1.0),
+            accuracy: Some(99.0),
             global_rank: None,
         };
         let profile = Profile::from_player(&player);
@@ -273,8 +279,8 @@ mod tests {
         let player = Player {
             id: 1,
             names: vec!["Lemon".into()],
-            pp: 8556.6,
-            accuracy: 98.3758,
+            pp: Some(8556.6),
+            accuracy: Some(98.3758),
             global_rank: Some(14856),
         };
         let texts = profile_texts(&player);
@@ -286,5 +292,19 @@ mod tests {
             ..player
         };
         assert_eq!(profile_texts(&unranked).rank, "unranked");
+    }
+
+    #[test]
+    fn a_profile_without_statistics_says_unknown_not_zero() {
+        let player = Player {
+            id: 1,
+            names: vec!["Lemon".into()],
+            pp: None,
+            accuracy: None,
+            global_rank: None,
+        };
+        let texts = profile_texts(&player);
+        assert_eq!(texts.performance, "unknown");
+        assert_eq!(texts.accuracy, "unknown");
     }
 }

@@ -62,8 +62,8 @@ impl Api for Fake {
             Ok(Player {
                 id: 7,
                 names: vec![name.to_owned()],
-                pp: 1000.0,
-                accuracy: 98.0,
+                pp: Some(1000.0),
+                accuracy: Some(98.0),
                 global_rank: Some(1),
             })
         } else {

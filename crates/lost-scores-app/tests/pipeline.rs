@@ -27,6 +27,7 @@ struct Fake {
     calls: Vec<String>,
     top: Vec<Score>,
     fail_batch: bool,
+    bare_player: bool,
 }
 
 impl MapSource for Fake {
@@ -70,8 +71,8 @@ impl Api for Fake {
         Ok(Player {
             id: 7,
             names: vec![name.to_owned()],
-            pp: 1000.0,
-            accuracy: 98.0,
+            pp: (!self.bare_player).then_some(1000.0),
+            accuracy: (!self.bare_player).then_some(98.0),
             global_rank: Some(1),
         })
     }
@@ -522,4 +523,35 @@ fn check_without_the_api_gives_a_message_the_window_can_show_too() {
         .unwrap_or_else(|| panic!("{events:?}"));
     assert!(!line.contains("--"), "{line}");
     assert!(line.contains("add your own API keys"), "{line}");
+}
+
+#[test]
+fn potential_refuses_a_player_the_api_gave_no_statistics_for() {
+    let dir = osu_folder();
+    let mut fake = Fake {
+        bare_player: true,
+        ..Fake::default()
+    };
+    let mut timings = Timings::new();
+    let read = read(
+        &source(dir, None),
+        Some(&mut fake),
+        "",
+        &mut timings,
+        &mut |_| {},
+    )
+    .unwrap();
+    let player = read.player.unwrap();
+    assert_eq!((player.pp, player.accuracy), (None, None));
+    let scores = find(&read.scan, &MapCatalog::default(), &mut timings);
+    let error = potential(
+        &mut fake,
+        &player,
+        &scores,
+        &MapCatalog::default(),
+        &mut timings,
+        &mut |_| {},
+    )
+    .expect_err("potential must not invent a zero");
+    assert!(error.to_string().contains("no statistics"), "{error}");
 }
