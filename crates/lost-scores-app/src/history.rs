@@ -122,6 +122,7 @@ mod tests {
             status: MapStatus::Ranked,
             beatmap_md5: "0b577cbe9bc774600d20cfa17c0aa94c".into(),
             beatmap_id: Some(11),
+            beatmapset_id: None,
             artist: "A".into(),
             title: "B".into(),
             version: "x".into(),
@@ -157,6 +158,7 @@ mod tests {
                     weighted: pp * weight,
                     lost: i % 2 == 1,
                     beatmap_id: 100 + i as u32,
+                    beatmapset_id: None,
                     artist: "A".into(),
                     title: "B".into(),
                     version: "x".into(),
@@ -183,6 +185,7 @@ mod tests {
                     weight,
                     weighted: pp * weight,
                     beatmap_id: 200 + i as u32,
+                    beatmapset_id: None,
                     artist: "C".into(),
                     title: "D".into(),
                     version: "y".into(),
@@ -241,6 +244,56 @@ mod tests {
         });
         let folder = save(dir.path(), &saved).unwrap();
         assert_eq!(load(&folder).unwrap(), saved);
+    }
+
+    #[test]
+    fn scans_saved_before_set_ids_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rows, online) = weighted_rows();
+        let mut saved = scan(1_700_000_000);
+        saved.lost[0].beatmapset_id = Some(5);
+        saved.potential = Some(PotentialResult {
+            current_pp: 1.0,
+            potential_pp: 2.0,
+            current_accuracy: 98.0,
+            potential_accuracy: 99.0,
+            global_rank: None,
+            lost_in_top: 0,
+            rows,
+            online,
+        });
+        let mut json = serde_json::to_value(&saved).unwrap();
+        let mut stripped = 0;
+        strip_set_ids(&mut json, &mut stripped);
+        assert!(stripped > 10);
+        let folder = dir.path().join("2023-11-14_22-13-20Z");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("scan.json"), serde_json::to_vec(&json).unwrap()).unwrap();
+        let loaded = load(&folder).unwrap();
+        assert_eq!(loaded.lost[0].beatmapset_id, None);
+        let potential = loaded.potential.unwrap();
+        assert!(potential.rows.iter().all(|row| row.beatmapset_id.is_none()));
+        assert!(
+            potential
+                .online
+                .iter()
+                .all(|row| row.beatmapset_id.is_none())
+        );
+    }
+
+    fn strip_set_ids(value: &mut serde_json::Value, stripped: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.remove("beatmapset_id").is_some() {
+                    *stripped += 1;
+                }
+                map.values_mut().for_each(|v| strip_set_ids(v, stripped));
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().for_each(|v| strip_set_ids(v, stripped));
+            }
+            _ => {}
+        }
     }
 
     #[test]

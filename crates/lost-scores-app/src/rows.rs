@@ -38,6 +38,8 @@ pub struct LostRow {
     pub status: MapStatus,
     pub beatmap_md5: String,
     pub beatmap_id: Option<u32>,
+    #[serde(default)]
+    pub beatmapset_id: Option<u32>,
     pub artist: String,
     pub title: String,
     pub version: String,
@@ -68,6 +70,7 @@ pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
                     .get(&header.beatmap_md5)
                     .and_then(|info| info.beatmap_id)
                     .or(metadata.and_then(|m| m.beatmap_id)),
+                beatmapset_id: metadata.and_then(|m| m.beatmapset_id),
                 artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
                 title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                 version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
@@ -90,6 +93,8 @@ pub struct PotentialRow {
     pub weighted: f64,
     pub lost: bool,
     pub beatmap_id: u32,
+    #[serde(default)]
+    pub beatmapset_id: Option<u32>,
     pub artist: String,
     pub title: String,
     pub version: String,
@@ -112,6 +117,8 @@ pub struct OnlineRow {
     pub weight: f64,
     pub weighted: f64,
     pub beatmap_id: u32,
+    #[serde(default)]
+    pub beatmapset_id: Option<u32>,
     pub artist: String,
     pub title: String,
     pub version: String,
@@ -162,6 +169,7 @@ pub fn online_rows(online: &[Score]) -> Vec<OnlineRow> {
                 weight,
                 weighted: pp * weight,
                 beatmap_id: score.beatmap.id,
+                beatmapset_id: Some(score.beatmapset.id),
                 artist: score.beatmapset.artist.clone(),
                 title: score.beatmapset.title.clone(),
                 version: score.beatmap.version.clone(),
@@ -180,6 +188,7 @@ pub fn online_rows(online: &[Score]) -> Vec<OnlineRow> {
 
 struct Details {
     lost: bool,
+    beatmapset_id: Option<u32>,
     artist: String,
     title: String,
     version: String,
@@ -210,6 +219,7 @@ pub fn potential_rows(
                     let score = &online[i];
                     Details {
                         lost: false,
+                        beatmapset_id: Some(score.beatmapset.id),
                         artist: score.beatmapset.artist.clone(),
                         title: score.beatmapset.title.clone(),
                         version: score.beatmap.version.clone(),
@@ -230,6 +240,7 @@ pub fn potential_rows(
                     let metadata = play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
                     Details {
                         lost: true,
+                        beatmapset_id: metadata.and_then(|m| m.beatmapset_id),
                         artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
                         title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                         version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
@@ -252,6 +263,7 @@ pub fn potential_rows(
                 weighted: ranked.play.pp * ranked.weight,
                 lost: details.lost,
                 beatmap_id: ranked.play.beatmap_id,
+                beatmapset_id: details.beatmapset_id,
                 artist: details.artist,
                 title: details.title,
                 version: details.version,
@@ -267,6 +279,15 @@ pub fn potential_rows(
                 kept_pp: details.kept_pp,
             }
         })
+        .collect()
+}
+
+pub fn mod_acronyms(mods: &str) -> Vec<String> {
+    let letters: Vec<char> = mods.chars().collect();
+    letters
+        .chunks(2)
+        .map(|pair| pair.iter().collect::<String>())
+        .filter(|acronym| acronym != "NM")
         .collect()
 }
 
@@ -320,7 +341,7 @@ mod tests {
 
     use lost_scores_core::grade::Grade;
 
-    use super::{Hits, LostRow, date, online_rows, potential_rows, rows, thousands};
+    use super::{Hits, LostRow, date, mod_acronyms, online_rows, potential_rows, rows, thousands};
 
     fn replay(name: &str, score: u32, pp: f64, unix_time: i64) -> ScannedReplay {
         ScannedReplay {
@@ -524,6 +545,7 @@ mod tests {
                 status: MapStatus::Ranked,
                 beatmap_md5: "aaaa".into(),
                 beatmap_id: Some(11),
+                beatmapset_id: Some(1),
                 artist: "A".into(),
                 title: "B".into(),
                 version: "x".into(),
@@ -569,6 +591,50 @@ mod tests {
         assert_eq!(rows[0].unix_time, 1_725_745_440);
         assert_eq!(rows[1].unix_time, played.header.unix_time());
         assert_ne!(rows[1].unix_time, 0);
+    }
+
+    #[test]
+    fn rows_carry_the_beatmapset_id() {
+        let play = replay("p.osr", 10_000_000, 300.0, 1_728_470_722);
+        let lost = [LostScore {
+            play: &play,
+            kept: &play,
+            status: MapStatus::Ranked,
+        }];
+        assert_eq!(
+            rows(&lost, &MapCatalog::default())[0].beatmapset_id,
+            Some(1)
+        );
+        let mut bare = replay("b.osr", 1, 300.0, 1_728_470_722);
+        bare.beatmap = None;
+        let missing = [LostScore {
+            play: &bare,
+            kept: &bare,
+            status: MapStatus::Ranked,
+        }];
+        assert_eq!(
+            rows(&missing, &MapCatalog::default())[0].beatmapset_id,
+            None
+        );
+        assert_eq!(online_rows(&[score()])[0].beatmapset_id, Some(2));
+        let (potential, scores, played) = sample();
+        let found = [LostScore {
+            play: &played,
+            kept: &played,
+            status: MapStatus::Ranked,
+        }];
+        let lost_plays = [(0, potential.top[1].play)];
+        let potential_rows = potential_rows(&potential, &scores, &found, &lost_plays);
+        assert_eq!(potential_rows[0].beatmapset_id, Some(2));
+        assert_eq!(potential_rows[1].beatmapset_id, Some(1));
+    }
+
+    #[test]
+    fn mod_acronyms_split_pairs_and_drop_nm() {
+        assert_eq!(mod_acronyms("HDDT"), ["HD", "DT"]);
+        assert_eq!(mod_acronyms("HR"), ["HR"]);
+        assert!(mod_acronyms("NM").is_empty());
+        assert!(mod_acronyms("").is_empty());
     }
 
     #[test]
