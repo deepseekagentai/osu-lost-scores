@@ -134,6 +134,7 @@ mod tests {
             creator: "m".into(),
             mods: String::new(),
             accuracy: 98.0,
+            unix_time: 1_699_920_000,
             played: "2023-11-14".into(),
             hits: Hits {
                 n300: 100,

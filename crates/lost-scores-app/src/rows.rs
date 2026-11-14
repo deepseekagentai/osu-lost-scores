@@ -96,6 +96,7 @@ pub struct PotentialRow {
     pub creator: String,
     pub mods: String,
     pub accuracy: f64,
+    pub unix_time: i64,
     pub played: String,
     pub hits: Hits,
     pub score: u64,
@@ -120,6 +121,7 @@ pub struct OnlineRow {
     pub grade: Grade,
     pub hits: Hits,
     pub score: u64,
+    pub unix_time: i64,
     pub played: String,
 }
 
@@ -134,6 +136,13 @@ fn api_hits(score: &Score) -> Hits {
 
 fn api_grade(score: &Score) -> Grade {
     Grade::from_rank(&score.rank).unwrap_or(Grade::D)
+}
+
+fn api_unix_time(score: &Score) -> i64 {
+    score
+        .created_at
+        .parse::<jiff::Timestamp>()
+        .map_or(0, |time| time.as_second())
 }
 
 fn api_date(score: &Score) -> String {
@@ -162,6 +171,7 @@ pub fn online_rows(online: &[Score]) -> Vec<OnlineRow> {
                 grade: api_grade(score),
                 hits: api_hits(score),
                 score: score.score,
+                unix_time: api_unix_time(score),
                 played: api_date(score),
             }
         })
@@ -175,6 +185,7 @@ struct Details {
     version: String,
     creator: String,
     mods: String,
+    unix_time: i64,
     played: String,
     hits: Hits,
     score: u64,
@@ -204,6 +215,7 @@ pub fn potential_rows(
                         version: score.beatmap.version.clone(),
                         creator: score.beatmapset.creator.clone(),
                         mods: score.mods.concat(),
+                        unix_time: api_unix_time(score),
                         played: api_date(score),
                         hits: api_hits(score),
                         score: score.score,
@@ -223,6 +235,7 @@ pub fn potential_rows(
                         version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
                         creator: metadata.map(|m| m.creator.clone()).unwrap_or_default(),
                         mods: play.header.mods.acronyms(),
+                        unix_time: play.header.unix_time(),
                         played: date(play.header.unix_time()),
                         hits: Hits::of(&play.header),
                         score: play.header.score.into(),
@@ -245,6 +258,7 @@ pub fn potential_rows(
                 creator: details.creator,
                 mods: details.mods,
                 accuracy: ranked.play.accuracy,
+                unix_time: details.unix_time,
                 played: details.played,
                 hits: details.hits,
                 score: details.score,
@@ -462,6 +476,10 @@ mod tests {
         assert!((rows[0].accuracy - 98.0).abs() < 1e-9);
         assert_eq!(rows[0].creator, "Smoke");
         assert_eq!(rows[0].played, "2024-09-07");
+        assert_eq!(rows[0].unix_time, 1_725_745_440);
+        let mut broken = score();
+        broken.created_at = "garbage".into();
+        assert_eq!(online_rows(&[broken])[0].unix_time, 0);
         assert_eq!(rows[0].weight, 1.0);
         assert_eq!(rows[1].place, 2);
         assert_eq!(rows[1].grade, Grade::XH);
@@ -548,6 +566,9 @@ mod tests {
         assert_eq!(rows[1].grade, Grade::XH);
         assert_eq!(rows[1].score, 1);
         assert_eq!(rows[1].kept_pp, Some(300.0));
+        assert_eq!(rows[0].unix_time, 1_725_745_440);
+        assert_eq!(rows[1].unix_time, played.header.unix_time());
+        assert_ne!(rows[1].unix_time, 0);
     }
 
     #[test]
