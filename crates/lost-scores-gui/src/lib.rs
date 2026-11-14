@@ -526,52 +526,23 @@ mod tests {
     }
 
     #[test]
-    fn the_catbox_menu_lists_the_pictures_and_uploads_the_chosen_one() {
+    fn the_catbox_button_uploads_all_pictures_at_once() {
         let window = images_window(650.0, &["Badge", "Lost Scores", "Potential Top"]);
         let state = window.global::<State>();
         state.set_images_shown(true);
-        let uploads = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let uploads = Rc::new(Cell::new(0));
         let seen = uploads.clone();
-        state.on_upload_image(move |index| seen.borrow_mut().push(index));
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
-        let labelled =
-            |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
-        let click = |label: &str| {
-            ElementHandle::find_by_accessible_label(&window, label)
-                .next()
-                .unwrap()
-                .mock_single_click(PointerEventButton::Left);
-        };
-        assert_eq!(labelled("Potential Top"), 0);
-        click("catbox");
-        for label in ["Badge", "Lost Scores", "Potential Top"] {
-            assert_eq!(labelled(label), 1, "{label}");
-        }
-        click("Potential Top");
-        assert_eq!(labelled("Badge"), 0);
-        assert_eq!(*uploads.borrow(), [2]);
-    }
-
-    #[test]
-    fn escape_closes_the_catbox_menu_before_anything_else() {
-        let window = images_window(650.0, &["Badge"]);
-        let state = window.global::<State>();
-        state.set_images_shown(true);
+        state.on_upload_all(move || seen.set(seen.get() + 1));
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
         ElementHandle::find_by_accessible_label(&window, "catbox")
             .next()
             .unwrap()
             .mock_single_click(PointerEventButton::Left);
+        assert_eq!(uploads.get(), 1);
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&window, "Badge").count(),
-            1
-        );
-        press(&window, Key::Escape);
-        assert_eq!(
-            ElementHandle::find_by_accessible_label(&window, "Badge").count(),
+            ElementHandle::find_by_accessible_label(&window, "Potential Top").count(),
             0
         );
-        assert!(state.get_show_results());
     }
 
     fn picture(window: &MainWindow, label: &str) -> ElementHandle {

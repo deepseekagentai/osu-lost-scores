@@ -108,9 +108,6 @@ export global State {
     in-out property <int> scan-selected;
     in-out property <bool> scans-open;
     in-out property <int> picture-menu-index: -1;
-    in-out property <bool> catbox-menu-open;
-    in-out property <length> catbox-menu-x;
-    in-out property <length> catbox-menu-y;
     in-out property <length> picture-menu-x;
     in-out property <length> picture-menu-y;
     in-out property <string> search-text;
@@ -163,7 +160,7 @@ export global State {
     callback preview-room-changed(length);
     callback open-image(int);
     callback copy-image(int);
-    callback upload-image(int);
+    callback upload-all();
     callback confirm-upload(bool);
     callback cancel-upload();
     callback open-beatmap(int);

@@ -622,7 +622,7 @@ component CatboxButton inherits VerticalLayout {
         border-radius: 10px;
         background: T.btn;
         border-width: 2px;
-        border-color: ta.has-hover || State.catbox-menu-open ? T.acc : transparent;
+        border-color: ta.has-hover ? T.acc : transparent;
         animate border-color { duration: 150ms; }
         row := HorizontalLayout {
             x: 13px;
@@ -648,14 +648,12 @@ component CatboxButton inherits VerticalLayout {
             }
         }
         ta := TipArea {
-            tip: "Upload a picture to catbox.moe for a public link";
+            tip: "Upload all pictures to catbox.moe for public links";
             anchor: button.absolute-position;
             anchor-height: button.height;
             mouse-cursor: pointer;
             clicked => {
-                State.catbox-menu-x = button.absolute-position.x + button.width;
-                State.catbox-menu-y = button.absolute-position.y + button.height + 6px;
-                State.catbox-menu-open = !State.catbox-menu-open;
+                State.upload-all();
             }
         }
     }
@@ -1178,35 +1176,6 @@ export component ResultsPanel inherits Rectangle {
     if State.scans-open: TouchArea {
         clicked => {
             State.scans-open = false;
-        }
-    }
-    if State.catbox-menu-open: TouchArea {
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down) {
-                State.catbox-menu-open = false;
-            }
-        }
-    }
-    if State.catbox-menu-open: Rectangle {
-        x: max(8px, min(State.catbox-menu-x - root.absolute-position.x - self.width, root.width - self.width - 8px));
-        y: max(8px, min(State.catbox-menu-y - root.absolute-position.y, root.height - self.height - 8px));
-        width: 176px;
-        height: 12px + State.previews.length * 34px + max(0, State.previews.length - 1) * 2px + 2px;
-        border-radius: 10px;
-        background: T.card;
-        border-width: 2px;
-        border-color: T.togb;
-        TouchArea { }
-        VerticalLayout {
-            padding: 6px;
-            spacing: 2px;
-            for item[i] in State.previews: MenuRow {
-                text: item.label;
-                clicked => {
-                    State.catbox-menu-open = false;
-                    State.upload-image(i);
-                }
-            }
         }
     }
     if State.picture-menu-index >= 0: TouchArea {

@@ -116,7 +116,7 @@ impl Consent {
 #[derive(Default)]
 pub struct Choices {
     shown: Vec<ShareImage>,
-    pending: Option<ShareImage>,
+    pending: Vec<ShareImage>,
 }
 
 impl Choices {
@@ -132,13 +132,35 @@ impl Choices {
         self.shown.get(index).cloned()
     }
 
-    pub fn hold(&mut self, index: usize) -> bool {
-        self.pending = self.get(index);
-        self.pending.is_some()
+    pub fn hold_all(&mut self) -> bool {
+        self.pending = self.shown.clone();
+        !self.pending.is_empty()
     }
 
-    pub fn release(&mut self) -> Option<ShareImage> {
-        self.pending.take()
+    pub fn release(&mut self) -> Vec<ShareImage> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+pub struct Summary {
+    pub links: String,
+    pub message: String,
+}
+
+pub fn links_summary(results: &[(&str, Result<String, String>)]) -> Summary {
+    let links: Vec<&str> = results
+        .iter()
+        .filter_map(|(_, result)| result.as_deref().ok())
+        .collect();
+    let message = match (links.len(), results.len()) {
+        (0, _) => "Could not upload: see the log".to_owned(),
+        (1, 1) => "Link copied".to_owned(),
+        (done, total) if done == total => format!("{done} links copied"),
+        (done, total) => format!("Uploaded {done} of {total}: see the log"),
+    };
+    Summary {
+        links: links.join("\n"),
+        message,
     }
 }
 
@@ -148,7 +170,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use super::{Choices, Consent, multipart_body, parse_link, total_timeout};
+    use super::{Choices, Consent, links_summary, multipart_body, parse_link, total_timeout};
     use crate::share::render::ShareImage;
 
     const LINK: &str = "https://files.catbox.moe/abc123.png";
@@ -211,17 +233,50 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_keeps_the_chosen_image_when_the_list_changes() {
+    fn the_sheet_keeps_every_picture_it_was_shown_with() {
         let mut choices = Choices::default();
         choices.replace(vec![
-            image("Lost Scores", "/a/lost.png"),
             image("Badge", "/a/badge.png"),
+            image("Lost Scores", "/a/lost.png"),
         ]);
-        assert!(choices.hold(1));
+        assert!(choices.hold_all());
         choices.replace(vec![image("Lost Scores", "/b/lost.png")]);
-        assert_eq!(choices.get(1), None);
-        assert_eq!(choices.release(), Some(image("Badge", "/a/badge.png")));
-        assert_eq!(choices.release(), None);
-        assert!(!choices.hold(5));
+        assert_eq!(
+            choices.release(),
+            [
+                image("Badge", "/a/badge.png"),
+                image("Lost Scores", "/a/lost.png")
+            ]
+        );
+        assert!(choices.release().is_empty());
+        choices.replace(Vec::new());
+        assert!(!choices.hold_all());
+    }
+
+    #[test]
+    fn the_links_and_the_message_follow_what_was_uploaded() {
+        let ok = |link: &str| Ok(link.to_owned());
+        let failed = || Err("timeout".to_owned());
+        let all = links_summary(&[
+            ("Badge", ok("https://files.catbox.moe/a.png")),
+            ("Lost Scores", ok("https://files.catbox.moe/b.png")),
+            ("Potential Top", ok("https://files.catbox.moe/c.png")),
+        ]);
+        assert_eq!(
+            all.links,
+            "https://files.catbox.moe/a.png\nhttps://files.catbox.moe/b.png\nhttps://files.catbox.moe/c.png"
+        );
+        assert_eq!(all.message, "3 links copied");
+        let some = links_summary(&[
+            ("Badge", ok("https://files.catbox.moe/a.png")),
+            ("Lost Scores", failed()),
+        ]);
+        assert_eq!(some.links, "https://files.catbox.moe/a.png");
+        assert_eq!(some.message, "Uploaded 1 of 2: see the log");
+        let none = links_summary(&[("Badge", failed())]);
+        assert_eq!(none.links, "");
+        assert_eq!(none.message, "Could not upload: see the log");
+        let one = links_summary(&[("Badge", ok("https://files.catbox.moe/a.png"))]);
+        assert_eq!(one.message, "Link copied");
     }
 }

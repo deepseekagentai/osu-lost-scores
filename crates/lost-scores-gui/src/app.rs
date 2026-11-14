@@ -363,7 +363,7 @@ impl Session {
         let session = self.clone();
         state.on_copy_image(move |index| session.copy_image(index as usize));
         let session = self.clone();
-        state.on_upload_image(move |index| session.ask_upload(index as usize));
+        state.on_upload_all(move || session.ask_upload_all());
         let session = self.clone();
         state.on_confirm_upload(move |remember| session.confirm_upload(remember));
         let session = self.clone();
@@ -706,18 +706,21 @@ impl Session {
         self.toast(&format!("Could not open {what}: see the log"));
     }
 
-    fn ask_upload(self: &Rc<Self>, index: usize) {
+    fn ask_upload_all(self: &Rc<Self>) {
         let state = self.window.global::<State>();
         if self.uploading.get() {
             self.toast("An upload is already running");
             return;
         }
         if self.consent.get().must_ask() {
-            if self.choices.borrow_mut().hold(index) {
+            if self.choices.borrow_mut().hold_all() {
                 state.set_upload_confirm_open(true);
             }
-        } else if let Some(image) = self.shared_image(index) {
-            self.upload(image);
+        } else {
+            let images = self.choices.borrow().all().to_vec();
+            if !images.is_empty() {
+                self.upload_all(images);
+            }
         }
     }
 
@@ -730,8 +733,8 @@ impl Session {
             self.change_settings(|settings| settings.catbox_confirmed = true);
         }
         let held = self.choices.borrow_mut().release();
-        if let Some(image) = held {
-            self.upload(image);
+        if !held.is_empty() {
+            self.upload_all(held);
         }
     }
 
@@ -740,40 +743,53 @@ impl Session {
         self.window.global::<State>().set_upload_confirm_open(false);
     }
 
-    fn upload(self: &Rc<Self>, image: ShareImage) {
+    fn upload_all(self: &Rc<Self>, images: Vec<ShareImage>) {
         self.uploading.set(true);
-        self.log(&format!("Uploading {} to catbox...", image.label));
+        let count = match images.len() {
+            1 => "1 picture".to_owned(),
+            many => format!("{many} pictures"),
+        };
+        self.log(&format!("Uploading {count} to catbox..."));
         self.toast("Uploading...");
         let weak = self.weak.clone();
         thread::spawn(move || {
-            let result = upload::upload(&upload::agent(), &image.path);
+            let agent = upload::agent();
+            let results: Vec<(&'static str, Result<String, String>)> = images
+                .iter()
+                .map(|image| {
+                    let result =
+                        upload::upload(&agent, &image.path).map_err(|error| format!("{error:#}"));
+                    (image.label, result)
+                })
+                .collect();
             on_ui(&weak, move |app| {
                 app.uploading.set(false);
-                app.uploaded(result);
+                app.uploaded_all(&results);
             });
         });
     }
 
-    fn uploaded(&self, result: Result<String>) {
-        let link = match result {
-            Ok(link) => link,
-            Err(error) => {
-                self.log(&format!("Could not upload the image: {error:#}"));
-                self.toast("Could not upload: see the log");
-                return;
+    fn uploaded_all(&self, results: &[(&'static str, Result<String, String>)]) {
+        for (label, result) in results {
+            match result {
+                Ok(link) => self.log(&format!("{label}: {link}")),
+                Err(error) => self.log(&format!("Could not upload {label}: {error}")),
             }
-        };
-        let text = link.clone();
-        self.put_on_clipboard(text, move |app, copied| match copied {
-            Ok(()) => {
-                app.log(&format!("Link copied: {link}"));
-                app.toast("Link copied");
-            }
+        }
+        let summary = upload::links_summary(results);
+        if summary.links.is_empty() {
+            self.toast(&summary.message);
+            return;
+        }
+        let message = summary.message;
+        let links = summary.links.replace('\n', " ");
+        self.put_on_clipboard(summary.links, move |app, copied| match copied {
+            Ok(()) => app.toast(&message),
             Err(error) => {
                 app.log(&format!(
-                    "Uploaded, but the link could not be copied: {error}. Link: {link}"
+                    "Uploaded, but the links could not be copied: {error}. Links: {links}"
                 ));
-                app.toast("Uploaded: the link is in the log");
+                app.toast("Uploaded: the links are in the log");
             }
         });
     }
