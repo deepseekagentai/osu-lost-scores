@@ -316,6 +316,14 @@ export component ScoresBox inherits Rectangle {
             accepted => {
                 root.confirm();
             }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.pending = "";
+                    root.editing = false;
+                    return accept;
+                }
+                return reject;
+            }
         }
         VerticalLayout {
             alignment: center;

@@ -409,6 +409,34 @@ mod tests {
     }
 
     #[test]
+    fn escape_in_the_scores_field_cancels_the_edit_and_stays_there() {
+        let (window, calls) = keyboard_window();
+        let state = window.global::<State>();
+        state.set_connected(true);
+        state.set_search_text("camellia".into());
+        state.set_scores_to_show(10);
+        settle();
+        let boxed = || {
+            ElementHandle::find_by_element_type_name(&window, "ScoresBox")
+                .next()
+                .unwrap()
+        };
+        boxed().mock_single_click(PointerEventButton::Left);
+        let text = SharedString::from("3");
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+        assert_eq!(state.get_scores_pending(), "3");
+        press(&window, Key::Escape);
+        assert_eq!(state.get_scores_pending(), "");
+        assert_eq!(state.get_search_text(), "camellia");
+        assert!(calls.borrow().is_empty(), "{:?}", calls.borrow());
+    }
+
+    #[test]
     fn escape_clears_the_search_text_before_the_overlay_goes_back() {
         let (window, calls) = keyboard_window();
         let state = window.global::<State>();
