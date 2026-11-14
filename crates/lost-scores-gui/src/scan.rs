@@ -63,11 +63,14 @@ impl ScanState {
         self.progress = 1.0;
     }
 
-    pub fn finish(&mut self, lost_total: usize, lost_ranked: usize) {
+    pub fn finish(&mut self, lost_total: usize, lost_ranked: usize, images: bool) {
         self.phase = Phase::Idle;
         self.progress = 1.0;
         self.status =
             format!("Scan finished: {lost_total} lost plays, {lost_ranked} on ranked maps");
+        if images {
+            self.status.push_str(" \u{b7} images ready");
+        }
     }
 
     pub fn fail(&mut self, error: &str, clock: (u8, u8, u8)) {
@@ -133,6 +136,17 @@ mod tests {
 
     fn progress(step: Step, done: usize, total: usize) -> Event {
         Event::Progress { step, done, total }
+    }
+
+    #[test]
+    fn a_finished_scan_with_images_says_so() {
+        let mut state = ScanState::default();
+        state.start();
+        state.finish(340, 238, true);
+        assert_eq!(
+            state.status,
+            "Scan finished: 340 lost plays, 238 on ranked maps \u{b7} images ready"
+        );
     }
 
     #[test]
@@ -272,7 +286,7 @@ mod tests {
     fn a_finished_scan_reports_its_counts() {
         let mut state = ScanState::default();
         state.start();
-        state.finish(340, 238);
+        state.finish(340, 238, false);
         assert_eq!(state.phase, Phase::Idle);
         assert_eq!(state.progress, 1.0);
         assert_eq!(

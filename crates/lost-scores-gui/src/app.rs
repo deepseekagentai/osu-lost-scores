@@ -1224,7 +1224,7 @@ impl Session {
                     .set((done.scan.lost_total, done.scan.lost_ranked));
                 self.scan
                     .borrow_mut()
-                    .finish(done.scan.lost_total, done.scan.lost_ranked);
+                    .finish(done.scan.lost_total, done.scan.lost_ranked, false);
                 self.show_results(&done.scan);
                 self.register(&done.folder, &done.scan);
             }
@@ -1238,7 +1238,8 @@ impl Session {
                 }
                 self.refresh_shared();
                 let (total, ranked) = self.counts.get();
-                self.scan.borrow_mut().finish(total, ranked);
+                let images = self.window.global::<State>().get_has_images();
+                self.scan.borrow_mut().finish(total, ranked, images);
                 self.open_results_if_narrow();
             }
             Message::Failed(error) => {
@@ -1617,6 +1618,28 @@ mod tests {
         assert!(
             last.text
                 .contains("Could not open the image: no viewer installed")
+        );
+    }
+
+    #[test]
+    fn a_finished_scan_reports_ready_images_only_when_the_folder_has_them() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        let folder = root.path().join("scan");
+        std::fs::create_dir_all(&folder).unwrap();
+        *session.folder.borrow_mut() = Some(folder.clone());
+        begin(&session);
+        finish(&session);
+        assert!(!state.get_status().contains("images ready"));
+        std::fs::write(folder.join("lost_scores.png"), png()).unwrap();
+        begin(&session);
+        finish(&session);
+        assert!(
+            state
+                .get_status()
+                .ends_with("on ranked maps \u{b7} images ready"),
+            "{}",
+            state.get_status()
         );
     }
 
