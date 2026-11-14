@@ -41,6 +41,7 @@ pub struct Finished {
 
 pub enum Message {
     Event(Event),
+    Queue(u64),
     Saving,
     Finished(Box<Finished>),
     Refreshed(Option<Box<Finished>>),

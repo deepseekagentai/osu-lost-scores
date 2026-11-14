@@ -119,37 +119,46 @@ export component KeysSheet inherits Rectangle {
             padding: 22px;
             spacing: 6px;
             Text {
-                text: "API Keys & User Configuration";
+                text: State.keys-player-only ? "Change Player" : "API Keys & User Configuration";
                 color: #ffffff;
                 font-size: 22px;
                 font-weight: 600;
             }
             Rectangle { height: 4px; }
-            Text {
-                text: "Create an OAuth application on the osu! website. Use any name and this callback URL:";
+            if State.keys-player-only: Text {
+                text: "Lost Scores looks the player up through its shared server, so no API keys are needed.";
                 color: T.k2;
                 font-size: 13px;
                 wrap: word-wrap;
             }
-            Text {
-                text: "http://localhost";
-                color: #ffffff;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            Text {
-                text: "Then paste its keys here. They stay on this computer.";
-                color: T.k2;
-                font-size: 13px;
-                wrap: word-wrap;
-            }
-            Rectangle { height: 4px; }
-            SecondaryButton {
-                height: 36px;
-                text: "Open osu! account settings";
-                text-size: 15px;
-                clicked => {
-                    State.open-account-settings();
+            if !State.keys-player-only: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Create an OAuth application on the osu! website. Use any name and this callback URL:";
+                    color: T.k2;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "http://localhost";
+                    color: #ffffff;
+                    font-size: 13px;
+                    font-weight: 500;
+                }
+                Text {
+                    text: "Then paste its keys here. They stay on this computer.";
+                    color: T.k2;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 4px; }
+                SecondaryButton {
+                    height: 36px;
+                    text: "Open osu! account settings";
+                    text-size: 15px;
+                    clicked => {
+                        State.open-account-settings();
+                    }
                 }
             }
             Rectangle { height: 8px; }
@@ -163,28 +172,31 @@ export component KeysSheet inherits Rectangle {
                 enabled: !State.keys-busy;
                 missing: State.keys-user-missing;
             }
-            Rectangle { height: 4px; }
-            Label {
-                text: "Client ID";
-                missing: State.keys-id-missing;
-            }
-            TextField {
-                text <=> State.keys-id;
-                placeholder: "e.g. 41234";
-                enabled: !State.keys-busy;
-                missing: State.keys-id-missing;
-            }
-            Rectangle { height: 4px; }
-            Label {
-                text: "Client Secret";
-                missing: State.keys-secret-missing;
-            }
-            TextField {
-                text <=> State.keys-secret;
-                placeholder: "40 characters";
-                secret: true;
-                enabled: !State.keys-busy;
-                missing: State.keys-secret-missing;
+            if !State.keys-player-only: VerticalLayout {
+                spacing: 6px;
+                Rectangle { height: 4px; }
+                Label {
+                    text: "Client ID";
+                    missing: State.keys-id-missing;
+                }
+                TextField {
+                    text <=> State.keys-id;
+                    placeholder: "e.g. 41234";
+                    enabled: !State.keys-busy;
+                    missing: State.keys-id-missing;
+                }
+                Rectangle { height: 4px; }
+                Label {
+                    text: "Client Secret";
+                    missing: State.keys-secret-missing;
+                }
+                TextField {
+                    text <=> State.keys-secret;
+                    placeholder: "40 characters";
+                    secret: true;
+                    enabled: !State.keys-busy;
+                    missing: State.keys-secret-missing;
+                }
             }
             if State.keys-error != "": Text {
                 text: State.keys-error;
@@ -211,6 +223,17 @@ export component KeysSheet inherits Rectangle {
                     clicked => {
                         State.save-keys();
                     }
+                }
+            }
+            if State.keys-player-only: Rectangle { height: 4px; }
+            if State.keys-player-only: SecondaryButton {
+                height: 36px;
+                text: "Use Custom API Keys";
+                text-size: 15px;
+                tip: "For advanced users with their own osu! API credentials";
+                enabled: !State.keys-busy;
+                clicked => {
+                    State.open-keys();
                 }
             }
         }

@@ -79,8 +79,19 @@ pub fn lookup_failure(player: &str, error: &ApiError) -> String {
         ApiError::Network(reason) => unreachable_text(reason),
         ApiError::Status { status, .. } if *status >= 500 => unreachable_text(&error.to_string()),
         ApiError::Format { .. } => unreachable_text(&error.to_string()),
+        ApiError::Busy { .. } | ApiError::BusyToday => sentence(&error.to_string()),
+        ApiError::Server(reason) => format!(
+            "Could not reach the Lost Scores server: {reason}. Try again in a few minutes, or add your own API keys."
+        ),
         other => keys_error(other).to_string(),
     }
+}
+
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 fn unreachable_text(reason: &str) -> String {
@@ -203,7 +214,8 @@ mod tests {
     use osu_api::ApiError;
 
     use super::{
-        Account, Field, KeysError, Profile, check_fields, keys_error, parse_account, profile_texts,
+        Account, Field, KeysError, Profile, check_fields, keys_error, lookup_failure,
+        parse_account, profile_texts,
     };
 
     #[test]
@@ -285,6 +297,27 @@ mod tests {
         assert_eq!(
             KeysError::Unreachable.to_string(),
             "Could not reach the osu! API"
+        );
+    }
+
+    #[test]
+    fn a_busy_shared_server_says_so_in_a_sentence() {
+        assert_eq!(
+            lookup_failure("Lemon", &ApiError::BusyToday),
+            "The Lost Scores server is busy today; add your own API keys to scan now"
+        );
+        assert_eq!(
+            lookup_failure("Lemon", &ApiError::Busy { retry_after: 30 }),
+            "The Lost Scores server is busy; try again in 30 s"
+        );
+    }
+
+    #[test]
+    fn a_shared_server_out_of_reach_is_not_blamed_on_osu() {
+        let text = lookup_failure("Lemon", &ApiError::Server("refused".into()));
+        assert_eq!(
+            text,
+            "Could not reach the Lost Scores server: refused. Try again in a few minutes, or add your own API keys."
         );
     }
 

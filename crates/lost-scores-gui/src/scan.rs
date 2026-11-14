@@ -6,7 +6,7 @@ use lost_scores_app::{detect, setup};
 
 use crate::log::stamp;
 
-pub const NEEDS_KEYS: &str = "Log in or add your own API keys to start";
+pub const NEEDS_PLAYER: &str = "Choose a player to start";
 pub const NEEDS_FOLDER: &str =
     "Could not find your osu! folder: pick it with the button next to the path";
 
@@ -58,6 +58,10 @@ impl ScanState {
         }
     }
 
+    pub fn queued(&mut self, seconds: u64) {
+        self.status = format!("Waiting in the shared queue: about {seconds} s");
+    }
+
     pub fn saving(&mut self) {
         self.status = "Saving results...".to_owned();
         self.progress = 1.0;
@@ -94,7 +98,7 @@ pub fn status_text(step: Step, done: usize, total: usize) -> String {
         Step::MissingMaps => format!("Looking up missing maps: {done} of {total}"),
         Step::Pp => format!("Calculating pp: {done} of {total} replays"),
         Step::Catalog | Step::Refresh => {
-            format!("Asking the osu! API about map statuses: {done} of {total} requests")
+            format!("Fetching map statuses: {done} of {total} requests")
         }
         Step::OnlineTop => "Fetching your top plays...".to_owned(),
         Step::Potential => "Building the potential top...".to_owned(),
@@ -208,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             status_text(Step::Catalog, 4, 190),
-            "Asking the osu! API about map statuses: 4 of 190 requests"
+            "Fetching map statuses: 4 of 190 requests"
         );
         assert_eq!(
             status_text(Step::OnlineTop, 0, 1),
@@ -218,6 +222,19 @@ mod tests {
             status_text(Step::Potential, 0, 1),
             "Building the potential top..."
         );
+    }
+
+    #[test]
+    fn a_wait_in_the_shared_queue_shows_in_the_status_line() {
+        let mut state = ScanState::default();
+        state.start();
+        state.apply(&progress(Step::Catalog, 1, 15), CLOCK);
+        let reached = state.progress;
+        state.queued(12);
+        assert_eq!(state.status, "Waiting in the shared queue: about 12 s");
+        assert_eq!(state.progress, reached);
+        state.apply(&progress(Step::Catalog, 2, 15), CLOCK);
+        assert_eq!(state.status, "Fetching map statuses: 2 of 15 requests");
     }
 
     #[test]

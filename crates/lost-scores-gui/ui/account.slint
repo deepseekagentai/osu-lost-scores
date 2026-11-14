@@ -61,6 +61,14 @@ component Connect inherits VerticalLayout {
         horizontal-alignment: center;
     }
     SecondaryButton {
+        text: "Choose Player";
+        enabled: !State.busy;
+        tip: "Scan through the shared Lost Scores server, no API keys needed";
+        clicked => {
+            State.open-player();
+        }
+    }
+    SecondaryButton {
         text: "Use Custom API Keys";
         enabled: !State.busy;
         tip: "For advanced users with their own osu! API credentials";
@@ -124,15 +132,19 @@ component Profile inherits HorizontalLayout {
             }
             IconButton {
                 icon: @image-url("../assets/i-user-pen.svg");
-                tip: "Change user";
+                tip: State.own-keys ? "Change user" : "Change player";
                 enabled: !State.busy;
                 clicked => {
-                    State.open-keys();
+                    if (State.own-keys) {
+                        State.open-keys();
+                    } else {
+                        State.open-player();
+                    }
                 }
             }
-            IconButton {
+            if State.own-keys: IconButton {
                 icon: @image-url("../assets/i-door.svg");
-                tip: "Log out";
+                tip: "Remove API keys";
                 enabled: !State.busy;
                 clicked => {
                     State.ask-logout();

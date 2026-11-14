@@ -122,12 +122,18 @@ fn render_snapshots() {
     state.set_keys_error("User not found or API keys are invalid".into());
     draw(&surface, &dir.join("3-keys-sheet-rejected.png"));
 
+    state.set_keys_player_only(true);
+    state.set_keys_error("".into());
+    draw(&surface, &dir.join("3-player-sheet.png"));
+    state.set_keys_player_only(false);
+
     state.set_keys_open(false);
     state.set_confirm_open(true);
     draw(&surface, &dir.join("4-logout-confirm.png"));
 
     state.set_confirm_open(false);
     state.set_connected(true);
+    state.set_own_keys(true);
     state.set_user_name("SamplePlayer".into());
     state.set_avatar(avatar());
     state.set_has_avatar(true);
@@ -155,7 +161,15 @@ fn render_snapshots() {
     ]));
     draw(&surface, &dir.join("5-main-connected.png"));
 
+    state.set_own_keys(false);
+    draw(&surface, &dir.join("5-main-shared-server.png"));
+    state.set_own_keys(true);
+
     state.set_busy(true);
+    state.set_progress(0.70);
+    state.set_status("Waiting in the shared queue: about 12 s".into());
+    draw(&surface, &dir.join("6-main-queue.png"));
+
     state.set_progress(0.42);
     state.set_status("Calculating pp: 1,798 of 14,982 replays".into());
     state.set_log(log(&[

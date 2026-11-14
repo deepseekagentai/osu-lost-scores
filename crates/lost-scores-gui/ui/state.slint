@@ -60,6 +60,7 @@ export global State {
     in-out property <[LogEntry]> log;
 
     in-out property <bool> connected;
+    in-out property <bool> own-keys;
     in-out property <string> user-name;
     in-out property <image> avatar;
     in-out property <bool> has-avatar;
@@ -81,6 +82,7 @@ export global State {
     in-out property <string> scores-pending;
 
     in-out property <bool> keys-open;
+    in-out property <bool> keys-player-only;
     in-out property <string> keys-user;
     in-out property <string> keys-id;
     in-out property <string> keys-secret;
@@ -137,6 +139,7 @@ export global State {
     callback pick-folder();
     callback start-scan();
     callback open-keys();
+    callback open-player();
     callback cancel-keys();
     callback save-keys();
     callback open-account-settings();
