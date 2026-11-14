@@ -501,26 +501,92 @@ mod tests {
     }
 
     #[test]
-    fn each_picture_has_an_open_and_catbox_row() {
+    fn each_picture_has_only_a_catbox_button() {
         let window = images_window(650.0, &["Lost Scores", "Potential Top", "Badge"]);
         let state = window.global::<State>();
         state.set_images_shown(true);
-        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let (open, upload) = (calls.clone(), calls.clone());
-        state.on_open_image(move |index| open.borrow_mut().push(("open", index)));
-        state.on_upload_image(move |index| upload.borrow_mut().push(("catbox", index)));
+        let uploads = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = uploads.clone();
+        state.on_upload_image(move |index| seen.borrow_mut().push(index));
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
 
         let labelled =
             |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
-        assert_eq!(labelled("Open"), 3);
-        assert_eq!(labelled("catbox"), 3);
+        assert_eq!(labelled("Open"), 0);
         assert_eq!(labelled("Copy"), 0);
-        for (label, index) in [("Open", 2), ("catbox", 0), ("Open", 1)] {
-            let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
-            buttons[index].mock_single_click(PointerEventButton::Left);
-        }
-        assert_eq!(*calls.borrow(), [("open", 2), ("catbox", 0), ("open", 1)]);
+        assert_eq!(labelled("catbox"), 3);
+        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "catbox").collect();
+        buttons[2].mock_single_click(PointerEventButton::Left);
+        assert_eq!(*uploads.borrow(), [2]);
+    }
+
+    fn picture(window: &MainWindow, label: &str) -> ElementHandle {
+        ElementHandle::find_by_accessible_label(window, &format!("{label} picture"))
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_click_on_a_picture_opens_it() {
+        let window = images_window(650.0, &["Badge", "Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = opened.clone();
+        state.on_open_image(move |index| seen.borrow_mut().push(index));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        picture(&window, "Lost Scores").mock_single_click(PointerEventButton::Left);
+        assert_eq!(*opened.borrow(), [1]);
+    }
+
+    #[test]
+    fn a_right_click_on_a_picture_offers_copy_and_open() {
+        let window = images_window(650.0, &["Badge", "Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (copy, open) = (calls.clone(), calls.clone());
+        state.on_copy_image(move |index| copy.borrow_mut().push(("copy", index)));
+        state.on_open_image(move |index| open.borrow_mut().push(("open", index)));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        let labelled =
+            |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
+        assert_eq!(labelled("Copy image"), 0);
+
+        picture(&window, "Badge").mock_single_click(PointerEventButton::Right);
+        assert_eq!(labelled("Copy image"), 1);
+        assert_eq!(labelled("Open"), 1);
+        ElementHandle::find_by_accessible_label(&window, "Copy image")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(labelled("Copy image"), 0);
+
+        picture(&window, "Lost Scores").mock_single_click(PointerEventButton::Right);
+        ElementHandle::find_by_accessible_label(&window, "Open")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(*calls.borrow(), [("copy", 0), ("open", 1)]);
+    }
+
+    #[test]
+    fn escape_closes_the_picture_menu_before_anything_else() {
+        let window = images_window(650.0, &["Badge"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        picture(&window, "Badge").mock_single_click(PointerEventButton::Right);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Copy image").count(),
+            1
+        );
+        press(&window, Key::Escape);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Copy image").count(),
+            0
+        );
+        assert!(state.get_show_results());
     }
 
     #[test]
@@ -534,7 +600,7 @@ mod tests {
         assert_eq!(labelled("Open the scan's folder"), 1);
         assert_eq!(labelled("Lost Scores"), 0);
         assert_eq!(labelled("Badge"), 0);
-        assert_eq!(labelled("Open"), 2);
+        assert_eq!(labelled("Open"), 0);
         assert_eq!(labelled("catbox"), 2);
     }
 
@@ -593,14 +659,15 @@ mod tests {
         let centre = card.absolute_position().x + card.size().width / 2.0;
         assert!((badge.absolute_position().x + 150.0 - centre).abs() < 1.0);
         assert!((wide.absolute_position().x + 250.0 - centre).abs() < 1.0);
-        let mut catboxes: Vec<_> = ElementHandle::find_by_accessible_label(&window, "catbox")
-            .map(|button| {
-                (
-                    button.absolute_position().y,
-                    button.absolute_position().x + button.size().width / 2.0 + 36.0,
-                )
-            })
-            .collect();
+        let mut catboxes: Vec<_> =
+            ElementHandle::find_by_element_type_name(&window, "CatboxButton")
+                .map(|button| {
+                    (
+                        button.absolute_position().y,
+                        button.absolute_position().x + button.size().width,
+                    )
+                })
+                .collect();
         catboxes.sort_by(|a, b| a.0.total_cmp(&b.0));
         assert!((catboxes[0].1 - (badge.absolute_position().x + 300.0)).abs() < 1.0);
         assert!((catboxes[1].1 - (wide.absolute_position().x + 500.0)).abs() < 1.0);

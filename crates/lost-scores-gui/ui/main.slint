@@ -48,7 +48,7 @@ export component MainWindow inherits Window {
     default-font-family: "Fredoka";
     default-font-size: 14px;
 
-    property <int> layers: (State.scans-open ? 1 : 0) + (State.keys-open ? 1 : 0) + (State.confirm-open ? 1 : 0) + (State.upload-confirm-open ? 1 : 0) + (State.delete-confirm-open ? 1 : 0) + (State.cache-confirm-open ? 1 : 0) + (State.about-open ? 1 : 0) + (State.show-results && !root.two-columns ? 1 : 0);
+    property <int> layers: (State.picture-menu-index >= 0 ? 1 : 0) + (State.scans-open ? 1 : 0) + (State.keys-open ? 1 : 0) + (State.confirm-open ? 1 : 0) + (State.upload-confirm-open ? 1 : 0) + (State.delete-confirm-open ? 1 : 0) + (State.cache-confirm-open ? 1 : 0) + (State.about-open ? 1 : 0) + (State.show-results && !root.two-columns ? 1 : 0);
     changed layers => {
         keys.focus();
     }
@@ -58,7 +58,9 @@ export component MainWindow inherits Window {
         }
         key-pressed(event) => {
             if (event.text == Key.Escape) {
-                if (State.scans-open) {
+                if (State.picture-menu-index >= 0) {
+                    State.picture-menu-index = -1;
+                } else if (State.scans-open) {
                     State.scans-open = false;
                 } else if (State.about-open) {
                     State.close-about();

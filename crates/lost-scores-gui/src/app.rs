@@ -20,7 +20,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::account::{Account, Field, KeysError, Profile, check_fields, keys_error, parse_account};
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
-use crate::clipboard::Clipboard;
+use crate::clipboard::{Clipboard, Request};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
@@ -361,6 +361,8 @@ impl Session {
         let session = self.clone();
         state.on_open_image(move |index| session.open_image(index as usize));
         let session = self.clone();
+        state.on_copy_image(move |index| session.copy_image(index as usize));
+        let session = self.clone();
         state.on_upload_image(move |index| session.ask_upload(index as usize));
         let session = self.clone();
         state.on_confirm_upload(move |remember| session.confirm_upload(remember));
@@ -652,13 +654,33 @@ impl Session {
         done: impl FnOnce(&Rc<Session>, Result<(), String>) + Send + 'static,
     ) {
         let weak = self.weak.clone();
-        self.clipboard.borrow().send(text, move |result| {
-            on_ui(&weak, move |app| done(app, result));
-        });
+        self.clipboard
+            .borrow()
+            .send(Request::Text(text), move |result| {
+                on_ui(&weak, move |app| done(app, result));
+            });
     }
 
     fn shared_image(&self, index: usize) -> Option<ShareImage> {
         self.choices.borrow().get(index)
+    }
+
+    fn copy_image(&self, index: usize) {
+        let Some(image) = self.shared_image(index) else {
+            return;
+        };
+        let weak = self.weak.clone();
+        self.clipboard
+            .borrow()
+            .send(Request::Image(image.path), move |result| {
+                on_ui(&weak, move |app| match result {
+                    Ok(()) => app.toast("Image copied"),
+                    Err(reason) => {
+                        app.log(&format!("Could not copy the image: {reason}"));
+                        app.toast("Could not copy the image: see the log");
+                    }
+                });
+            });
     }
 
     fn open_image(&self, index: usize) {

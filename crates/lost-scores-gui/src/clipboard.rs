@@ -1,17 +1,24 @@
 use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use crate::share::render::panic_message;
 
 pub trait Pasteboard {
+    fn put_image(&mut self, path: &Path) -> Result<(), String>;
     fn put_text(&mut self, text: &str) -> Result<(), String>;
+}
+
+pub enum Request {
+    Image(PathBuf),
+    Text(String),
 }
 
 type Done = Box<dyn FnOnce(Result<(), String>) + Send>;
 
 struct Job {
-    text: String,
+    request: Request,
     done: Done,
 }
 
@@ -32,7 +39,10 @@ impl Clipboard {
                 let result = match board.as_mut() {
                     Some(held) => {
                         let attempt =
-                            panic::catch_unwind(AssertUnwindSafe(|| held.put_text(&job.text)));
+                            panic::catch_unwind(AssertUnwindSafe(|| match &job.request {
+                                Request::Image(path) => held.put_image(path),
+                                Request::Text(text) => held.put_text(text),
+                            }));
                         attempt.unwrap_or_else(|payload| {
                             board = None;
                             Err(format!(
@@ -53,9 +63,9 @@ impl Clipboard {
         Self::spawn(ArboardBoard::open)
     }
 
-    pub fn send(&self, text: String, done: impl FnOnce(Result<(), String>) + Send + 'static) {
+    pub fn send(&self, request: Request, done: impl FnOnce(Result<(), String>) + Send + 'static) {
         let job = Job {
-            text,
+            request,
             done: Box::new(done),
         };
         if let Err(rejected) = self.jobs.send(job) {
@@ -73,6 +83,18 @@ impl ArboardBoard {
 }
 
 impl Pasteboard for ArboardBoard {
+    fn put_image(&mut self, path: &Path) -> Result<(), String> {
+        let picture = image::open(path)
+            .map_err(|error| error.to_string())?
+            .into_rgba8();
+        let data = arboard::ImageData {
+            width: picture.width() as usize,
+            height: picture.height() as usize,
+            bytes: picture.into_raw().into(),
+        };
+        self.0.set_image(data).map_err(|error| error.to_string())
+    }
+
     fn put_text(&mut self, text: &str) -> Result<(), String> {
         self.0
             .set_text(text.to_owned())
@@ -86,7 +108,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::{self, ThreadId};
 
-    use super::{Clipboard, Pasteboard};
+    use std::path::Path;
+
+    use super::{Clipboard, Pasteboard, Request};
 
     #[derive(Default)]
     struct Log {
@@ -98,6 +122,15 @@ mod tests {
     struct Fake(Arc<Mutex<Log>>);
 
     impl Pasteboard for Fake {
+        fn put_image(&mut self, path: &Path) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .puts
+                .push((format!("image {}", path.display()), thread::current().id()));
+            Ok(())
+        }
+
         fn put_text(&mut self, text: &str) -> Result<(), String> {
             let mut log = self.0.lock().unwrap();
             log.puts.push((text.to_owned(), thread::current().id()));
@@ -128,8 +161,26 @@ mod tests {
 
     fn ask(clipboard: &Clipboard, text: &str) -> Result<(), String> {
         let (answer, outcome) = mpsc::channel();
-        clipboard.send(text.to_owned(), move |result| answer.send(result).unwrap());
+        clipboard.send(Request::Text(text.to_owned()), move |result| {
+            answer.send(result).unwrap()
+        });
         outcome.recv().unwrap()
+    }
+
+    #[test]
+    fn an_image_request_reaches_the_board_on_its_thread() {
+        let log = Arc::new(Mutex::new(Log::default()));
+        let clipboard = board(&log, true);
+        let (answer, outcome) = mpsc::channel();
+        clipboard.send(Request::Image("/s/badge.png".into()), move |result| {
+            answer.send(result).unwrap()
+        });
+        assert_eq!(outcome.recv().unwrap(), Ok(()));
+        assert_eq!(ask(&clipboard, "link"), Ok(()));
+        let log = log.lock().unwrap();
+        let puts: Vec<&str> = log.puts.iter().map(|(what, _)| what.as_str()).collect();
+        assert_eq!(puts, ["image /s/badge.png", "link"]);
+        assert_eq!(log.puts[0].1, log.puts[1].1);
     }
 
     #[test]
