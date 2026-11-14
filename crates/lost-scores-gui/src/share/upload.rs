@@ -7,7 +7,9 @@ use crate::share::render::ShareImage;
 
 pub const CATBOX_API: &str = "https://catbox.moe/user/api.php";
 const LINK_PREFIX: &str = "https://files.catbox.moe/";
-const TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const MIN_TOTAL: Duration = Duration::from_secs(60);
+const SLOWEST_BYTES_PER_SECOND: u64 = 50_000;
 const MAX_ANSWER: u64 = 64 * 1024;
 const ERROR_TEXT_CHARS: usize = 120;
 
@@ -39,9 +41,13 @@ pub fn parse_link(status: u16, body: &str) -> Result<String> {
     Err(anyhow!("catbox answered {status}: {shown}"))
 }
 
+pub fn total_timeout(bytes: u64) -> Duration {
+    MIN_TOTAL.max(Duration::from_secs(bytes / SLOWEST_BYTES_PER_SECOND))
+}
+
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
         .user_agent(lost_scores_app::online::USER_AGENT)
         .http_status_as_error(false)
         .build()
@@ -65,6 +71,9 @@ pub fn upload(agent: &ureq::Agent, file: &Path) -> Result<String> {
     let body = multipart_body(&boundary, name, &png);
     let mut response = agent
         .post(CATBOX_API)
+        .config()
+        .timeout_global(Some(total_timeout(png.len() as u64)))
+        .build()
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -133,7 +142,9 @@ impl Choices {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Choices, Consent, multipart_body, parse_link};
+    use std::time::Duration;
+
+    use super::{Choices, Consent, multipart_body, parse_link, total_timeout};
     use crate::share::render::ShareImage;
 
     const LINK: &str = "https://files.catbox.moe/abc123.png";
@@ -164,6 +175,15 @@ mod tests {
         assert!(error.contains("412"), "{error}");
         let error = parse_link(500, LINK).unwrap_err().to_string();
         assert!(error.contains("500"), "{error}");
+    }
+
+    #[test]
+    fn the_total_timeout_grows_with_the_file() {
+        assert_eq!(total_timeout(0), Duration::from_secs(60));
+        assert_eq!(total_timeout(1_300_000), Duration::from_secs(60));
+        assert_eq!(total_timeout(3_000_000), Duration::from_secs(60));
+        assert_eq!(total_timeout(10_000_000), Duration::from_secs(200));
+        assert_eq!(total_timeout(20_000_000), Duration::from_secs(400));
     }
 
     #[test]
