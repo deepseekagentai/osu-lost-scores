@@ -3,12 +3,17 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-fn render_images(folder: Option<String>) -> ExitCode {
+fn render_images(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let mut folder = args.next();
+    let cached = folder.as_deref() == Some("--cached");
+    if cached {
+        folder = args.next();
+    }
     let Some(folder) = folder else {
         eprintln!("render-images needs the scan folder as its argument");
         return ExitCode::FAILURE;
     };
-    match lost_scores_gui::share::render::render_folder(Path::new(&folder)) {
+    match lost_scores_gui::share::render::render_folder(Path::new(&folder), cached) {
         Ok(output) => {
             for warning in output.warnings {
                 eprintln!("{warning}");
@@ -28,7 +33,7 @@ fn render_images(folder: Option<String>) -> ExitCode {
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("render-images") {
-        return render_images(args.next());
+        return render_images(args);
     }
     match lost_scores_gui::app::run() {
         Ok(()) => ExitCode::SUCCESS,

@@ -280,5 +280,8 @@ fn the_render_command_points_at_the_new_folder() {
     );
     assert_eq!(command.get_program(), "/opt/lost-scores-gui");
     let args: Vec<_> = command.get_args().collect();
-    assert_eq!(args, ["render-images", "/scans/2026-11-14_09-44-31Z"]);
+    assert_eq!(
+        args,
+        ["render-images", "--cached", "/scans/2026-11-14_09-44-31Z"]
+    );
 }

@@ -18,8 +18,10 @@ const STRIP_OPACITY: f32 = 0.35;
 pub(crate) const MAX_BYTES: u64 = 5_000_000;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+const COVER_HOST: &str = "https://assets.ppy.sh/beatmaps/";
+
 pub fn cover_url(set_id: u32) -> String {
-    format!("https://assets.ppy.sh/beatmaps/{set_id}/covers/cover.jpg")
+    format!("{COVER_HOST}{set_id}/covers/cover.jpg")
 }
 
 fn crop_centre(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
@@ -157,6 +159,17 @@ impl Fetch for HttpFetch {
     }
 }
 
+pub struct CachedCovers<'a>(pub &'a mut dyn Fetch);
+
+impl Fetch for CachedCovers<'_> {
+    fn get(&mut self, url: &str) -> Result<Option<Vec<u8>>> {
+        if url.starts_with(COVER_HOST) {
+            return Ok(None);
+        }
+        self.0.get(url)
+    }
+}
+
 pub struct Covers {
     pub found: HashMap<u32, Vec<u8>>,
     pub failed: usize,
@@ -173,10 +186,19 @@ pub fn covers(
         failed: 0,
     };
     let total = set_ids.len();
+    let mut offline = false;
     for (index, &set_id) in set_ids.iter().enumerate() {
         if let Entry::Vacant(slot) = covers.found.entry(set_id) {
             let file = cache_dir.join(format!("{set_id}.jpg"));
-            match cached(Some(&file), || fetch.get(&cover_url(set_id))) {
+            let download = || {
+                if offline {
+                    bail!("the network is not answering");
+                }
+                let answer = fetch.get(&cover_url(set_id));
+                offline = answer.is_err();
+                answer
+            };
+            match cached(Some(&file), download) {
                 Ok(Some(bytes)) => {
                     slot.insert(bytes);
                 }
@@ -224,7 +246,10 @@ mod tests {
     use anyhow::{Result, bail};
     use image::{ImageFormat, Rgb, RgbImage};
 
-    use super::{Fetch, STRIP_HEIGHT, STRIP_WIDTH, cover_strip, cover_url, covers, rounded_square};
+    use super::{
+        CachedCovers, Fetch, STRIP_HEIGHT, STRIP_WIDTH, cover_strip, cover_url, covers,
+        rounded_square,
+    };
 
     fn jpeg(width: u32, height: u32) -> Vec<u8> {
         let image = RgbImage::from_fn(width, height, |x, y| {
@@ -355,15 +380,42 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_cover_is_skipped_and_a_failed_one_is_counted() {
+    fn a_missing_cover_is_skipped_and_the_failure_counts_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let mut fetch = Counting::new(jpeg(30, 15));
         fetch.missing.push(cover_url(1));
         fetch.failing.push(cover_url(2));
         let found = covers(&[1, 2, 3], dir.path(), &mut fetch, &mut |_, _| {});
-        assert_eq!(found.found.keys().copied().collect::<Vec<_>>(), vec![3]);
-        assert_eq!(found.failed, 1);
+        assert!(found.found.is_empty());
+        assert_eq!(found.failed, 2);
         assert!(!dir.path().join("1.jpg").exists());
         assert!(!dir.path().join("2.jpg").exists());
+    }
+
+    #[test]
+    fn a_network_error_stops_the_downloads_and_serves_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("4.jpg"), jpeg(20, 10)).unwrap();
+        let mut fetch = Counting::new(jpeg(30, 15));
+        fetch.failing.push(cover_url(2));
+        fetch.missing.push(cover_url(1));
+        let found = covers(&[1, 2, 3, 4, 5], dir.path(), &mut fetch, &mut |_, _| {});
+        assert_eq!(fetch.calls, vec![cover_url(1), cover_url(2)]);
+        assert_eq!(found.failed, 3);
+        assert_eq!(found.found.keys().copied().collect::<Vec<_>>(), vec![4]);
+    }
+
+    #[test]
+    fn cached_only_covers_never_reach_the_network() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("4.jpg"), jpeg(20, 10)).unwrap();
+        let mut inner = Counting::new(jpeg(30, 15));
+        let mut fetch = CachedCovers(&mut inner);
+        let found = covers(&[3, 4], dir.path(), &mut fetch, &mut |_, _| {});
+        assert_eq!(found.found.len(), 1);
+        assert_eq!(found.failed, 0);
+        let avatar = fetch.get("https://a.ppy.sh/7").unwrap();
+        assert!(avatar.is_some());
+        assert_eq!(inner.calls, vec!["https://a.ppy.sh/7".to_owned()]);
     }
 }

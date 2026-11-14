@@ -251,7 +251,7 @@ fn refresh(
 
 pub fn render_command(renderer: &Path, folder: &Path) -> Command {
     let mut command = Command::new(renderer);
-    command.arg("render-images").arg(folder);
+    command.arg("render-images").arg("--cached").arg(folder);
     command
 }
 
@@ -270,7 +270,14 @@ fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Eve
                 total,
             });
         };
-        rasters::covers(&sets, &dir, &mut HttpFetch::new(), &mut progress);
+        let fetched = rasters::covers(&sets, &dir, &mut HttpFetch::new(), &mut progress);
+        if fetched.failed > 0 {
+            events(Event::Log(format!(
+                "{} of {} covers could not be downloaded",
+                fetched.failed,
+                sets.len()
+            )));
+        }
     }
     events(Event::Progress {
         step: Step::Images,

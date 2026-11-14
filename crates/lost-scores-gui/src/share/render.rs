@@ -25,7 +25,7 @@ use crate::share::model::{
     ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_sets, lost_rows, mods_width,
     potential_rows, stats, subtitle,
 };
-use crate::share::rasters::{self, Fetch, HttpFetch};
+use crate::share::rasters::{self, CachedCovers, Fetch, HttpFetch};
 use crate::table::when_day;
 use crate::view::{color, status_chip};
 use crate::{ShareArt, ShareBadge, ShareItem, ShareLost, ShareMod, SharePotential};
@@ -399,11 +399,16 @@ pub fn render_with(
     })
 }
 
-pub fn render_all(folder: &Path, options: &ShareOptions) -> Result<Output> {
-    render_with(folder, options, &Caches::standard(), &mut HttpFetch::new())
+pub fn render_all(folder: &Path, options: &ShareOptions, cached_covers: bool) -> Result<Output> {
+    let mut http = HttpFetch::new();
+    let caches = Caches::standard();
+    if cached_covers {
+        return render_with(folder, options, &caches, &mut CachedCovers(&mut http));
+    }
+    render_with(folder, options, &caches, &mut http)
 }
 
-pub fn render_folder(folder: &Path) -> Result<Output> {
+pub fn render_folder(folder: &Path, cached_covers: bool) -> Result<Output> {
     let scan = history::load(folder)?;
     let settings = setup::config_file()
         .map(|path| setup::load_settings(&path))
@@ -414,7 +419,7 @@ pub fn render_folder(folder: &Path) -> Result<Output> {
         show_lost_in_top: settings.show_lost_in_top_image,
     };
     use_offscreen_platform()?;
-    render_all(folder, &options)
+    render_all(folder, &options, cached_covers)
 }
 
 #[cfg(test)]
