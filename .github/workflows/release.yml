@@ -18,8 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: version
+        shell: bash
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lost-scores-gui") | .version')
+          if [ -z "$version" ] || [ "$version" = null ]; then
+            echo "::error::cannot read the version of lost-scores-gui from Cargo.toml"
+            exit 1
+          fi
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             if [ "$GITHUB_REF_NAME" != "v$version" ]; then
               echo "::error::the tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml"
