@@ -14,6 +14,7 @@ use lost_scores_app::pipeline::{
 };
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
+use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::MapCatalog;
 
 use crate::share::rasters::{self, Fetch, HttpFetch};
@@ -135,7 +136,7 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     proceed!();
     let scores = find(&read.scan, &catalog, &mut timings);
     let found = lost(&scores, &catalog);
-    let result = potential(api, &player, &scores, &catalog, &mut timings, &mut events)?;
+    let result = potential_top(api, &player, &scores, &catalog, &mut timings, &mut events)?;
     proceed!();
     sink.send(Message::Saving);
     let scan = saved(job, &player, found, result);
@@ -162,7 +163,25 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     Ok(Outcome::Finished)
 }
 
-fn saved(job: &Job, player: &Player, found: Lost, result: PotentialResult) -> SavedScan {
+const NO_STATISTICS: &str =
+    "The osu! API sent no statistics for this player; the Potential Top is left out";
+
+fn potential_top(
+    api: &mut dyn Api,
+    player: &Player,
+    scores: &[LostScore<'_>],
+    catalog: &MapCatalog,
+    timings: &mut Timings,
+    events: &mut dyn FnMut(Event),
+) -> Result<Option<PotentialResult>> {
+    if player.pp.is_none() || player.accuracy.is_none() {
+        events(Event::Log(NO_STATISTICS.to_owned()));
+        return Ok(None);
+    }
+    potential(api, player, scores, catalog, timings, events).map(Some)
+}
+
+fn saved(job: &Job, player: &Player, found: Lost, result: Option<PotentialResult>) -> SavedScan {
     SavedScan {
         version: history::VERSION,
         made_at: pipeline::unix_now(),
@@ -173,7 +192,7 @@ fn saved(job: &Job, player: &Player, found: Lost, result: PotentialResult) -> Sa
         lost: found.rows,
         lost_total: found.total,
         lost_ranked: found.ranked,
-        potential: Some(result),
+        potential: result,
     }
 }
 
@@ -218,7 +237,7 @@ fn refresh(
     }
     let scores = find(scan, catalog, timings);
     let found = lost(&scores, catalog);
-    let result = match potential(api, player, &scores, catalog, timings, events) {
+    let result = match potential_top(api, player, &scores, catalog, timings, events) {
         Ok(result) => result,
         Err(error) => {
             events(Event::Log(format!(
@@ -271,24 +290,6 @@ pub fn create_images(
     events: &mut dyn FnMut(Event),
     fetch: &mut dyn Fetch,
 ) {
-    let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
-        images(job, scan, folder, &mut *events, fetch);
-    }));
-    if let Err(payload) = attempt {
-        events(Event::Log(format!(
-            "Could not create the images: {}",
-            panic_message(payload.as_ref())
-        )));
-    }
-}
-
-fn images(
-    job: &Job,
-    scan: &SavedScan,
-    folder: &Path,
-    events: &mut dyn FnMut(Event),
-    fetch: &mut dyn Fetch,
-) {
     let options = ShareOptions {
         count: job.share_count,
         include_all: scan.include_all,
@@ -296,20 +297,27 @@ fn images(
     };
     if let Some(dir) = cache::covers_dir() {
         let sets = cover_sets(scan, &options);
-        let mut progress = |done, total| {
-            events(Event::Progress {
-                step: Step::Covers,
-                done,
-                total,
-            });
-        };
-        let fetched = rasters::covers(&sets, &dir, fetch, &mut progress);
-        if fetched.failed > 0 {
-            events(Event::Log(format!(
+        let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut progress = |done, total| {
+                events(Event::Progress {
+                    step: Step::Covers,
+                    done,
+                    total,
+                });
+            };
+            rasters::covers(&sets, &dir, fetch, &mut progress)
+        }));
+        match attempt {
+            Ok(fetched) if fetched.failed > 0 => events(Event::Log(format!(
                 "{} of {} covers could not be used",
                 fetched.failed,
                 sets.len()
-            )));
+            ))),
+            Ok(_) => {}
+            Err(payload) => events(Event::Log(format!(
+                "Could not fetch the covers: {}",
+                panic_message(payload.as_ref())
+            ))),
         }
     }
     events(Event::Progress {

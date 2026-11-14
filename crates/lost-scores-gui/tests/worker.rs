@@ -31,6 +31,30 @@ fn isolate_environment() -> TempDir {
 
 struct Fake {
     known: bool,
+    statistics: bool,
+}
+
+impl Fake {
+    fn known() -> Self {
+        Self {
+            known: true,
+            statistics: true,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            known: false,
+            statistics: true,
+        }
+    }
+
+    fn without_statistics() -> Self {
+        Self {
+            known: true,
+            statistics: false,
+        }
+    }
 }
 
 impl MapSource for Fake {
@@ -59,8 +83,8 @@ impl Api for Fake {
             Ok(Player {
                 id: 7,
                 names: vec![name.to_owned()],
-                pp: Some(1000.0),
-                accuracy: Some(98.0),
+                pp: self.statistics.then_some(1000.0),
+                accuracy: self.statistics.then_some(98.0),
                 global_rank: Some(1),
             })
         } else {
@@ -169,7 +193,7 @@ fn a_scan_of_an_empty_folder_finishes_and_is_saved() {
     let root = tempfile::tempdir().unwrap();
     let job = job(root.path());
     let sink = Recorder::open();
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     if let Some(Message::Failed(text)) = sink.messages.borrow().last() {
         panic!("{text}");
     }
@@ -193,7 +217,7 @@ fn a_rejected_player_fails_the_scan_and_saves_nothing() {
     let root = tempfile::tempdir().unwrap();
     let job = job(root.path());
     let sink = Recorder::open();
-    let outcome = run(&job, &mut Fake { known: false }, &sink);
+    let outcome = run(&job, &mut Fake::unknown(), &sink);
     assert!(matches!(outcome, Outcome::Failed));
     let messages = sink.messages.borrow();
     assert!(matches!(messages.last(), Some(Message::Failed(_))));
@@ -206,7 +230,7 @@ fn events_after_the_window_closed_are_dropped() {
     let root = tempfile::tempdir().unwrap();
     let job = job(root.path());
     let sink = Recorder::open_for(3);
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     assert!(matches!(outcome, Outcome::Closed));
     assert!(sink.messages.borrow().len() <= 3);
     assert!(history::list(&job.scans_dir).is_empty());
@@ -218,7 +242,7 @@ fn a_closed_window_never_starts_the_scan() {
     let root = tempfile::tempdir().unwrap();
     let job = job(root.path());
     let sink = Recorder::open_for(0);
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     assert!(matches!(outcome, Outcome::Closed));
     assert!(sink.messages.borrow().is_empty());
 }
@@ -229,7 +253,7 @@ fn a_failed_render_keeps_the_scan() {
     let root = tempfile::tempdir().unwrap();
     let job = job(root.path());
     let sink = Recorder::open();
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     assert!(matches!(outcome, Outcome::Finished));
     assert_eq!(history::list(&job.scans_dir).len(), 1);
     let messages = sink.messages.borrow();
@@ -254,7 +278,7 @@ fn a_renderer_that_exits_with_an_error_reports_its_line() {
     let mut job = job(root.path());
     job.renderer = renderer_script(root.path(), "echo 'cannot render: boom' >&2\nexit 1");
     let sink = Recorder::open();
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     assert!(matches!(outcome, Outcome::Finished));
     assert_eq!(history::list(&job.scans_dir).len(), 1);
     assert!(
@@ -272,7 +296,7 @@ fn a_renderer_that_succeeds_is_logged_with_its_warnings() {
     let mut job = job(root.path());
     job.renderer = renderer_script(root.path(), "echo '2 of 9 covers could not be used' >&2");
     let sink = Recorder::open();
-    run(&job, &mut Fake { known: true }, &sink);
+    run(&job, &mut Fake::known(), &sink);
     let lines = logs(&sink);
     let folder = history::list(&job.scans_dir)[0].folder.clone();
     assert!(lines.contains(&"2 of 9 covers could not be used".to_owned()));
@@ -323,7 +347,7 @@ fn a_panicking_renderer_is_reported_by_its_message_line() {
         "echo \"thread 'main' panicked at src/x.rs:1:1:\" >&2\necho 'boom' >&2\necho 'cannot render the share images: boom' >&2\necho 'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace' >&2\nexit 101",
     );
     let sink = Recorder::open();
-    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    let outcome = run(&job, &mut Fake::known(), &sink);
     assert!(matches!(outcome, Outcome::Finished));
     let lines = logs(&sink);
     assert!(
@@ -383,11 +407,13 @@ fn one_lost_play() -> SavedScan {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn a_panic_while_fetching_covers_is_logged_and_does_not_escape() {
+fn a_panic_while_fetching_covers_is_logged_and_the_renderer_still_runs() {
     let _serial = serial();
     let root = tempfile::tempdir().unwrap();
-    let job = job(root.path());
+    let mut job = job(root.path());
+    job.renderer = renderer_script(root.path(), "exit 0");
     let mut lines = Vec::new();
     let mut events = |event: Event| {
         if let Event::Log(text) = event {
@@ -401,13 +427,17 @@ fn a_panic_while_fetching_covers_is_logged_and_does_not_escape() {
         &mut events,
         &mut Panicking,
     );
+    assert_eq!(lines.len(), 2, "{lines:?}");
     assert_eq!(
-        lines,
-        ["Could not create the images: the cover server blew up"]
+        lines[0],
+        "Could not fetch the covers: the cover server blew up"
+    );
+    assert_eq!(
+        lines[1],
+        format!("Images saved to {}", root.path().display())
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn the_renderer_binary_does_not_panic_on_a_folder_that_is_not_utf8() {
     use std::ffi::OsStr;
@@ -475,4 +505,34 @@ fn the_isolated_home_is_removed_when_the_test_ends() {
         home
     };
     assert!(!home.exists(), "{}", home.display());
+}
+
+#[test]
+fn a_player_without_statistics_still_gets_a_scan_without_the_potential_top() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let sink = Recorder::open();
+    let outcome = run(&job, &mut Fake::without_statistics(), &sink);
+    assert!(matches!(outcome, Outcome::Finished));
+    let listed = history::list(&job.scans_dir);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(history::load(&listed[0].folder).unwrap().potential, None);
+    let lines = logs(&sink);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.as_str()
+                == "The osu! API sent no statistics for this player; the Potential Top is left out")
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(
+        !sink
+            .messages
+            .borrow()
+            .iter()
+            .any(|message| matches!(message, Message::Failed(_)))
+    );
 }
