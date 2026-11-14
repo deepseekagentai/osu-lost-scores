@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::sync::Mutex;
 
 use common::{Replay, TICKS, write};
 use lost_scores_core::{pp, scan};
@@ -57,4 +58,15 @@ fn beatmap_that_cannot_be_read_counts_as_a_failure() {
     let failed = pp::fill(dir.path(), &mut report.replays);
     assert_eq!(failed, 1);
     assert!(report.replays.iter().all(|r| r.pp.is_none()));
+}
+
+#[test]
+fn fill_reports_progress_up_to_the_number_of_replays_with_a_beatmap() {
+    let dir = osu_folder();
+    let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
+    let reports = Mutex::new(Vec::new());
+    pp::fill_with(dir.path(), &mut report.replays, &|done, total| {
+        reports.lock().unwrap().push((done, total))
+    });
+    assert_eq!(reports.into_inner().unwrap().last(), Some(&(1, 1)));
 }

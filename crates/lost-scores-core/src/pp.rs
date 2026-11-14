@@ -7,6 +7,7 @@ use rosu_pp::any::DifficultyAttributes;
 use rosu_pp::{Beatmap, Difficulty, Performance};
 
 use crate::ScannedReplay;
+use crate::ticker::Ticker;
 
 const TOUCH_DEVICE: u32 = 1 << 2;
 
@@ -15,6 +16,14 @@ pub(crate) const fn reference_mod_bits(mods: Mods) -> u32 {
 }
 
 pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
+    fill_with(osu_dir, replays, &|_, _| {})
+}
+
+pub fn fill_with(
+    osu_dir: &Path,
+    replays: &mut [ScannedReplay],
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> usize {
     let view: &[ScannedReplay] = replays;
     let mut by_map: HashMap<&Path, Vec<usize>> = HashMap::new();
     for (index, replay) in view.iter().enumerate() {
@@ -22,10 +31,14 @@ pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
             by_map.entry(&beatmap.path).or_default().push(index);
         }
     }
+    let ticker = Ticker::new(by_map.values().map(Vec::len).sum(), progress);
     let computed: Vec<Option<Vec<(usize, f64)>>> = by_map
         .into_par_iter()
         .map(|(path, indices)| {
-            let map = Beatmap::from_path(osu_dir.join(path)).ok()?;
+            let Some(map) = Beatmap::from_path(osu_dir.join(path)).ok() else {
+                indices.iter().for_each(|_| ticker.tick());
+                return None;
+            };
             let mut by_mods: HashMap<u32, DifficultyAttributes> = HashMap::new();
             Some(
                 indices
@@ -35,7 +48,9 @@ pub fn fill(osu_dir: &Path, replays: &mut [ScannedReplay]) -> usize {
                         let attrs = by_mods
                             .entry(header.mods.bits())
                             .or_insert_with(|| difficulty(&map, header.mods));
-                        (index, scored(Performance::new(attrs.clone()), header))
+                        let pp = scored(Performance::new(attrs.clone()), header);
+                        ticker.tick();
+                        (index, pp)
                     })
                     .collect(),
             )

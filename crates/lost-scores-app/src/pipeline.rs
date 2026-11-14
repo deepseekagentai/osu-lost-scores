@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use lost_scores_core::maps::{self, MapCatalog, MapSource, Wanted};
 use lost_scores_core::missing::{OsuFiles, fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
-use lost_scores_core::{Scan, lost as find_lost, pp};
+use lost_scores_core::{Scan, Stage, lost as find_lost, pp};
 use osu_api::{ApiError, Score};
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +86,22 @@ fn finished(events: &mut dyn FnMut(Event), step: Step) {
     });
 }
 
+fn forwarded<T: Send>(
+    events: &mut dyn FnMut(Event),
+    work: impl FnOnce(mpsc::Sender<(Step, usize, usize)>) -> T + Send,
+) -> T {
+    let (sender, receiver) = mpsc::channel();
+    thread::scope(|scope| {
+        let worker = scope.spawn(move || work(sender));
+        for (step, done, total) in receiver {
+            events(Event::Progress { step, done, total });
+        }
+        worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 pub fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -142,11 +160,17 @@ pub fn read(
         printable(&names.join(", "))
     )));
     let started = Instant::now();
-    let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
+    let mut scan = forwarded(events, |sender| {
+        lost_scores_core::scan_with(&osu_dir, &songs_dir, &names, &|stage, done, total| {
+            let step = match stage {
+                Stage::Songs => Step::Songs,
+                Stage::Replays => Step::Replays,
+            };
+            let _ = sender.send((step, done, total));
+        })
+    })?;
     timings.add("songs index", scan.timings.songs);
     timings.add("replays", scan.timings.replays);
-    finished(events, Step::Songs);
-    finished(events, Step::Replays);
     let mut checking = Duration::ZERO;
     if source.check_missing {
         match api {
@@ -160,8 +184,13 @@ pub fn read(
             ))),
         }
     }
-    let pp_failed = timings.time("pp", || pp::fill(&osu_dir, &mut scan.replays));
-    finished(events, Step::Pp);
+    let pp_failed = timings.time("pp", || {
+        forwarded(events, |sender| {
+            pp::fill_with(&osu_dir, &mut scan.replays, &|done, total| {
+                let _ = sender.send((Step::Pp, done, total));
+            })
+        })
+    });
     let with_pp = scan.replays.iter().filter(|r| r.pp.is_some()).count();
     events(Event::Log(format!(
         "{} replays read in {:.1} s, {with_pp} of the player's have a local beatmap and pp",

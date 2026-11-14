@@ -2,10 +2,11 @@ mod common;
 
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use common::{Replay, TICKS, write};
-use lost_scores_core::{Scan, scan};
+use lost_scores_core::{Scan, Stage, scan, scan_with};
 use tempfile::TempDir;
 
 const RELAX: u32 = 128;
@@ -195,4 +196,31 @@ fn reports_how_long_the_songs_index_and_the_replays_took() {
     let report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
     assert!(report.timings.songs > Duration::ZERO);
     assert!(report.timings.replays > Duration::ZERO);
+}
+
+#[test]
+fn scan_reports_progress_for_songs_and_replays() {
+    let dir = osu_folder();
+    let reports = Mutex::new(Vec::new());
+    scan_with(
+        dir.path(),
+        &dir.path().join("Songs"),
+        &["Lemon".into()],
+        &|stage, done, total| reports.lock().unwrap().push((stage, done, total)),
+    )
+    .unwrap();
+    let reports = reports.into_inner().unwrap();
+    for (stage, expected_total) in [(Stage::Songs, 2), (Stage::Replays, 6)] {
+        let of_stage: Vec<_> = reports.iter().filter(|r| r.0 == stage).collect();
+        assert!(
+            of_stage.iter().all(|r| r.2 == expected_total),
+            "{of_stage:?}"
+        );
+        assert!(
+            of_stage.windows(2).all(|w| w[0].1 <= w[1].1),
+            "{of_stage:?}"
+        );
+        let last = of_stage.last().unwrap();
+        assert_eq!(last.1, last.2, "{stage:?}");
+    }
 }

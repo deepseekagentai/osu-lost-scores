@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::ScanError;
+use crate::ticker::Ticker;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalBeatmap {
@@ -22,7 +23,11 @@ pub(crate) struct SongsIndex {
     pub(crate) unreadable: usize,
 }
 
-pub(crate) fn index_songs(osu_dir: &Path, songs_dir: &Path) -> Result<SongsIndex, ScanError> {
+pub(crate) fn index_songs(
+    osu_dir: &Path,
+    songs_dir: &Path,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<SongsIndex, ScanError> {
     let mut paths = Vec::new();
     let mut unreadable = 0;
     for entry in WalkDir::new(songs_dir) {
@@ -44,12 +49,16 @@ pub(crate) fn index_songs(osu_dir: &Path, songs_dir: &Path) -> Result<SongsIndex
         }
     }
     let files = paths.len();
+    let ticker = Ticker::new(files, progress);
     let mut hashed: Vec<_> = paths
         .into_par_iter()
         .filter_map(|path| {
-            let data = fs::read(&path).ok()?;
-            let md5 = hex(Md5::digest(&data).as_slice());
-            Some((path, md5, BeatmapMetadata::parse(&data)))
+            let hashed = fs::read(&path).ok().map(|data| {
+                let md5 = hex(Md5::digest(&data).as_slice());
+                (md5, BeatmapMetadata::parse(&data))
+            });
+            ticker.tick();
+            hashed.map(|(md5, metadata)| (path, md5, metadata))
         })
         .collect();
     unreadable += files - hashed.len();

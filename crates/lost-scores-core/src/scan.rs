@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::LocalBeatmap;
 use crate::songs::index_songs;
+use crate::ticker::Ticker;
 
 const STANDARD_MODE: u8 = 0;
 
@@ -61,14 +62,33 @@ pub struct ScanError {
     pub source: io::Error,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Songs,
+    Replays,
+}
+
 pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan, ScanError> {
+    scan_with(osu_dir, songs_dir, players, &|_, _, _| {})
+}
+
+pub fn scan_with(
+    osu_dir: &Path,
+    songs_dir: &Path,
+    players: &[String],
+    progress: &(dyn Fn(Stage, usize, usize) + Sync),
+) -> Result<Scan, ScanError> {
     let started = Instant::now();
     let replay_paths = list_replays(&osu_dir.join("Data").join("r"))?;
     let listed = started.elapsed();
     let started = Instant::now();
-    let songs = index_songs(osu_dir, songs_dir)?;
+    let songs = index_songs(osu_dir, songs_dir, &|done, total| {
+        progress(Stage::Songs, done, total)
+    })?;
     let songs_took = started.elapsed();
     let started = Instant::now();
+    let report_replays = |done, total| progress(Stage::Replays, done, total);
+    let replay_ticker = Ticker::new(replay_paths.len(), &report_replays);
     let parsed: Vec<_> = replay_paths
         .into_par_iter()
         .map(|path| {
@@ -77,7 +97,9 @@ pub fn scan(osu_dir: &Path, songs_dir: &Path, players: &[String]) -> Result<Scan
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            (file_name, read_header(&path))
+            let header = read_header(&path);
+            replay_ticker.tick();
+            (file_name, header)
         })
         .collect();
 
