@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use lost_scores_app::online::Online;
@@ -73,10 +73,13 @@ struct Profile {
 }
 
 pub fn run() -> Result<()> {
-    let started = Instant::now();
+    run_with(|_| {})
+}
+
+pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
     let window = MainWindow::new()?;
     slint::set_xdg_app_id(APP_ID)?;
-    trace_first_frame(&window, started);
+    prepare(&window);
     let session = Rc::new(Session {
         window: window.clone_strong(),
         weak: window.as_weak(),
@@ -104,10 +107,6 @@ pub fn run() -> Result<()> {
         Duration::from_millis(500),
         move || watcher.refresh_avatar(),
     );
-    if std::env::var_os("LOST_SCORES_GUI_AUTOSTART").is_some() {
-        let starter = session.clone();
-        slint::Timer::single_shot(Duration::from_secs(2), move || starter.start_scan());
-    }
     window.run()?;
     Ok(())
 }
@@ -218,7 +217,6 @@ impl Session {
     }
 
     fn log(&self, text: &str) {
-        trace(&format!("log: {text}"));
         let line = stamp(clock_now(), text);
         let (time, text) = crate::log::split(&line);
         self.log.push(LogEntry {
@@ -314,7 +312,6 @@ impl Session {
         state.set_perf_potential("".into());
         state.set_acc_potential("".into());
         state.set_stats_ready(true);
-        trace("stats shown");
     }
 
     fn fetch_profile(self: &Rc<Self>, credentials: Credentials, name: String) {
@@ -371,7 +368,6 @@ impl Session {
             state.set_avatar(slint::Image::from_rgba8(buffer));
             state.set_has_avatar(true);
             self.rendered.set(pixels);
-            trace(&format!("avatar rendered at {pixels} px"));
         }
     }
 
@@ -430,7 +426,6 @@ impl Session {
         state.set_progress(scan.progress);
         state.set_busy(self.busy());
         for line in &scan.log[self.shown.get()..] {
-            trace(&format!("log: {line}"));
             let (time, text) = split(line);
             self.log.push(LogEntry {
                 time: time.into(),
@@ -438,9 +433,6 @@ impl Session {
             });
         }
         self.shown.set(scan.log.len());
-        if scan.phase != Phase::Scanning {
-            trace(&format!("status: {}", scan.status));
-        }
     }
 
     fn handle(&self, message: Message) {
@@ -556,28 +548,5 @@ fn pick_folder(weak: Weak<MainWindow>) {
                 Err(message) => state.set_status(message.into()),
             }
         });
-    });
-}
-
-fn tracing() -> bool {
-    std::env::var_os("LOST_SCORES_GUI_TRACE").is_some()
-}
-
-fn trace(message: &str) {
-    if tracing() {
-        eprintln!("{message}");
-    }
-}
-
-fn trace_first_frame(window: &MainWindow, started: Instant) {
-    if !tracing() {
-        return;
-    }
-    let mut reported = false;
-    let _ = window.window().set_rendering_notifier(move |state, _| {
-        if !reported && matches!(state, slint::RenderingState::AfterRendering) {
-            reported = true;
-            eprintln!("first frame after {} ms", started.elapsed().as_millis());
-        }
     });
 }
