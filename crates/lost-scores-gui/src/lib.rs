@@ -148,6 +148,37 @@ mod tests {
         assert_eq!(older.get(), 1);
     }
 
+    #[test]
+    fn delete_older_scans_is_set_apart_below_the_list() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let labels = [
+            "15 November 2026 · 10:00",
+            "14 November 2026 · 09:00",
+            "13 November 2026 · 08:00",
+        ];
+        let state = window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(
+            labels.map(SharedString::from).to_vec(),
+        )));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_scans_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let y = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+                .absolute_position()
+                .y
+        };
+        let gap = y("Delete older scans") - y(labels[2]);
+        assert!(gap >= 33.0, "gap {gap}");
+    }
+
     fn header_window(width: f32) -> MainWindow {
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
@@ -217,18 +248,18 @@ mod tests {
         let button_x = buttons[0].absolute_position().x;
         buttons[0].mock_single_click(PointerEventButton::Left);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
-        let copy = ElementHandle::find_by_accessible_label(&window, "Copy image")
+        let copy = ElementHandle::find_by_accessible_label(&window, "Copy")
             .next()
             .unwrap();
         let copy_x = copy.absolute_position().x;
         assert!(
-            copy_x > button_x && copy_x < button_x + 392.0,
+            copy_x > button_x && copy_x < button_x + 340.0,
             "button {button_x}, copy {copy_x}"
         );
     }
 
     #[test]
-    fn the_share_popup_has_a_row_for_each_image() {
+    fn the_share_popup_has_open_copy_and_catbox_in_each_row() {
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
         window.show().unwrap();
@@ -237,11 +268,11 @@ mod tests {
         state.set_share_images(ModelRc::new(VecModel::from(
             ["Lost Scores", "Badge"].map(SharedString::from).to_vec(),
         )));
-        let copied = Rc::new(Cell::new(-1));
-        let uploaded = Rc::new(Cell::new(-1));
-        let (copy, upload) = (copied.clone(), uploaded.clone());
-        state.on_copy_image(move |index| copy.set(index));
-        state.on_upload_image(move |index| upload.set(index));
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (open, copy, upload) = (calls.clone(), calls.clone(), calls.clone());
+        state.on_open_image(move |index| open.borrow_mut().push(("open", index)));
+        state.on_copy_image(move |index| copy.borrow_mut().push(("copy", index)));
+        state.on_upload_image(move |index| upload.borrow_mut().push(("catbox", index)));
         state.set_has_results(true);
         state.set_show_results(true);
         state.set_has_images(true);
@@ -250,13 +281,14 @@ mod tests {
 
         let count = |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
         assert_eq!(count("Badge"), 1);
-        assert_eq!(count("Copy image"), 2);
-        let buttons: Vec<_> =
-            ElementHandle::find_by_accessible_label(&window, "Upload to catbox").collect();
-        assert_eq!(buttons.len(), 2);
-        buttons[1].mock_single_click(PointerEventButton::Left);
-        assert_eq!(uploaded.get(), 1);
-        assert_eq!(copied.get(), -1);
+        for label in ["Open", "Copy", "catbox"] {
+            assert_eq!(count(label), 2, "{label}");
+        }
+        for (label, index) in [("Open", 1), ("Copy", 0), ("catbox", 1)] {
+            let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
+            buttons[index].mock_single_click(PointerEventButton::Left);
+        }
+        assert_eq!(*calls.borrow(), [("open", 1), ("copy", 0), ("catbox", 1)]);
     }
 
     #[test]

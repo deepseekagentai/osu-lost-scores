@@ -829,3 +829,35 @@ fn render_share_snapshots() {
     state.set_copied(true);
     draw_sized(&surface, LOGICAL, &dir.join("s650-toast.png"));
 }
+
+#[test]
+#[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
+fn render_fade_snapshots() {
+    use lost_scores_gui::share::model::ShareOptions;
+    use lost_scores_gui::share::render::{
+        LOST_FILE, POTENTIAL_FILE, Prepared, render_images, use_offscreen_platform,
+    };
+
+    let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+    use_offscreen_platform().unwrap();
+    let scan = fake_scan(false);
+    let wanted = [
+        (2, LOST_FILE, "fade-lost-2rows.png"),
+        (4, POTENTIAL_FILE, "fade-potential-4rows.png"),
+        (1, POTENTIAL_FILE, "fade-potential-1row.png"),
+    ];
+    for (count, file, name) in wanted {
+        let options = ShareOptions {
+            count,
+            include_all: true,
+            show_lost_in_top: false,
+        };
+        let images = render_images(&scan, &options, &Prepared::default(), &TimeZone::UTC).unwrap();
+        let image = images.iter().find(|image| image.file == file).unwrap();
+        RgbaImage::from_raw(image.width, image.height, image.rgba.clone())
+            .unwrap()
+            .save(dir.join(name))
+            .unwrap();
+    }
+}

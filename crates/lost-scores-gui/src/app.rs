@@ -70,7 +70,10 @@ struct Session {
     uploading: Cell<bool>,
     pending_delete: RefCell<Option<Removal>>,
     opens_results: Cell<bool>,
+    opener: RefCell<Opener>,
 }
+
+type Opener = Box<dyn Fn(&Path) -> std::io::Result<()>>;
 
 struct Removal {
     folders: Vec<PathBuf>,
@@ -123,6 +126,7 @@ impl Session {
             uploading: Cell::new(false),
             pending_delete: RefCell::new(None),
             opens_results: Cell::new(false),
+            opener: RefCell::new(Box::new(|path| open::that(path))),
             window: window.clone_strong(),
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
@@ -315,6 +319,8 @@ impl Session {
         state.on_cancel_delete(move || session.cancel_delete());
         let session = self.clone();
         state.on_open_share(move || session.open_share());
+        let session = self.clone();
+        state.on_open_image(move |index| session.open_image(index as usize));
         let session = self.clone();
         state.on_copy_image(move |index| session.copy_image(index as usize));
         let session = self.clone();
@@ -620,6 +626,17 @@ impl Session {
 
     fn shared_image(&self, index: usize) -> Option<ShareImage> {
         self.choices.borrow().get(index)
+    }
+
+    fn open_image(&self, index: usize) {
+        self.window.global::<State>().set_share_open(false);
+        let Some(image) = self.shared_image(index) else {
+            return;
+        };
+        if let Err(error) = (self.opener.borrow())(&image.path) {
+            self.log(&format!("Could not open the image: {error}"));
+            self.toast("Could not open the image: see the log");
+        }
     }
 
     fn copy_failed(&self, error: &str) {
@@ -1312,15 +1329,18 @@ fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, Key
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::sync::{Once, OnceLock};
 
     use lost_scores_app::setup;
     use osu_api::Credentials;
-    use slint::{ComponentHandle, LogicalSize};
+    use slint::{ComponentHandle, LogicalSize, Model};
     use tempfile::TempDir;
 
     use super::Session;
+    use crate::share::render::ShareImage;
     use crate::worker::Message;
     use crate::{MainWindow, State};
 
@@ -1419,6 +1439,55 @@ mod tests {
         begin(&session);
         finish(&session);
         assert!(!window.global::<State>().get_show_results());
+    }
+
+    fn shared(session: &Session, root: &Path) -> Vec<PathBuf> {
+        let images: Vec<ShareImage> = ["lost_scores.png", "badge.png"]
+            .into_iter()
+            .map(|file| ShareImage {
+                label: "x",
+                path: root.join(file),
+            })
+            .collect();
+        let paths = images.iter().map(|image| image.path.clone()).collect();
+        session.choices.borrow_mut().replace(images);
+        paths
+    }
+
+    #[test]
+    fn open_hands_the_image_path_to_the_opener() {
+        let (_window, session, root) = session(650.0);
+        let paths = shared(&session, root.path());
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let record = opened.clone();
+        *session.opener.borrow_mut() = Box::new(move |path| {
+            record.borrow_mut().push(path.to_path_buf());
+            Ok(())
+        });
+        session.open_image(1);
+        session.open_image(0);
+        session.open_image(9);
+        assert_eq!(*opened.borrow(), [paths[1].clone(), paths[0].clone()]);
+    }
+
+    #[test]
+    fn a_failed_open_is_logged_and_toasted() {
+        let (window, session, root) = session(650.0);
+        shared(&session, root.path());
+        *session.opener.borrow_mut() =
+            Box::new(|_| Err(std::io::Error::other("no viewer installed")));
+        session.open_image(0);
+        let state = window.global::<State>();
+        assert!(state.get_copied());
+        assert_eq!(
+            state.get_copied_text(),
+            "Could not open the image: see the log"
+        );
+        let last = session.log.row_data(session.log.row_count() - 1).unwrap();
+        assert!(
+            last.text
+                .contains("Could not open the image: no viewer installed")
+        );
     }
 
     #[test]
