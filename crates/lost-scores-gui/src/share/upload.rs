@@ -145,6 +145,9 @@ impl Choices {
 pub struct Summary {
     pub links: String,
     pub message: String,
+    pub label: String,
+    pub tone: i32,
+    pub first_error: String,
 }
 
 pub fn links_summary(results: &[(&str, Result<String, String>)]) -> Summary {
@@ -158,9 +161,29 @@ pub fn links_summary(results: &[(&str, Result<String, String>)]) -> Summary {
         (done, total) if done == total => format!("{done} links copied"),
         (done, total) => format!("Uploaded {done} of {total}: see the log"),
     };
+    let (label, tone) = match (links.len(), results.len()) {
+        (0, _) => ("Upload failed".to_owned(), -1),
+        (done, total) if done == total => ("Links copied".to_owned(), 1),
+        (done, total) => (format!("Uploaded {done} of {total}"), -1),
+    };
+    let first_error = results
+        .iter()
+        .find_map(|(name, result)| result.as_ref().err().map(|why| format!("{name}: {why}")))
+        .unwrap_or_default();
     Summary {
         links: links.join("\n"),
         message,
+        label,
+        tone,
+        first_error,
+    }
+}
+
+pub fn progress_label(done: usize, total: usize) -> String {
+    if total == 1 {
+        "Uploading...".to_owned()
+    } else {
+        format!("Uploading {done} of {total}")
     }
 }
 
@@ -170,7 +193,9 @@ mod tests {
 
     use std::time::Duration;
 
-    use super::{Choices, Consent, links_summary, multipart_body, parse_link, total_timeout};
+    use super::{
+        Choices, Consent, links_summary, multipart_body, parse_link, progress_label, total_timeout,
+    };
     use crate::share::render::ShareImage;
 
     const LINK: &str = "https://files.catbox.moe/abc123.png";
@@ -278,5 +303,36 @@ mod tests {
         assert_eq!(none.message, "Could not upload: see the log");
         let one = links_summary(&[("Badge", ok("https://files.catbox.moe/a.png"))]);
         assert_eq!(one.message, "Link copied");
+    }
+
+    #[test]
+    fn the_button_shows_how_the_upload_ended() {
+        let ok = |link: &str| Ok(link.to_owned());
+        let failed = |why: &str| Err(why.to_owned());
+        let all = links_summary(&[
+            ("Badge", ok("https://files.catbox.moe/a.png")),
+            ("Lost Scores", ok("https://files.catbox.moe/b.png")),
+        ]);
+        assert_eq!((all.label.as_str(), all.tone), ("Links copied", 1));
+        assert_eq!(all.first_error, "");
+        let some = links_summary(&[
+            ("Badge", ok("https://files.catbox.moe/a.png")),
+            ("Lost Scores", failed("catbox answered 412: no file")),
+            ("Potential Top", failed("timeout")),
+        ]);
+        assert_eq!((some.label.as_str(), some.tone), ("Uploaded 1 of 3", -1));
+        assert_eq!(
+            some.first_error,
+            "Lost Scores: catbox answered 412: no file"
+        );
+        let none = links_summary(&[("Badge", failed("cannot reach catbox"))]);
+        assert_eq!((none.label.as_str(), none.tone), ("Upload failed", -1));
+        assert_eq!(none.first_error, "Badge: cannot reach catbox");
+    }
+
+    #[test]
+    fn the_button_counts_the_pictures_while_uploading() {
+        assert_eq!(progress_label(1, 3), "Uploading 1 of 3");
+        assert_eq!(progress_label(1, 1), "Uploading...");
     }
 }

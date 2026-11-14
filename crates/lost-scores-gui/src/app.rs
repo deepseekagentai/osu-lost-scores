@@ -41,6 +41,8 @@ const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
 const COPIED_FOR: Duration = Duration::from_secs(2);
+const CATBOX_DONE_FOR: Duration = Duration::from_secs(4);
+const CATBOX_FAILED_FOR: Duration = Duration::from_secs(6);
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
 
 struct Session {
@@ -69,6 +71,7 @@ struct Session {
     folder: RefCell<Option<PathBuf>>,
     clipboard: RefCell<Clipboard>,
     copied: slint::Timer,
+    catbox_reset: slint::Timer,
     consent: Cell<Consent>,
     choices: RefCell<Choices>,
     uploading: Cell<bool>,
@@ -134,6 +137,7 @@ impl Session {
             folder: RefCell::new(None),
             clipboard: RefCell::new(Clipboard::system()),
             copied: slint::Timer::default(),
+            catbox_reset: slint::Timer::default(),
             consent: Cell::new(Consent::new(false)),
             choices: RefCell::new(Choices::default()),
             uploading: Cell::new(false),
@@ -745,23 +749,25 @@ impl Session {
 
     fn upload_all(self: &Rc<Self>, images: Vec<ShareImage>) {
         self.uploading.set(true);
-        let count = match images.len() {
+        let total = images.len();
+        let count = match total {
             1 => "1 picture".to_owned(),
             many => format!("{many} pictures"),
         };
         self.log(&format!("Uploading {count} to catbox..."));
-        self.toast("Uploading...");
+        self.catbox_reset.stop();
+        self.catbox_progress(&upload::progress_label(1, total));
         let weak = self.weak.clone();
         thread::spawn(move || {
             let agent = upload::agent();
-            let results: Vec<(&'static str, Result<String, String>)> = images
-                .iter()
-                .map(|image| {
-                    let result =
-                        upload::upload(&agent, &image.path).map_err(|error| format!("{error:#}"));
-                    (image.label, result)
-                })
-                .collect();
+            let mut results = Vec::with_capacity(total);
+            for (index, image) in images.iter().enumerate() {
+                let label = upload::progress_label(index + 1, total);
+                on_ui(&weak, move |app| app.catbox_progress(&label));
+                let result =
+                    upload::upload(&agent, &image.path).map_err(|error| format!("{error:#}"));
+                results.push((image.label, result));
+            }
             on_ui(&weak, move |app| {
                 app.uploading.set(false);
                 app.uploaded_all(&results);
@@ -776,22 +782,52 @@ impl Session {
                 Err(error) => self.log(&format!("Could not upload {label}: {error}")),
             }
         }
-        let summary = upload::links_summary(results);
-        if summary.links.is_empty() {
-            self.toast(&summary.message);
+        let upload::Summary {
+            links,
+            message,
+            label,
+            tone,
+            first_error,
+        } = upload::links_summary(results);
+        if links.is_empty() {
+            self.finish_catbox(&label, tone, &first_error);
+            self.toast(&message);
             return;
         }
-        let message = summary.message;
-        let links = summary.links.replace('\n', " ");
-        self.put_on_clipboard(summary.links, move |app, copied| match copied {
-            Ok(()) => app.toast(&message),
+        let shown = links.replace('\n', " ");
+        self.put_on_clipboard(links, move |app, copied| match copied {
+            Ok(()) => {
+                app.finish_catbox(&label, tone, &first_error);
+                app.toast(&message);
+            }
             Err(error) => {
                 app.log(&format!(
-                    "Uploaded, but the links could not be copied: {error}. Links: {links}"
+                    "Uploaded, but the links could not be copied: {error}. Links: {shown}"
                 ));
+                app.finish_catbox("Links in the log", -1, &error);
                 app.toast("Uploaded: the links are in the log");
             }
         });
+    }
+
+    fn catbox_progress(&self, label: &str) {
+        set_catbox(&self.window.global::<State>(), label, 0, true, "");
+    }
+
+    fn finish_catbox(&self, label: &str, tone: i32, error: &str) {
+        set_catbox(&self.window.global::<State>(), label, tone, false, error);
+        let hold = if tone > 0 {
+            CATBOX_DONE_FOR
+        } else {
+            CATBOX_FAILED_FOR
+        };
+        let weak = self.weak.clone();
+        self.catbox_reset
+            .start(slint::TimerMode::SingleShot, hold, move || {
+                if let Some(window) = weak.upgrade() {
+                    set_catbox(&window.global::<State>(), "", 0, false, "");
+                }
+            });
     }
 
     fn include_in_place(&self, value: bool) {
@@ -1519,6 +1555,13 @@ thread_local! {
     static SESSION: RefCell<Option<Rc<Session>>> = const { RefCell::new(None) };
 }
 
+fn set_catbox(state: &State, label: &str, tone: i32, busy: bool, error: &str) {
+    state.set_catbox_label(label.into());
+    state.set_catbox_tone(tone);
+    state.set_catbox_busy(busy);
+    state.set_catbox_error(error.into());
+}
+
 fn on_ui(weak: &Weak<MainWindow>, action: impl FnOnce(&Rc<Session>) + Send + 'static) {
     let _ = weak.upgrade_in_event_loop(move |_| {
         if let Some(app) = SESSION.with(|slot| slot.borrow().clone()) {
@@ -1805,6 +1848,24 @@ mod tests {
         }
         assert!(state.get_confirm_open() && state.get_cache_confirm_open());
         assert!(state.get_about_open() && state.get_keys_open());
+    }
+
+    #[test]
+    fn a_failed_upload_marks_the_button_with_the_reason_until_it_resets() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        state.set_catbox_busy(true);
+        session.uploaded_all(&[("Badge", Err("cannot reach catbox".to_owned()))]);
+        assert_eq!(state.get_catbox_label(), "Upload failed");
+        assert_eq!(state.get_catbox_tone(), -1);
+        assert!(!state.get_catbox_busy());
+        assert_eq!(state.get_catbox_error(), "Badge: cannot reach catbox");
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(5));
+        assert_eq!(state.get_catbox_label(), "Upload failed");
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+        assert_eq!(state.get_catbox_label(), "");
+        assert_eq!(state.get_catbox_tone(), 0);
+        assert_eq!(state.get_catbox_error(), "");
     }
 
     #[test]

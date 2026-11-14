@@ -545,6 +545,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_catbox_button_shows_the_upload_and_ignores_clicks_while_busy() {
+        let window = images_window(650.0, &["Badge", "Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        let uploads = Rc::new(Cell::new(0));
+        let seen = uploads.clone();
+        state.on_upload_all(move || seen.set(seen.get() + 1));
+        state.set_catbox_busy(true);
+        state.set_catbox_label("Uploading 2 of 3".into());
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        let button = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+        };
+        button("Uploading 2 of 3").mock_single_click(PointerEventButton::Left);
+        assert_eq!(uploads.get(), 0);
+        state.set_catbox_busy(false);
+        state.set_catbox_label("catbox".into());
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+        button("catbox").mock_single_click(PointerEventButton::Left);
+        assert_eq!(uploads.get(), 1);
+    }
+
+    #[test]
+    fn in_one_column_the_catbox_button_takes_the_place_of_the_search() {
+        let window = images_window(650.0, &["Badge"]);
+        let state = window.global::<State>();
+        state.set_images_shown(false);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        let search = ElementHandle::find_by_element_type_name(&window, "SearchField")
+            .next()
+            .unwrap();
+        let search_x = search.absolute_position().x;
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        let catbox = ElementHandle::find_by_element_type_name(&window, "CatboxButton")
+            .next()
+            .unwrap();
+        let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
+            .next()
+            .unwrap();
+        assert!((catbox.absolute_position().x - search_x).abs() < 1.0);
+        let middle =
+            |element: &ElementHandle| element.absolute_position().y + element.size().height / 2.0;
+        assert!((middle(&catbox) - middle(&switch)).abs() < 2.0);
+    }
+
     fn picture(window: &MainWindow, label: &str) -> ElementHandle {
         ElementHandle::find_by_accessible_label(window, &format!("{label} picture"))
             .next()

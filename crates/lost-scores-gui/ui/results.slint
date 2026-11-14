@@ -622,7 +622,7 @@ component CatboxButton inherits VerticalLayout {
         border-radius: 10px;
         background: T.btn;
         border-width: 2px;
-        border-color: ta.has-hover ? T.acc : transparent;
+        border-color: State.catbox-tone > 0 ? T.up : (State.catbox-tone < 0 ? T.down : (ta.has-hover && !State.catbox-busy ? T.acc : transparent));
         animate border-color { duration: 150ms; }
         row := HorizontalLayout {
             x: 13px;
@@ -640,20 +640,22 @@ component CatboxButton inherits VerticalLayout {
                 }
             }
             Text {
-                text: "catbox";
-                color: #ffffff;
+                text: State.catbox-label != "" ? State.catbox-label : "catbox";
+                color: State.catbox-busy ? T.k : #ffffff;
                 font-size: 14px;
                 font-weight: 600;
                 vertical-alignment: center;
             }
         }
         ta := TipArea {
-            tip: "Upload all pictures to catbox.moe for public links";
+            tip: State.catbox-error != "" ? State.catbox-error : "Upload all pictures to catbox.moe for public links";
             anchor: button.absolute-position;
             anchor-height: button.height;
-            mouse-cursor: pointer;
+            mouse-cursor: State.catbox-busy ? MouseCursor.default : MouseCursor.pointer;
             clicked => {
-                State.upload-all();
+                if (!State.catbox-busy) {
+                    State.upload-all();
+                }
             }
         }
     }
@@ -995,10 +997,10 @@ export component ResultsPanel inherits Rectangle {
                 if !root.view-images: SearchButtons {
                     opacity: root.body-fade;
                 }
-                if root.view-images: Rectangle { horizontal-stretch: 1; }
                 if State.has-results && !root.switch-up && root.view-images && State.has-images: CatboxButton {
                     opacity: root.body-fade;
                 }
+                if root.view-images: Rectangle { horizontal-stretch: 1; }
                 if State.has-results && !root.switch-up: ModeSwitch { }
             }
         }
