@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 use jiff::tz::TimeZone;
 use lost_scores_app::online::Online;
-use lost_scores_app::pipeline::Source;
+use lost_scores_app::pipeline::{PotentialResult, Source};
 use lost_scores_app::rows::thousands;
 use lost_scores_app::setup::Settings;
 use lost_scores_app::updates::latest_release;
@@ -20,7 +20,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 use crate::account::{Account, Field, KeysError, Profile, check_fields, keys_error, parse_account};
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
-use crate::newest::load_newest;
+use crate::newest::{load_newest, newest_of_player};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
 use crate::update::update_message;
@@ -685,6 +685,27 @@ impl Session {
         state.set_perf_tone(0);
         state.set_acc_tone(0);
         state.set_stats_ready(true);
+        self.load_card(profile.player_id);
+    }
+
+    fn load_card(&self, player_id: u32) {
+        let Some(dir) = history::scans_dir() else {
+            return;
+        };
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let entries = history::list(&dir);
+            let saved = newest_of_player(&entries, player_id, history::load);
+            on_ui(&weak, move |app| {
+                let Some(potential) = saved.and_then(|scan| scan.potential) else {
+                    return;
+                };
+                let state = app.window.global::<State>();
+                if app.player.get() == Some(player_id) && state.get_perf_potential().is_empty() {
+                    app.show_card(&potential);
+                }
+            });
+        });
     }
 
     fn fetch_profile(self: &Rc<Self>, credentials: Credentials, name: String) {
@@ -897,10 +918,7 @@ impl Session {
         self.sync();
     }
 
-    fn show_results(&self, scan: &history::SavedScan) {
-        let Some(potential) = &scan.potential else {
-            return;
-        };
+    fn show_card(&self, potential: &PotentialResult) {
         let state = self.window.global::<State>();
         state.set_perf_now(thousands(potential.current_pp).into());
         state.set_perf_potential(thousands(potential.potential_pp).into());
@@ -912,6 +930,14 @@ impl Session {
             potential.potential_accuracy,
             2,
         ));
+    }
+
+    fn show_results(&self, scan: &history::SavedScan) {
+        let Some(potential) = &scan.potential else {
+            return;
+        };
+        self.show_card(potential);
+        let state = self.window.global::<State>();
         state.set_rank(
             potential
                 .global_rank

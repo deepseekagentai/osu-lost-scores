@@ -27,14 +27,25 @@ pub fn load_newest(entries: &[ScanEntry], load: impl Fn(&Path) -> Result<SavedSc
     }
 }
 
+pub fn newest_of_player(
+    entries: &[ScanEntry],
+    player_id: u32,
+    load: impl Fn(&Path) -> Result<SavedScan>,
+) -> Option<SavedScan> {
+    entries
+        .iter()
+        .filter_map(|entry| load(&entry.folder).ok())
+        .find(|scan| scan.player_id == player_id)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use anyhow::bail;
     use lost_scores_app::history::{SavedScan, ScanEntry, VERSION};
 
-    use super::load_newest;
+    use super::{load_newest, newest_of_player};
 
     fn entry(name: &str, made_at: i64) -> ScanEntry {
         ScanEntry {
@@ -44,10 +55,14 @@ mod tests {
     }
 
     fn scan(made_at: i64) -> SavedScan {
+        player_scan(made_at, 1)
+    }
+
+    fn player_scan(made_at: i64, player_id: u32) -> SavedScan {
         SavedScan {
             version: VERSION,
             made_at,
-            player_id: 1,
+            player_id,
             player_name: "Player".into(),
             include_all: false,
             check_missing: false,
@@ -78,5 +93,25 @@ mod tests {
         let result = load_newest(&entries, |_| bail!("bad"));
         assert!(result.loaded.is_none());
         assert_eq!(result.failures.len(), 2);
+    }
+
+    #[test]
+    fn the_card_shows_the_newest_scan_of_this_player_on_start() {
+        let entries = [entry("c", 30), entry("b", 20), entry("a", 10)];
+        let load = |folder: &Path| {
+            if folder.ends_with("b") {
+                bail!("cannot read scan.json")
+            }
+            let (made_at, player) = if folder.ends_with("c") {
+                (30, 2)
+            } else {
+                (10, 1)
+            };
+            Ok(player_scan(made_at, player))
+        };
+        let own = newest_of_player(&entries, 1, load).unwrap();
+        assert_eq!((own.made_at, own.player_id), (10, 1));
+        assert_eq!(newest_of_player(&entries, 2, load).unwrap().made_at, 30);
+        assert!(newest_of_player(&entries, 3, load).is_none());
     }
 }
