@@ -1,6 +1,7 @@
 pub mod account;
 pub mod app;
 pub mod avatar;
+pub mod clipboard;
 pub mod layout;
 pub mod log;
 pub mod newest;

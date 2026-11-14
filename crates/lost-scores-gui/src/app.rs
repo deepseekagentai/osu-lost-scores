@@ -19,6 +19,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::account::{Account, Field, KeysError, Profile, check_fields, keys_error, parse_account};
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
+use crate::clipboard::{Clipboard, Request};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
@@ -63,7 +64,7 @@ struct Session {
     position: Cell<usize>,
     entries: RefCell<Vec<history::ScanEntry>>,
     folder: RefCell<Option<PathBuf>>,
-    clipboard: RefCell<Option<arboard::Clipboard>>,
+    clipboard: RefCell<Clipboard>,
     copied: slint::Timer,
     consent: Cell<Consent>,
     choices: RefCell<Choices>,
@@ -119,7 +120,7 @@ impl Session {
             position: Cell::new(0),
             entries: RefCell::new(Vec::new()),
             folder: RefCell::new(None),
-            clipboard: RefCell::new(None),
+            clipboard: RefCell::new(Clipboard::system()),
             copied: slint::Timer::default(),
             consent: Cell::new(Consent::new(false)),
             choices: RefCell::new(Choices::default()),
@@ -612,16 +613,13 @@ impl Session {
 
     fn put_on_clipboard(
         &self,
-        put: impl FnOnce(&mut arboard::Clipboard) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let mut clipboard = self.clipboard.borrow_mut();
-        if clipboard.is_none() {
-            *clipboard = arboard::Clipboard::new().ok();
-        }
-        match clipboard.as_mut() {
-            Some(clipboard) => put(clipboard),
-            None => Err("the clipboard is not available".to_owned()),
-        }
+        request: Request,
+        done: impl FnOnce(&Rc<Session>, Result<(), String>) + Send + 'static,
+    ) {
+        let weak = self.weak.clone();
+        self.clipboard.borrow().send(request, move |result| {
+            on_ui(&weak, move |app| done(app, result));
+        });
     }
 
     fn shared_image(&self, index: usize) -> Option<ShareImage> {
@@ -649,26 +647,9 @@ impl Session {
         let Some(image) = self.shared_image(index) else {
             return;
         };
-        let weak = self.weak.clone();
-        thread::spawn(move || {
-            let decoded = image::open(&image.path).map(|picture| picture.into_rgba8());
-            on_ui(&weak, move |app| match decoded {
-                Ok(picture) => {
-                    let data = arboard::ImageData {
-                        width: picture.width() as usize,
-                        height: picture.height() as usize,
-                        bytes: picture.into_raw().into(),
-                    };
-                    let result = app.put_on_clipboard(|clipboard| {
-                        clipboard.set_image(data).map_err(|error| error.to_string())
-                    });
-                    match result {
-                        Ok(()) => app.toast("Image copied"),
-                        Err(error) => app.copy_failed(&error),
-                    }
-                }
-                Err(error) => app.copy_failed(&error.to_string()),
-            });
+        self.put_on_clipboard(Request::Image(image.path), |app, result| match result {
+            Ok(()) => app.toast("Image copied"),
+            Err(error) => app.copy_failed(&error),
         });
     }
 
@@ -730,23 +711,19 @@ impl Session {
                 return;
             }
         };
-        let copied = self.put_on_clipboard(|clipboard| {
-            clipboard
-                .set_text(link.clone())
-                .map_err(|error| error.to_string())
-        });
-        match copied {
+        let text = link.clone();
+        self.put_on_clipboard(Request::Text(text), move |app, copied| match copied {
             Ok(()) => {
-                self.log(&format!("Link copied: {link}"));
-                self.toast("Link copied");
+                app.log(&format!("Link copied: {link}"));
+                app.toast("Link copied");
             }
             Err(error) => {
-                self.log(&format!(
+                app.log(&format!(
                     "Uploaded, but the link could not be copied: {error}. Link: {link}"
                 ));
-                self.toast("Uploaded: the link is in the log");
+                app.toast("Uploaded: the link is in the log");
             }
-        }
+        });
     }
 
     fn include_in_place(&self, value: bool) {
@@ -876,13 +853,10 @@ impl Session {
 
     fn copy_row(&self, index: usize) {
         let text = self.table.borrow().copy_text(self.tab.get(), index);
-        let result = self.put_on_clipboard(|clipboard| {
-            clipboard.set_text(text).map_err(|error| error.to_string())
+        self.put_on_clipboard(Request::Text(text), |app, result| match result {
+            Ok(()) => app.toast("Copied to clipboard"),
+            Err(error) => app.log(&format!("Could not copy the row: {error}")),
         });
-        match result {
-            Ok(()) => self.toast("Copied to clipboard"),
-            Err(error) => self.log(&format!("Could not copy the row: {error}")),
-        }
     }
 
     fn open_scan_folder(&self) {
