@@ -7,3 +7,8 @@ version = "0.7.27"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
