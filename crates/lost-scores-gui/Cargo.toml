@@ -1,0 +1,33 @@
+[package]
+name = "lost-scores-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lost-scores-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
+jiff = "0.2.43"
+lost-scores-app = { path = "../lost-scores-app" }
+lost-scores-core = { path = "../lost-scores-core" }
+open = "5.4.5"
+osu-api = { path = "../osu-api" }
+rfd = "0.18.0"
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "compat-1-2", "backend-winit-wayland", "backend-winit-x11"] }
+ureq = "3.5.2"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[dev-dependencies]
+i-slint-backend-testing = "1.18"
+tempfile = "3.27.0"

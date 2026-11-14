@@ -1,0 +1,311 @@
+import { T, Tip } from "theme.slint";
+
+export component TipArea inherits TouchArea {
+    in property <string> tip;
+    in property <Point> anchor;
+    in property <length> anchor-height;
+    property <bool> shown;
+
+    changed has-hover => {
+        if (!self.has-hover) {
+            self.shown = false;
+            Tip.text = "";
+        }
+    }
+
+    Timer {
+        running: root.has-hover && !root.shown && root.tip != "";
+        interval: 450ms;
+        triggered => {
+            root.shown = true;
+            Tip.x = root.anchor.x;
+            Tip.y = root.anchor.y + root.anchor-height + 6px;
+            Tip.text = root.tip;
+        }
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: T.btn;
+    opacity: root.enabled ? 1 : 0.45;
+    border-width: 2px;
+    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
+    animate border-color { duration: 150ms; }
+    ta := TipArea {
+        tip: root.tip;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    Image {
+        source: root.icon;
+        width: 17px;
+        height: 17px;
+        image-fit: contain;
+        colorize: root.enabled && ta.has-hover ? #ffffff : T.ibicon;
+    }
+}
+
+export component GhostIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: root.enabled && ta.has-hover ? #ffffff14 : transparent;
+    opacity: root.enabled ? 1 : 0.45;
+    animate background { duration: 150ms; }
+    ta := TipArea {
+        tip: root.tip;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    Image {
+        source: root.icon;
+        width: 18px;
+        height: 18px;
+        image-fit: contain;
+        colorize: root.enabled && ta.has-hover ? #ffffff : T.link;
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in property <image> icon-off;
+    in property <image> icon-on;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    in property <bool> on;
+    callback toggled(bool);
+    height: 40px;
+    border-radius: 8px;
+    background: root.on ? T.tog-on : T.tog;
+    opacity: root.enabled ? 1 : 0.45;
+    border-width: 2px;
+    border-color: root.on ? (root.enabled && ta.has-hover ? #ffffff : T.acc) : (root.enabled && ta.has-hover ? T.acc : T.togb);
+    animate border-color { duration: 150ms; }
+    ta := TipArea {
+        tip: root.tip;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.enabled) {
+                root.toggled(!root.on);
+            }
+        }
+    }
+    Image {
+        source: root.on ? root.icon-on : root.icon-off;
+        width: 22px;
+        height: 22px;
+        image-fit: contain;
+        colorize: root.on ? T.acc : T.togicon;
+    }
+}
+
+export component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 52px;
+    border-radius: 10px;
+    clip: true;
+    opacity: root.enabled ? 1 : 0.45;
+    background: @linear-gradient(180deg, T.p1 0%, T.p2 100%);
+    Image {
+        source: @image-url("../assets/tri_btn.svg");
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+    }
+    Rectangle {
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: root.enabled && ta.has-hover ? #ffffff : T.pb;
+        animate border-color { duration: 150ms; }
+    }
+    Text {
+        text: root.text;
+        color: #ffffff;
+        font-size: 21px;
+        font-weight: 600;
+    }
+    ta := TipArea {
+        tip: root.tip;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component SecondaryButton inherits Rectangle {
+    in property <string> text;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    in property <length> text-size: 18px;
+    callback clicked;
+    height: 44px;
+    border-radius: 10px;
+    background: T.btn;
+    opacity: root.enabled ? 1 : 0.45;
+    border-width: 2px;
+    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
+    animate border-color { duration: 150ms; }
+    Text {
+        text: root.text;
+        color: #ffffff;
+        font-size: root.text-size;
+        font-weight: 600;
+    }
+    ta := TipArea {
+        tip: root.tip;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component HoverBox inherits Rectangle {
+    in property <MouseCursor> cursor: default;
+    in property <bool> enabled: true;
+    border-width: 2px;
+    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
+    animate border-color { duration: 150ms; }
+    ta := TouchArea { mouse-cursor: root.cursor; }
+    @children
+}
+
+export component Stat inherits VerticalLayout {
+    in property <string> label;
+    spacing: 2px;
+    Text {
+        text: root.label;
+        color: T.k;
+        font-size: 11.5px;
+    }
+    @children
+}
+
+export component ScoresBox inherits Rectangle {
+    in property <int> value: 10;
+    in property <bool> enabled: true;
+    in-out property <bool> editing: false;
+    callback commit(string);
+    property <string> draft: "";
+    property <bool> hovered: root.enabled && (box.has-hover || pen.has-hover);
+
+    public function confirm() {
+        root.commit(root.draft);
+        root.editing = false;
+    }
+
+    width: 74px;
+    height: 32px;
+    border-radius: 8px;
+    background: T.num;
+    opacity: root.enabled ? 1 : 0.45;
+    border-width: 2px;
+    border-color: root.editing || root.hovered ? T.acc : transparent;
+    animate border-color { duration: 150ms; }
+    box := TipArea {
+        tip: "Edit number of scores to display";
+        anchor: root.absolute-position;
+        anchor-height: root.height;
+        mouse-cursor: !root.enabled ? MouseCursor.default : (root.editing ? MouseCursor.text : MouseCursor.pointer);
+        clicked => {
+            if (root.enabled && !root.editing) {
+                root.editing = true;
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 9px;
+        spacing: 6px;
+        if !root.editing: Text {
+            text: root.value;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.editing: TextInput {
+            text: root.value;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            input-type: number;
+            single-line: true;
+            init => {
+                root.draft = self.text;
+                self.focus();
+                self.select-all();
+            }
+            edited => {
+                root.draft = self.text;
+            }
+            accepted => {
+                root.confirm();
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                Image {
+                    source: root.editing ? @image-url("../assets/i-check.svg") : @image-url("../assets/i-pen.svg");
+                    width: 13px;
+                    height: 13px;
+                    image-fit: contain;
+                    colorize: root.hovered || root.editing ? #ffffff : T.link;
+                }
+                pen := TouchArea {
+                    mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+                    clicked => {
+                        if (!root.enabled) {
+                        } else if (root.editing) {
+                            root.confirm();
+                        } else {
+                            root.editing = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

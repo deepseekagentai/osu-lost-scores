@@ -1,0 +1,148 @@
+import { T, Tip } from "theme.slint";
+import { State } from "state.slint";
+import { HoverBox, GhostIconButton } from "widgets.slint";
+
+export { State }
+
+export component MainWindow inherits Window {
+    out property <string> product: "osu! Lost Scores Analyzer";
+    title: root.product;
+    icon: @image-url("../assets/lemon.svg");
+    preferred-width: 650px;
+    preferred-height: 800px;
+    min-width: 650px;
+    min-height: 660px;
+    background: T.bg;
+    default-font-family: "Fredoka";
+    default-font-size: 14px;
+
+    Image {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: 440px;
+        image-fit: cover;
+        source: @image-url("../assets/tri_top.svg");
+    }
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: 440px;
+        background: @linear-gradient(180deg, #1d1c2200 10%, T.bg 100%);
+    }
+    HorizontalLayout {
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            min-width: 650px;
+            max-width: 720px;
+            horizontal-stretch: 1;
+            padding-left: 50px;
+            padding-right: 50px;
+            padding-top: 22px;
+            padding-bottom: 16px;
+            spacing: 0px;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                Text {
+                    text: "osu!";
+                    color: T.osu;
+                    font-size: 36px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Lost Scores Analyzer";
+                    color: #ffffff;
+                    font-size: 36px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../assets/lemon.svg");
+                        width: 38px;
+                        height: 38px;
+                    }
+                }
+            }
+            Rectangle { height: 20px; }
+            Text {
+                text: "osu! Game Directory";
+                color: T.lbl;
+                font-size: 17px;
+                font-weight: 600;
+            }
+            Rectangle { height: 8px; }
+            HoverBox {
+                height: 44px;
+                border-radius: 8px;
+                background: T.field;
+                cursor: text;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 6px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if State.osu-dir == "": Text {
+                            text: "Path to your osu! installation folder...";
+                            color: T.logts;
+                            font-size: 14px;
+                            font-italic: true;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            width: parent.width;
+                            text: State.osu-dir;
+                            color: T.ftext;
+                            font-size: 14px;
+                            font-italic: true;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        GhostIconButton {
+                            icon: @image-url("../assets/i-folder.svg");
+                            tip: "Select osu! Game Directory";
+                            clicked => {
+                                State.pick-folder();
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 14px; }
+            Text {
+                text: State.status;
+                color: T.ftext;
+                font-size: 14.5px;
+                font-italic: true;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    if Tip.text != "": Rectangle {
+        x: max(8px, min(Tip.x, root.width - self.width - 8px));
+        y: min(Tip.y, root.height - self.height - 8px);
+        width: label.preferred-width + 20px;
+        height: label.preferred-height + 12px;
+        border-radius: 6px;
+        background: #0c0b10;
+        border-width: 1px;
+        border-color: T.togb;
+        label := Text {
+            text: Tip.text;
+            color: T.ftext;
+            font-size: 12.5px;
+        }
+    }
+}
