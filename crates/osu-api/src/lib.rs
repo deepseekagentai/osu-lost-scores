@@ -28,6 +28,21 @@ pub trait Transport {
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserKey {
+    Username,
+    Id,
+}
+
+impl UserKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            UserKey::Username => "username",
+            UserKey::Id => "id",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("cannot reach the osu! API: {0}")]
@@ -159,7 +174,11 @@ impl<T: Transport> Client<T> {
     }
 
     pub fn user(&mut self, name: &str) -> Result<User, ApiError> {
-        let url = format!("{API_URL}/users/{}/osu?key=username", encode(name));
+        self.user_by(UserKey::Username, name)
+    }
+
+    pub fn user_by(&mut self, key: UserKey, value: &str) -> Result<User, ApiError> {
+        let url = format!("{API_URL}/users/{}/osu?key={}", encode(value), key.as_str());
         self.get_json(&url)?
             .ok_or(ApiError::Status { status: 404, url })
     }
@@ -389,7 +408,7 @@ mod tests {
 
     use super::{
         ApiError, Client, Credentials, Response, Score, ScoreBeatmap, ScoreBeatmapset,
-        ScoreStatistics, Transport, User, UserStatistics, unix_time,
+        ScoreStatistics, Transport, User, UserKey, UserStatistics, unix_time,
     };
 
     #[derive(Default)]
@@ -529,6 +548,20 @@ mod tests {
         assert_eq!(
             api.transport.requests[1],
             "GET https://osu.ppy.sh/api/v2/users/New%20Name/osu?key=username bearer=t1"
+        );
+    }
+
+    #[test]
+    fn an_id_is_looked_up_by_id() {
+        let fake = Fake::default()
+            .answer(200, TOKEN)
+            .answer(200, r#"{"id":12345,"username":"Real Name"}"#);
+        let mut api = client(fake);
+        let user = api.user_by(UserKey::Id, "12345").unwrap();
+        assert_eq!(user.username, "Real Name");
+        assert_eq!(
+            api.transport.requests[1],
+            "GET https://osu.ppy.sh/api/v2/users/12345/osu?key=id bearer=t1"
         );
     }
 

@@ -120,10 +120,14 @@ pub fn songs_dir(osu_dir: &Path, config: &UserConfig) -> Result<PathBuf> {
 }
 
 pub fn load_settings(path: &Path) -> Settings {
-    fs::read(path)
+    let mut settings: Settings = fs::read(path)
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    settings.scores_to_show = settings
+        .scores_to_show
+        .clamp(*SCORES_TO_SHOW.start(), *SCORES_TO_SHOW.end());
+    settings
 }
 
 pub fn save_settings(path: &Path, settings: &Settings) -> Result<()> {
@@ -221,6 +225,16 @@ mod tests {
         Settings, UserConfig, load_settings, parse_scores_to_show, player, read_user_config,
         save_settings, songs_dir,
     };
+
+    #[test]
+    fn out_of_range_scores_to_show_are_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for (stored, expected) in [(0, 1), (5000, 999), (65535, 999), (42, 42)] {
+            fs::write(&path, format!(r#"{{"scores_to_show":{stored}}}"#)).unwrap();
+            assert_eq!(load_settings(&path).scores_to_show, expected);
+        }
+    }
 
     #[test]
     fn user_config_gives_player_and_songs_folder() {

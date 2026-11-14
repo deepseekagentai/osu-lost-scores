@@ -1,7 +1,7 @@
 use crate::pipeline::Api;
 use lost_scores_core::maps::{FetchedMap, MapInfo, MapSource, MapStatus};
 use lost_scores_core::missing::OsuFiles;
-use osu_api::{ApiError, Beatmap, Client, Credentials, Http, Score};
+use osu_api::{ApiError, Beatmap, Client, Credentials, Http, Score, User, UserKey};
 
 pub const USER_AGENT: &str = concat!("lost-scores/", env!("CARGO_PKG_VERSION"));
 
@@ -24,6 +24,12 @@ impl Online {
         }
     }
 
+    pub fn account(&mut self, key: UserKey, value: &str) -> Result<Player, ApiError> {
+        let user = self.client.user_by(key, value)?;
+        let name = user.username.clone();
+        Ok(player_from(&name, user))
+    }
+
     pub fn check(&mut self) -> Result<(), ApiError> {
         self.client.check()
     }
@@ -32,14 +38,7 @@ impl Online {
 impl Api for Online {
     fn player(&mut self, name: &str) -> Result<Player, ApiError> {
         let user = self.client.user(name)?;
-        let statistics = user.statistics;
-        Ok(Player {
-            id: user.id,
-            names: all_names(name, user.username, user.previous_usernames),
-            pp: statistics.as_ref().map_or(0.0, |s| s.pp),
-            accuracy: statistics.as_ref().map_or(0.0, |s| s.hit_accuracy),
-            global_rank: statistics.and_then(|s| s.global_rank),
-        })
+        Ok(player_from(name, user))
     }
 
     fn top(&mut self, user_id: u32) -> Result<Vec<Score>, ApiError> {
@@ -69,6 +68,17 @@ impl OsuFiles for Online {
 
     fn download(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
         self.client.osu_file(beatmap_id)
+    }
+}
+
+fn player_from(name: &str, user: User) -> Player {
+    let statistics = user.statistics;
+    Player {
+        id: user.id,
+        names: all_names(name, user.username, user.previous_usernames),
+        pp: statistics.as_ref().map_or(0.0, |s| s.pp),
+        accuracy: statistics.as_ref().map_or(0.0, |s| s.hit_accuracy),
+        global_rank: statistics.and_then(|s| s.global_rank),
     }
 }
 
