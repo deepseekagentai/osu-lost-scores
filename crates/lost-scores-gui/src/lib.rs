@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod layout;
 pub mod log;
 pub mod newest;
+pub mod previews;
 pub mod scan;
 pub mod scans;
 pub mod share;
@@ -39,7 +40,7 @@ mod tests {
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, VecModel};
 
-    use super::{MainWindow, State, choose_folder};
+    use super::{MainWindow, Preview, State, choose_folder};
 
     fn click_start_scan(window: &MainWindow) {
         ElementHandle::find_by_element_type_name(window, "StartScan")
@@ -180,30 +181,6 @@ mod tests {
         assert!(gap >= 33.0, "gap {gap}");
     }
 
-    fn header_window(width: f32) -> MainWindow {
-        i_slint_backend_testing::init_no_event_loop();
-        let window = MainWindow::new().unwrap();
-        window.show().unwrap();
-        window.window().set_size(LogicalSize::new(width, 800.0));
-        let state = window.global::<State>();
-        state.set_has_results(true);
-        state.set_show_results(true);
-        state.set_has_images(true);
-        let weak = window.as_weak();
-        state.on_open_share(move || {
-            let window = weak.upgrade().unwrap();
-            let state = window.global::<State>();
-            state.set_share_images(ModelRc::new(VecModel::from(vec![SharedString::from(
-                "Lost Scores",
-            )])));
-            state.set_share_open(true);
-        });
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
-        window
-    }
-
-    const SHARE_TIP: &str = "Share the images of this scan";
-
     #[test]
     fn start_scan_sees_the_text_still_being_typed_in_scores_to_show() {
         i_slint_backend_testing::init_no_event_loop();
@@ -234,62 +211,184 @@ mod tests {
         assert_eq!(*seen.borrow(), "3");
     }
 
-    #[test]
-    fn the_narrow_header_has_one_share_button() {
-        let window = header_window(650.0);
-        let count = ElementHandle::find_by_accessible_label(&window, SHARE_TIP).count();
-        assert_eq!(count, 1);
+    fn images_window(width: f32, labels: &[&str]) -> MainWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        make_images_window(width, labels)
+    }
+
+    fn make_images_window(width: f32, labels: &[&str]) -> MainWindow {
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(width, 800.0));
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_has_images(!labels.is_empty());
+        let previews: Vec<Preview> = labels
+            .iter()
+            .map(|label| Preview {
+                label: (*label).into(),
+                image: slint::Image::default(),
+                width: 0.0,
+                height: 0.0,
+                ready: false,
+            })
+            .collect();
+        state.set_previews(ModelRc::new(VecModel::from(previews)));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        window
+    }
+
+    fn count(window: &MainWindow, type_name: &str) -> usize {
+        ElementHandle::find_by_element_type_name(window, type_name).count()
     }
 
     #[test]
-    fn the_share_popup_opens_by_its_button_in_two_columns() {
-        let window = header_window(1600.0);
-        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, SHARE_TIP).collect();
-        assert_eq!(buttons.len(), 1);
-        let button_x = buttons[0].absolute_position().x;
-        buttons[0].mock_single_click(PointerEventButton::Left);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
-        let copy = ElementHandle::find_by_accessible_label(&window, "Copy")
-            .next()
-            .unwrap();
-        let copy_x = copy.absolute_position().x;
-        assert!(
-            copy_x > button_x && copy_x < button_x + 340.0,
-            "button {button_x}, copy {copy_x}"
+    fn the_results_have_an_images_tab_before_the_tables() {
+        let window = images_window(650.0, &["Lost Scores"]);
+        let mut tabs: Vec<_> = ElementHandle::find_by_element_type_name(&window, "Tab")
+            .map(|tab| (tab.absolute_position().x, tab.accessible_label().unwrap()))
+            .collect();
+        tabs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let labels: Vec<_> = tabs.iter().map(|(_, label)| label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Images", "Lost Scores", "Online Top", "Potential Top"]
         );
     }
 
     #[test]
-    fn the_share_popup_has_open_copy_and_catbox_in_each_row() {
-        i_slint_backend_testing::init_no_event_loop();
-        let window = MainWindow::new().unwrap();
-        window.show().unwrap();
-        window.window().set_size(LogicalSize::new(650.0, 800.0));
-        let state = window.global::<State>();
-        state.set_share_images(ModelRc::new(VecModel::from(
-            ["Lost Scores", "Badge"].map(SharedString::from).to_vec(),
-        )));
+    fn the_tab_buttons_ask_for_the_images_and_for_the_tables() {
+        let window = images_window(650.0, &["Lost Scores"]);
         let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let (open, copy, upload) = (calls.clone(), calls.clone(), calls.clone());
+        let (images, tables) = (calls.clone(), calls.clone());
+        let state = window.global::<State>();
+        state.on_show_images(move || images.borrow_mut().push(-1));
+        state.on_set_tab(move |index| tables.borrow_mut().push(index));
+        for label in ["Images", "Lost Scores", "Online Top", "Potential Top"] {
+            ElementHandle::find_by_element_type_name(&window, "Tab")
+                .find(|tab| tab.accessible_label().as_deref() == Some(label))
+                .unwrap()
+                .mock_single_click(PointerEventButton::Left);
+        }
+        assert_eq!(*calls.borrow(), [-1, 0, 1, 2]);
+    }
+
+    #[test]
+    fn the_images_tab_hides_the_search_and_the_column_header_in_one_column() {
+        i_slint_backend_testing::init_no_event_loop();
+        search_and_header_follow_the_tab(650.0);
+    }
+
+    #[test]
+    fn the_images_tab_hides_the_search_and_the_column_header_in_two_columns() {
+        i_slint_backend_testing::init_no_event_loop();
+        search_and_header_follow_the_tab(1600.0);
+    }
+
+    fn search_and_header_follow_the_tab(width: f32) {
+        {
+            let window = make_images_window(width, &["Lost Scores"]);
+            let state = window.global::<State>();
+            assert_eq!(count(&window, "SearchField"), 1, "{width} tables");
+            assert_eq!(count(&window, "SearchButtons"), 1, "{width} tables");
+            assert!(count(&window, "HeaderCell") > 0, "{width} tables");
+            state.set_images_shown(true);
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+            assert_eq!(count(&window, "SearchField"), 0, "{width} images");
+            assert_eq!(count(&window, "SearchButtons"), 0, "{width} images");
+            assert_eq!(count(&window, "HeaderCell"), 0, "{width} images");
+        }
+    }
+
+    #[test]
+    fn each_picture_has_a_title_with_open_and_catbox() {
+        let window = images_window(650.0, &["Lost Scores", "Potential Top", "Badge"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (open, upload) = (calls.clone(), calls.clone());
         state.on_open_image(move |index| open.borrow_mut().push(("open", index)));
-        state.on_copy_image(move |index| copy.borrow_mut().push(("copy", index)));
         state.on_upload_image(move |index| upload.borrow_mut().push(("catbox", index)));
-        state.set_has_results(true);
-        state.set_show_results(true);
-        state.set_has_images(true);
-        state.set_share_open(true);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
 
-        let count = |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
-        assert_eq!(count("Badge"), 1);
-        for label in ["Open", "Copy", "catbox"] {
-            assert_eq!(count(label), 2, "{label}");
+        let labelled =
+            |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
+        for title in ["Lost Scores", "Potential Top", "Badge"] {
+            assert!(labelled(title) >= 1, "{title}");
         }
-        for (label, index) in [("Open", 1), ("Copy", 0), ("catbox", 1)] {
+        assert_eq!(labelled("Open"), 3);
+        assert_eq!(labelled("catbox"), 3);
+        assert_eq!(labelled("Copy"), 0);
+        for (label, index) in [("Open", 2), ("catbox", 0), ("Open", 1)] {
             let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
             buttons[index].mock_single_click(PointerEventButton::Left);
         }
-        assert_eq!(*calls.borrow(), [("open", 1), ("copy", 0), ("catbox", 1)]);
+        assert_eq!(*calls.borrow(), [("open", 2), ("catbox", 0), ("open", 1)]);
+    }
+
+    #[test]
+    fn the_open_folder_button_sits_above_the_pictures() {
+        let window = images_window(650.0, &["Lost Scores"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        let opened = Rc::new(Cell::new(0));
+        let counter = opened.clone();
+        state.on_open_scan_folder(move || counter.set(counter.get() + 1));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        let button = ElementHandle::find_by_accessible_label(&window, "Open folder")
+            .next()
+            .unwrap();
+        let card = ElementHandle::find_by_element_type_name(&window, "PreviewCard")
+            .next()
+            .unwrap();
+        assert!(button.absolute_position().y < card.absolute_position().y);
+        button.mock_single_click(PointerEventButton::Left);
+        assert_eq!(opened.get(), 1);
+    }
+
+    #[test]
+    fn a_scan_without_images_shows_one_muted_line() {
+        let window = images_window(650.0, &[]);
+        window.global::<State>().set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        let line = "This scan has no images. Images are made after every scan from now on.";
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, line).count(),
+            1
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Open").count(),
+            0
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "catbox").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_header_has_no_share_button_in_one_column() {
+        i_slint_backend_testing::init_no_event_loop();
+        no_share_button(650.0);
+    }
+
+    #[test]
+    fn the_header_has_no_share_button_in_two_columns() {
+        i_slint_backend_testing::init_no_event_loop();
+        no_share_button(1600.0);
+    }
+
+    fn no_share_button(width: f32) {
+        {
+            let window = make_images_window(width, &["Lost Scores"]);
+            let share = "Share the images of this scan";
+            assert_eq!(
+                ElementHandle::find_by_accessible_label(&window, share).count(),
+                0
+            );
+            assert_eq!(count(&window, "ShareButton"), 0);
+        }
     }
 
     #[test]
@@ -377,12 +476,7 @@ mod tests {
         state.set_has_results(true);
         state.set_show_results(true);
         state.set_confirm_open(true);
-        state.set_share_open(true);
         settle();
-
-        press(&window, Key::Escape);
-        assert!(!state.get_share_open());
-        assert!(calls.borrow().is_empty());
 
         press(&window, Key::Escape);
         assert_eq!(*calls.borrow(), ["cancel-logout"]);

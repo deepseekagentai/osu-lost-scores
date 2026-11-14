@@ -1,24 +1,17 @@
 use std::panic::{self, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use crate::share::render::panic_message;
 
 pub trait Pasteboard {
-    fn put_image(&mut self, path: &Path) -> Result<(), String>;
     fn put_text(&mut self, text: &str) -> Result<(), String>;
-}
-
-pub enum Request {
-    Image(PathBuf),
-    Text(String),
 }
 
 type Done = Box<dyn FnOnce(Result<(), String>) + Send>;
 
 struct Job {
-    request: Request,
+    text: String,
     done: Done,
 }
 
@@ -39,10 +32,7 @@ impl Clipboard {
                 let result = match board.as_mut() {
                     Some(held) => {
                         let attempt =
-                            panic::catch_unwind(AssertUnwindSafe(|| match &job.request {
-                                Request::Image(path) => held.put_image(path),
-                                Request::Text(text) => held.put_text(text),
-                            }));
+                            panic::catch_unwind(AssertUnwindSafe(|| held.put_text(&job.text)));
                         attempt.unwrap_or_else(|payload| {
                             board = None;
                             Err(format!(
@@ -63,9 +53,9 @@ impl Clipboard {
         Self::spawn(ArboardBoard::open)
     }
 
-    pub fn send(&self, request: Request, done: impl FnOnce(Result<(), String>) + Send + 'static) {
+    pub fn send(&self, text: String, done: impl FnOnce(Result<(), String>) + Send + 'static) {
         let job = Job {
-            request,
+            text,
             done: Box::new(done),
         };
         if let Err(rejected) = self.jobs.send(job) {
@@ -83,18 +73,6 @@ impl ArboardBoard {
 }
 
 impl Pasteboard for ArboardBoard {
-    fn put_image(&mut self, path: &Path) -> Result<(), String> {
-        let picture = image::open(path)
-            .map_err(|error| error.to_string())?
-            .into_rgba8();
-        let data = arboard::ImageData {
-            width: picture.width() as usize,
-            height: picture.height() as usize,
-            bytes: picture.into_raw().into(),
-        };
-        self.0.set_image(data).map_err(|error| error.to_string())
-    }
-
     fn put_text(&mut self, text: &str) -> Result<(), String> {
         self.0
             .set_text(text.to_owned())
@@ -104,12 +82,11 @@ impl Pasteboard for ArboardBoard {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::thread::{self, ThreadId};
 
-    use super::{Clipboard, Pasteboard, Request};
+    use super::{Clipboard, Pasteboard};
 
     #[derive(Default)]
     struct Log {
@@ -121,24 +98,16 @@ mod tests {
     struct Fake(Arc<Mutex<Log>>);
 
     impl Pasteboard for Fake {
-        fn put_image(&mut self, path: &Path) -> Result<(), String> {
-            let mut log = self.0.lock().unwrap();
-            log.puts
-                .push((format!("image {}", path.display()), thread::current().id()));
-            drop(log);
-            if path.ends_with("explodes.png") {
-                panic!("the image decoder blew up");
-            }
-            if path.ends_with("broken.png") {
-                return Err("cannot read the image".to_owned());
-            }
-            Ok(())
-        }
-
         fn put_text(&mut self, text: &str) -> Result<(), String> {
             let mut log = self.0.lock().unwrap();
-            log.puts
-                .push((format!("text {text}"), thread::current().id()));
+            log.puts.push((text.to_owned(), thread::current().id()));
+            drop(log);
+            if text == "explodes" {
+                panic!("the clipboard blew up");
+            }
+            if text == "broken" {
+                return Err("cannot write the text".to_owned());
+            }
             Ok(())
         }
     }
@@ -157,31 +126,24 @@ mod tests {
         })
     }
 
-    fn ask(clipboard: &Clipboard, request: Request) -> Result<(), String> {
+    fn ask(clipboard: &Clipboard, text: &str) -> Result<(), String> {
         let (answer, outcome) = mpsc::channel();
-        clipboard.send(request, move |result| answer.send(result).unwrap());
+        clipboard.send(text.to_owned(), move |result| answer.send(result).unwrap());
         outcome.recv().unwrap()
     }
 
     #[test]
-    fn the_image_path_goes_in_and_the_outcome_comes_back() {
+    fn the_text_goes_in_and_the_outcome_comes_back() {
         let log = Arc::new(Mutex::new(Log::default()));
         let clipboard = board(&log, true);
+        assert_eq!(ask(&clipboard, "link"), Ok(()));
         assert_eq!(
-            ask(&clipboard, Request::Image("/a/lost.png".into())),
-            Ok(())
+            ask(&clipboard, "broken"),
+            Err("cannot write the text".to_owned())
         );
-        assert_eq!(
-            ask(&clipboard, Request::Image("/a/broken.png".into())),
-            Err("cannot read the image".to_owned())
-        );
-        assert_eq!(ask(&clipboard, Request::Text("link".into())), Ok(()));
         let log = log.lock().unwrap();
         let what: Vec<_> = log.puts.iter().map(|(what, _)| what.as_str()).collect();
-        assert_eq!(
-            what,
-            ["image /a/lost.png", "image /a/broken.png", "text link"]
-        );
+        assert_eq!(what, ["link", "broken"]);
     }
 
     #[test]
@@ -189,7 +151,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Log::default()));
         let clipboard = board(&log, true);
         for _ in 0..3 {
-            ask(&clipboard, Request::Text("x".into())).unwrap();
+            ask(&clipboard, "x").unwrap();
         }
         {
             let log = log.lock().unwrap();
@@ -213,16 +175,16 @@ mod tests {
     fn a_panic_in_a_job_is_that_jobs_error_and_the_clipboard_is_reopened() {
         let log = Arc::new(Mutex::new(Log::default()));
         let clipboard = board(&log, true);
-        assert_eq!(ask(&clipboard, Request::Text("first".into())), Ok(()));
-        let failed = ask(&clipboard, Request::Image("/a/explodes.png".into()));
+        assert_eq!(ask(&clipboard, "first"), Ok(()));
+        let failed = ask(&clipboard, "explodes");
         assert_eq!(
             failed,
-            Err("the clipboard stopped: the image decoder blew up".to_owned())
+            Err("the clipboard stopped: the clipboard blew up".to_owned())
         );
-        assert_eq!(ask(&clipboard, Request::Text("next".into())), Ok(()));
+        assert_eq!(ask(&clipboard, "next"), Ok(()));
         let log = log.lock().unwrap();
         assert_eq!(log.opened, 2);
-        assert_eq!(log.puts.last().unwrap().0, "text next");
+        assert_eq!(log.puts.last().unwrap().0, "next");
     }
 
     #[test]
@@ -231,7 +193,7 @@ mod tests {
         let clipboard = board(&log, false);
         for _ in 0..2 {
             assert_eq!(
-                ask(&clipboard, Request::Text("x".into())),
+                ask(&clipboard, "x"),
                 Err("the clipboard is not available".to_owned())
             );
         }

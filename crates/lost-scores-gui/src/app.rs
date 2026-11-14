@@ -20,9 +20,10 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::account::{Account, Field, KeysError, Profile, check_fields, keys_error, parse_account};
 use crate::avatar::{avatar_pixels, fetch, render_avatar};
-use crate::clipboard::{Clipboard, Request};
+use crate::clipboard::Clipboard;
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
+use crate::previews::{Wanted, plan, render_all};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
 use crate::scans::{older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
@@ -31,7 +32,7 @@ use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot, mods_width};
 use crate::worker::{self, Job, Message, Sink};
-use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
+use crate::{APP_ID, LogEntry, MainWindow, Preview, State, choose_folder, show_path};
 
 const AVATAR_LOGICAL: f32 = 120.0;
 const ROW_HEIGHT: f32 = 64.0;
@@ -40,6 +41,7 @@ const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
 const COPIED_FOR: Duration = Duration::from_secs(2);
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(150);
 
 struct Session {
     window: MainWindow,
@@ -73,6 +75,12 @@ struct Session {
     pending_delete: RefCell<Option<Removal>>,
     opens_results: Cell<bool>,
     opener: RefCell<Opener>,
+    images_view: Cell<bool>,
+    preview_room: Cell<f32>,
+    preview_shown: RefCell<Vec<Wanted>>,
+    preview_wanted: RefCell<Vec<Wanted>>,
+    preview_epoch: Cell<u64>,
+    preview_timer: slint::Timer,
 }
 
 type Opener = Arc<dyn Fn(&OsStr) -> std::io::Result<()> + Send + Sync>;
@@ -129,6 +137,12 @@ impl Session {
             pending_delete: RefCell::new(None),
             opens_results: Cell::new(false),
             opener: RefCell::new(Arc::new(|target| open::that(target))),
+            images_view: Cell::new(false),
+            preview_room: Cell::new(0.0),
+            preview_shown: RefCell::new(Vec::new()),
+            preview_wanted: RefCell::new(Vec::new()),
+            preview_epoch: Cell::new(0),
+            preview_timer: slint::Timer::default(),
             window: window.clone_strong(),
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
@@ -166,7 +180,10 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(500),
-        move || watcher.refresh_avatar(),
+        move || {
+            watcher.refresh_avatar();
+            watcher.refresh_previews();
+        },
     );
     window.run()?;
     Ok(())
@@ -323,11 +340,11 @@ impl Session {
         let session = self.clone();
         state.on_cancel_delete(move || session.cancel_delete());
         let session = self.clone();
-        state.on_open_share(move || session.open_share());
+        state.on_show_images(move || session.show_images());
+        let session = self.clone();
+        state.on_preview_room_changed(move |room| session.preview_room_changed(room));
         let session = self.clone();
         state.on_open_image(move |index| session.open_image(index as usize));
-        let session = self.clone();
-        state.on_copy_image(move |index| session.copy_image(index as usize));
         let session = self.clone();
         state.on_upload_image(move |index| session.ask_upload(index as usize));
         let session = self.clone();
@@ -471,7 +488,11 @@ impl Session {
         state.set_scan_date(when(scan.made_at, &zone).into());
         state.set_has_results(true);
         self.refresh_shared();
+        let images = self.images_view.get();
         self.show_tab(self.tab.get());
+        if images {
+            self.show_images();
+        }
     }
 
     fn relist(&self, fallback: usize) {
@@ -592,17 +613,9 @@ impl Session {
             .map(images_in)
             .unwrap_or_default();
         let state = self.window.global::<State>();
-        let labels: Vec<slint::SharedString> =
-            found.iter().map(|image| image.label.into()).collect();
         state.set_has_images(!found.is_empty());
-        state.set_share_images(ModelRc::new(VecModel::from(labels)));
         self.choices.borrow_mut().replace(found);
-    }
-
-    fn open_share(&self) {
-        self.refresh_shared();
-        let state = self.window.global::<State>();
-        state.set_share_open(state.get_has_images());
+        self.refresh_previews();
     }
 
     fn toast(&self, text: &str) {
@@ -620,11 +633,11 @@ impl Session {
 
     fn put_on_clipboard(
         &self,
-        request: Request,
+        text: String,
         done: impl FnOnce(&Rc<Session>, Result<(), String>) + Send + 'static,
     ) {
         let weak = self.weak.clone();
-        self.clipboard.borrow().send(request, move |result| {
+        self.clipboard.borrow().send(text, move |result| {
             on_ui(&weak, move |app| done(app, result));
         });
     }
@@ -634,7 +647,6 @@ impl Session {
     }
 
     fn open_image(&self, index: usize) {
-        self.window.global::<State>().set_share_open(false);
         let Some(image) = self.shared_image(index) else {
             return;
         };
@@ -657,25 +669,8 @@ impl Session {
         self.toast(&format!("Could not open {what}: see the log"));
     }
 
-    fn copy_failed(&self, error: &str) {
-        self.log(&format!("Could not copy the image: {error}"));
-        self.toast("Could not copy the image: see the log");
-    }
-
-    fn copy_image(self: &Rc<Self>, index: usize) {
-        self.window.global::<State>().set_share_open(false);
-        let Some(image) = self.shared_image(index) else {
-            return;
-        };
-        self.put_on_clipboard(Request::Image(image.path), |app, result| match result {
-            Ok(()) => app.toast("Image copied"),
-            Err(error) => app.copy_failed(&error),
-        });
-    }
-
     fn ask_upload(self: &Rc<Self>, index: usize) {
         let state = self.window.global::<State>();
-        state.set_share_open(false);
         if self.uploading.get() {
             self.toast("An upload is already running");
             return;
@@ -732,7 +727,7 @@ impl Session {
             }
         };
         let text = link.clone();
-        self.put_on_clipboard(Request::Text(text), move |app, copied| match copied {
+        self.put_on_clipboard(text, move |app, copied| match copied {
             Ok(()) => {
                 app.log(&format!("Link copied: {link}"));
                 app.toast("Link copied");
@@ -761,7 +756,15 @@ impl Session {
         }
     }
 
+    fn show_images(&self) {
+        self.images_view.set(true);
+        self.window.global::<State>().set_images_shown(true);
+        self.refresh_previews();
+    }
+
     fn show_tab(&self, tab: Tab) {
+        self.images_view.set(false);
+        self.window.global::<State>().set_images_shown(false);
         self.table.borrow_mut().clear_fresh();
         self.show_rows(tab);
         self.jump(0, false);
@@ -873,7 +876,7 @@ impl Session {
 
     fn copy_row(&self, index: usize) {
         let text = self.table.borrow().copy_text(self.tab.get(), index);
-        self.put_on_clipboard(Request::Text(text), |app, result| match result {
+        self.put_on_clipboard(text, |app, result| match result {
             Ok(()) => app.toast("Copied to clipboard"),
             Err(error) => app.log(&format!("Could not copy the row: {error}")),
         });
@@ -896,9 +899,7 @@ impl Session {
     }
 
     fn close_popups(&self) {
-        let state = self.window.global::<State>();
-        state.set_share_open(false);
-        state.set_scans_open(false);
+        self.window.global::<State>().set_scans_open(false);
     }
 
     fn open_keys(&self) {
@@ -1237,6 +1238,9 @@ impl Session {
                     self.register(&done.folder, &done.scan);
                 }
                 self.refresh_shared();
+                if self.window.global::<State>().get_has_images() {
+                    self.show_images();
+                }
                 let (total, ranked) = self.counts.get();
                 let images = self.window.global::<State>().get_has_images();
                 self.scan.borrow_mut().finish(total, ranked, images);
@@ -1255,6 +1259,101 @@ impl Session {
         if self.opens_results.replace(false) && narrow {
             self.window.global::<State>().set_show_results(true);
         }
+    }
+
+    fn preview_room_changed(&self, room: f32) {
+        self.preview_room.set(room);
+        self.refresh_previews();
+    }
+
+    fn refresh_previews(&self) {
+        let wanted = plan(
+            self.choices.borrow().all(),
+            self.preview_room.get(),
+            self.window.window().scale_factor(),
+        );
+        if wanted == *self.preview_wanted.borrow() {
+            return;
+        }
+        self.preview_epoch.set(self.preview_epoch.get() + 1);
+        *self.preview_wanted.borrow_mut() = wanted.clone();
+        if wanted == *self.preview_shown.borrow() {
+            self.preview_timer.stop();
+            return;
+        }
+        if wanted.is_empty() {
+            self.preview_timer.stop();
+            self.previews_ready(Vec::new());
+            return;
+        }
+        self.preview_timer
+            .start(slint::TimerMode::SingleShot, PREVIEW_DEBOUNCE, || {
+                if let Some(app) = SESSION.with(|slot| slot.borrow().clone()) {
+                    app.start_previews();
+                }
+            });
+    }
+
+    fn start_previews(&self) {
+        let wanted = self.preview_wanted.borrow().clone();
+        let epoch = self.preview_epoch.get();
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let made = render_all(&wanted);
+            on_ui(&weak, move |app| app.previews_arrived(epoch, made));
+        });
+    }
+
+    fn previews_arrived(
+        &self,
+        epoch: u64,
+        made: Vec<(Wanted, Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
+    ) {
+        if epoch != self.preview_epoch.get() {
+            return;
+        }
+        for (item, result) in &made {
+            if let Err(error) = result {
+                self.log(&format!(
+                    "Could not show the {} preview: {error:#}",
+                    item.label
+                ));
+            }
+        }
+        self.previews_ready(made);
+    }
+
+    fn previews_ready(
+        &self,
+        made: Vec<(Wanted, Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
+    ) {
+        let scale = self.window.window().scale_factor();
+        let mut shown = Vec::new();
+        let mut items = Vec::new();
+        for (item, result) in made {
+            let preview = match result {
+                Ok(buffer) => Preview {
+                    label: item.label.into(),
+                    width: buffer.width() as f32 / scale,
+                    height: buffer.height() as f32 / scale,
+                    image: slint::Image::from_rgba8(buffer),
+                    ready: true,
+                },
+                Err(_) => Preview {
+                    label: item.label.into(),
+                    image: slint::Image::default(),
+                    width: 0.0,
+                    height: 0.0,
+                    ready: false,
+                },
+            };
+            items.push(preview);
+            shown.push(item);
+        }
+        *self.preview_shown.borrow_mut() = shown;
+        self.window
+            .global::<State>()
+            .set_previews(ModelRc::new(VecModel::from(items)));
     }
 
     fn show_card(&self, potential: &PotentialResult) {
@@ -1347,6 +1446,7 @@ mod tests {
     use super::Session;
     use crate::account::KeysError;
     use crate::share::render::ShareImage;
+    use crate::table::Tab;
     use crate::worker::Message;
     use crate::{MainWindow, State};
 
@@ -1594,10 +1694,8 @@ mod tests {
             |state| state.invoke_open_keys(),
         ];
         for (index, ask) in asks.into_iter().enumerate() {
-            state.set_share_open(true);
             state.set_scans_open(true);
             ask(&state);
-            assert!(!state.get_share_open(), "ask {index}");
             assert!(!state.get_scans_open(), "ask {index}");
         }
         assert!(state.get_confirm_open() && state.get_cache_confirm_open());
@@ -1641,6 +1739,309 @@ mod tests {
             "{}",
             state.get_status()
         );
+    }
+
+    fn let_the_panel_open() {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(300));
+        slint::platform::update_timers_and_animations();
+    }
+
+    fn nudge_the_width(window: &MainWindow, width: f32) {
+        window
+            .window()
+            .set_size(LogicalSize::new(width + 10.0, 800.0));
+        let_the_panel_open();
+        window.window().set_size(LogicalSize::new(width, 800.0));
+        let_the_panel_open();
+    }
+
+    fn picture(path: &Path, width: u32, height: u32) {
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([(x % 251) as u8, (y % 241) as u8, 60, 255])
+        })
+        .save(path)
+        .unwrap();
+    }
+
+    fn scan_folder(root: &Path, with_images: bool) -> PathBuf {
+        let folder = root.join("scan");
+        std::fs::create_dir_all(&folder).unwrap();
+        if with_images {
+            picture(&folder.join("lost_scores.png"), 1960, 1200);
+            picture(&folder.join("potential_top.png"), 1960, 900);
+            picture(&folder.join("summary_badge.png"), 1040, 280);
+        }
+        folder
+    }
+
+    fn open_scan(session: &Session, folder: &Path) {
+        *session.folder.borrow_mut() = Some(folder.to_path_buf());
+        session.refresh_shared();
+    }
+
+    fn make_previews(session: &Session) {
+        let wanted = session.preview_wanted.borrow().clone();
+        let epoch = session.preview_epoch.get();
+        session.previews_arrived(epoch, crate::previews::render_all(&wanted));
+    }
+
+    fn saved_scan() -> lost_scores_app::history::SavedScan {
+        lost_scores_app::history::SavedScan {
+            version: lost_scores_app::history::VERSION,
+            made_at: 1_794_649_471,
+            player_id: 1,
+            player_name: "Player".into(),
+            include_all: false,
+            check_missing: false,
+            lost: Vec::new(),
+            lost_total: 0,
+            lost_ranked: 0,
+            potential: None,
+        }
+    }
+
+    #[test]
+    fn a_scan_started_in_one_column_opens_the_results_on_the_images() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), true));
+        begin(&session);
+        finish(&session);
+        assert!(state.get_show_results());
+        assert!(state.get_images_shown());
+        assert!(session.images_view.get());
+    }
+
+    #[test]
+    fn two_columns_switch_the_right_panel_to_the_images() {
+        let (window, session, root) = session(1600.0);
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), true));
+        begin(&session);
+        finish(&session);
+        assert!(!state.get_show_results());
+        assert!(state.get_images_shown());
+    }
+
+    fn a_scan_without_pictures_stays_on_its_table_tab(width: f32) {
+        let (window, session, root) = session(width);
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), false));
+        begin(&session);
+        finish(&session);
+        assert!(!state.get_images_shown(), "{width}");
+    }
+
+    #[test]
+    fn a_scan_without_pictures_stays_on_its_table_tab_in_one_column() {
+        a_scan_without_pictures_stays_on_its_table_tab(650.0);
+    }
+
+    #[test]
+    fn choosing_another_scan_keeps_the_tab_the_user_is_on() {
+        let (window, session, root) = session(1600.0);
+        let state = window.global::<State>();
+        let folder = scan_folder(root.path(), true);
+        session.show_images();
+        session.show_scan(0, Some(folder.clone()), &saved_scan());
+        assert!(state.get_images_shown());
+        session.show_tab(Tab::Online);
+        session.show_scan(0, Some(folder), &saved_scan());
+        assert!(!state.get_images_shown());
+        assert_eq!(state.get_tab(), Tab::Online.index() as i32);
+    }
+
+    fn drawn_previews(window: &MainWindow, scale: f32) -> Vec<(f32, f32, (u32, u32))> {
+        let state = window.global::<State>();
+        let mut seen = Vec::new();
+        for index in 0..state.get_previews().row_count() {
+            let item = state.get_previews().row_data(index).unwrap();
+            let size = item.image.size();
+            assert!(item.ready);
+            let pixels = (size.width, size.height);
+            assert_eq!(
+                (item.width * scale).round() as u32,
+                pixels.0,
+                "{}",
+                item.label
+            );
+            assert_eq!(
+                (item.height * scale).round() as u32,
+                pixels.1,
+                "{}",
+                item.label
+            );
+            seen.push((item.width, item.height, pixels));
+        }
+        seen
+    }
+
+    #[test]
+    fn each_preview_is_as_many_pixels_as_it_is_drawn_at_in_one_column() {
+        each_preview_is_as_many_pixels_as_it_is_drawn_at(650.0);
+    }
+
+    #[test]
+    fn each_preview_is_as_many_pixels_as_it_is_drawn_at_in_two_columns() {
+        each_preview_is_as_many_pixels_as_it_is_drawn_at(1600.0);
+    }
+
+    fn each_preview_is_as_many_pixels_as_it_is_drawn_at(width: f32) {
+        {
+            let (window, session, root) = session(width);
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                    scale_factor: 1.25,
+                });
+            window.window().set_size(LogicalSize::new(width, 800.0));
+            let state = window.global::<State>();
+            state.set_has_results(true);
+            state.set_show_results(true);
+            state.set_images_shown(true);
+            nudge_the_width(&window, width);
+            let room = session.preview_room.get();
+            let panel = i_slint_backend_testing::ElementHandle::find_by_element_type_name(
+                &window,
+                "ResultsPanel",
+            )
+            .next()
+            .unwrap();
+            assert_eq!(room, panel.size().width - 66.0, "{width}");
+            open_scan(&session, &scan_folder(root.path(), true));
+            make_previews(&session);
+
+            let big = (980.0_f32.min(room) * 1.25).round() as u32;
+            let badge = (520.0_f32.min(room) * 1.25).round() as u32;
+            let seen = drawn_previews(&window, 1.25);
+            assert_eq!(seen.len(), 3, "{width}");
+            assert_eq!(seen[0].2.0, big, "{width} lost");
+            assert_eq!(seen[1].2.0, big, "{width} potential");
+            assert_eq!(seen[2].2.0, badge, "{width} badge");
+            assert_eq!(
+                seen[0].2.1,
+                (1200.0 * f64::from(big) / 1960.0).round() as u32
+            );
+            assert_eq!(
+                seen[2].2.1,
+                (280.0 * f64::from(badge) / 1040.0).round() as u32
+            );
+        }
+    }
+
+    #[test]
+    fn the_images_are_drawn_at_their_own_logical_size() {
+        let (window, session, root) = session(650.0);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                scale_factor: 1.25,
+            });
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_images_shown(true);
+        let_the_panel_open();
+        open_scan(&session, &scan_folder(root.path(), true));
+        make_previews(&session);
+        let_the_panel_open();
+        let expected = drawn_previews(&window, 1.25);
+        let handles = i_slint_backend_testing::ElementHandle::find_by_element_type_name;
+        let tops: Vec<f32> = handles(&window, "PreviewCard")
+            .map(|card| card.absolute_position().y + 40.0)
+            .collect();
+        assert!(!tops.is_empty());
+        let images: Vec<_> = handles(&window, "Image").collect();
+        let mut checked = 0;
+        for (index, top) in tops.iter().enumerate() {
+            let drawn = images
+                .iter()
+                .find(|image| {
+                    (image.absolute_position().y - top).abs() < 0.5 && image.size().width > 100.0
+                })
+                .unwrap();
+            let size = drawn.size();
+            assert_eq!(
+                (size.width, size.height),
+                (expected[index].0, expected[index].1),
+                "picture {index}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 1);
+    }
+
+    #[test]
+    fn a_new_width_asks_for_new_previews_after_a_pause_and_drops_the_old_ones() {
+        let (window, session, root) = session(650.0);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                scale_factor: 1.25,
+            });
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), true));
+        session.preview_room_changed(584.0);
+        let first_epoch = session.preview_epoch.get();
+        let first = crate::previews::render_all(&session.preview_wanted.borrow());
+        assert!(session.preview_timer.running());
+        assert_eq!(state.get_previews().row_count(), 0);
+
+        session.preview_room_changed(500.0);
+        assert!(session.preview_epoch.get() > first_epoch);
+        session.previews_arrived(first_epoch, first);
+        assert_eq!(state.get_previews().row_count(), 0);
+        make_previews(&session);
+        let widths: Vec<_> = drawn_previews(&window, 1.25)
+            .iter()
+            .map(|seen| seen.2.0)
+            .collect();
+        assert_eq!(widths, [625, 625, 625]);
+
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 1.5 });
+        session.refresh_previews();
+        assert!(session.preview_timer.running());
+        make_previews(&session);
+        let widths: Vec<_> = drawn_previews(&window, 1.5)
+            .iter()
+            .map(|seen| seen.2.0)
+            .collect();
+        assert_eq!(widths, [750, 750, 750]);
+    }
+
+    #[test]
+    fn a_picture_that_cannot_be_read_gets_a_notice_and_does_not_stop_the_rest() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        let folder = scan_folder(root.path(), true);
+        std::fs::write(folder.join("potential_top.png"), b"broken").unwrap();
+        open_scan(&session, &folder);
+        session.preview_room_changed(584.0);
+        make_previews(&session);
+        let ready: Vec<_> = (0..state.get_previews().row_count())
+            .map(|index| state.get_previews().row_data(index).unwrap().ready)
+            .collect();
+        assert_eq!(ready, [true, false, true]);
+        let last = session.log.row_data(session.log.row_count() - 1).unwrap();
+        assert!(
+            last.text
+                .contains("Could not show the Potential Top preview")
+        );
+    }
+
+    #[test]
+    fn a_scan_without_pictures_clears_the_previews() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        open_scan(&session, &scan_folder(root.path(), true));
+        session.preview_room_changed(584.0);
+        make_previews(&session);
+        assert_eq!(state.get_previews().row_count(), 3);
+        open_scan(&session, &scan_folder(&root.path().join("other"), false));
+        assert_eq!(state.get_previews().row_count(), 0);
     }
 
     #[test]

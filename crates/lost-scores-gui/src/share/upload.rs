@@ -124,6 +124,10 @@ impl Choices {
         self.shown = shown;
     }
 
+    pub fn all(&self) -> &[ShareImage] {
+        &self.shown
+    }
+
     pub fn get(&self, index: usize) -> Option<ShareImage> {
         self.shown.get(index).cloned()
     }

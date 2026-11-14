@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { T } from "theme.slint";
-import { State, ScoreRow, FootItem } from "state.slint";
+import { State, ScoreRow, FootItem, Preview } from "state.slint";
 import { IconButton, SecondaryButton, TipArea } from "widgets.slint";
 
 component Hit inherits HorizontalLayout {
@@ -384,6 +384,8 @@ component Tab inherits VerticalLayout {
     in property <string> text;
     in property <bool> active;
     callback clicked;
+    accessible-role: tab;
+    accessible-label: root.text;
     spacing: 7px;
     Text {
         text: root.text;
@@ -612,18 +614,98 @@ component OpenFolder inherits VerticalLayout {
     }
 }
 
-component ShareButton inherits VerticalLayout {
-    callback clicked(length);
-    alignment: center;
-    IconButton {
-        width: 42px;
-        height: 42px;
-        icon: @image-url("../assets/i-share.svg");
-        tip: State.has-images ? "Share the images of this scan" : "No images for this scan";
-        enabled: State.has-images;
+component PreviewCard inherits Rectangle {
+    in property <Preview> item;
+    in property <int> index;
+    property <length> span: max(root.item.width, 300px);
+    height: 40px + root.item.height + 18px;
+    Text {
+        x: 0px;
+        y: 0px;
+        height: 32px;
+        text: root.item.label;
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    SecondaryButton {
+        x: root.span - 72px - 6px - self.width;
+        y: 1px;
+        width: 58px;
+        height: 30px;
+        text: "Open";
+        text-size: 13px;
+        tip: "Open the image in your image viewer";
         clicked => {
-            root.clicked(self.absolute-position.x);
+            State.open-image(root.index);
         }
+    }
+    SecondaryButton {
+        x: root.span - self.width;
+        y: 1px;
+        width: 72px;
+        height: 30px;
+        text: "catbox";
+        text-size: 13px;
+        tip: "Upload to catbox.moe for a public link";
+        clicked => {
+            State.upload-image(root.index);
+        }
+    }
+    if root.item.ready: Image {
+        x: 0px;
+        y: 40px;
+        source: root.item.image;
+        width: root.item.width;
+        height: root.item.height;
+        image-fit: fill;
+        image-rendering: pixelated;
+    }
+    if !root.item.ready: Text {
+        x: 0px;
+        y: 40px;
+        text: "The preview could not be made. Open the image to see it.";
+        color: T.k;
+        font-size: 14px;
+        font-italic: true;
+    }
+}
+
+component ImagesView inherits VerticalLayout {
+    spacing: 10px;
+    padding-top: 12px;
+    HorizontalLayout {
+        alignment: start;
+        vertical-stretch: 0;
+        SecondaryButton {
+            width: 130px;
+            height: 36px;
+            text: "Open folder";
+            text-size: 14px;
+            tip: "Open the scan's folder";
+            clicked => {
+                State.open-scan-folder();
+            }
+        }
+    }
+    if !State.has-images: Text {
+        vertical-stretch: 0;
+        text: "This scan has no images. Images are made after every scan from now on.";
+        color: T.k;
+        font-size: 14px;
+        font-italic: true;
+        wrap: word-wrap;
+    }
+    if State.has-images: ListView {
+        vertical-stretch: 1;
+        for item[i] in State.previews: PreviewCard {
+            item: item;
+            index: i;
+        }
+    }
+    if !State.has-images: Rectangle {
+        vertical-stretch: 1;
     }
 }
 
@@ -663,9 +745,11 @@ export component ResultsPanel inherits Rectangle {
     property <int> jump: State.jump-serial;
     init => {
         root.narrow = root.width < 980px;
+        State.preview-room-changed(root.width - 66px);
     }
     changed width => {
         root.narrow = root.width < 980px;
+        State.preview-room-changed(root.width - 66px);
     }
     property <length> view-y: list.content-y;
     property <bool> gliding: false;
@@ -714,15 +798,9 @@ export component ResultsPanel inherits Rectangle {
             }
             if State.has-results: ScanSelector { }
             if State.has-results: OpenFolder { }
-            if State.has-results: ShareButton {
-                clicked(x) => {
-                    State.share-x = x - root.absolute-position.x;
-                    State.open-share();
-                }
-            }
             Rectangle { horizontal-stretch: 1; }
-            SearchField { width: 260px; }
-            SearchButtons { }
+            if !State.images-shown: SearchField { width: 260px; }
+            if !State.images-shown: SearchButtons { }
         }
         if root.narrow: VerticalLayout {
             spacing: 8px;
@@ -736,15 +814,9 @@ export component ResultsPanel inherits Rectangle {
                 }
                 if State.has-results: ScanSelector { }
                 if State.has-results: OpenFolder { }
-                if State.has-results: ShareButton {
-                    clicked(x) => {
-                        State.share-x = x - root.absolute-position.x;
-                        State.open-share();
-                    }
-                }
                 Rectangle { horizontal-stretch: 1; }
             }
-            HorizontalLayout {
+            if !State.images-shown: HorizontalLayout {
                 spacing: 6px;
                 SearchField { horizontal-stretch: 1; }
                 SearchButtons { }
@@ -767,22 +839,29 @@ export component ResultsPanel inherits Rectangle {
                 spacing: 28px;
                 alignment: start;
                 Tab {
+                    text: "Images";
+                    active: State.images-shown;
+                    clicked => {
+                        State.show-images();
+                    }
+                }
+                Tab {
                     text: "Lost Scores";
-                    active: State.tab == 0;
+                    active: !State.images-shown && State.tab == 0;
                     clicked => {
                         State.set-tab(0);
                     }
                 }
                 Tab {
                     text: "Online Top";
-                    active: State.tab == 1;
+                    active: !State.images-shown && State.tab == 1;
                     clicked => {
                         State.set-tab(1);
                     }
                 }
                 Tab {
                     text: "Potential Top";
-                    active: State.tab == 2;
+                    active: !State.images-shown && State.tab == 2;
                     clicked => {
                         State.set-tab(2);
                     }
@@ -793,7 +872,7 @@ export component ResultsPanel inherits Rectangle {
                 background: T.divider;
             }
         }
-        if State.has-results: HorizontalLayout {
+        if State.has-results && !State.images-shown: HorizontalLayout {
             padding-left: 12px;
             padding-right: 16px;
             spacing: 14px;
@@ -835,23 +914,34 @@ export component ResultsPanel inherits Rectangle {
                 place: center;
             }
         }
-        list := ListView {
+        Rectangle {
             vertical-stretch: 1;
-            for entry[i] in State.rows: Rectangle {
-                height: 64px;
-                RowView {
-                    y: 3px;
-                    width: parent.width - 14px;
-                    item: entry;
-                    narrow: root.narrow;
-                    highlighted: i == State.search-index;
-                    copy => {
-                        State.copy-row(i);
-                    }
-                    open-link => {
-                        State.open-beatmap(entry.beatmap-id);
+            list := ListView {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                visible: !State.images-shown;
+                for entry[i] in State.rows: Rectangle {
+                    height: 64px;
+                    RowView {
+                        y: 3px;
+                        width: parent.width - 14px;
+                        item: entry;
+                        narrow: root.narrow;
+                        highlighted: i == State.search-index;
+                        copy => {
+                            State.copy-row(i);
+                        }
+                        open-link => {
+                            State.open-beatmap(entry.beatmap-id);
+                        }
                     }
                 }
+            }
+            if State.has-results && State.images-shown: ImagesView {
+                width: parent.width;
+                height: parent.height;
             }
         }
         if State.has-results: Rectangle {
@@ -980,79 +1070,6 @@ export component ResultsPanel inherits Rectangle {
                     mouse-cursor: pointer;
                     clicked => {
                         State.delete-older-scans();
-                    }
-                }
-            }
-        }
-    }
-    if State.share-open: TouchArea {
-        clicked => {
-            State.share-open = false;
-        }
-    }
-    if State.share-open: Rectangle {
-        width: 340px;
-        x: max(8px, min(State.share-x, root.width - self.width - 8px));
-        y: 24px + 42px + 6px;
-        height: 16px + State.share-images.length * 40px;
-        border-radius: 10px;
-        background: T.card;
-        border-width: 2px;
-        border-color: T.togb;
-        TouchArea { }
-        VerticalLayout {
-            padding: 8px;
-            for label[i] in State.share-images: Rectangle {
-                height: 40px;
-                HorizontalLayout {
-                    spacing: 6px;
-                    padding-left: 10px;
-                    Text {
-                        text: label;
-                        color: #ffffff;
-                        font-size: 14px;
-                        font-weight: 500;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        SecondaryButton {
-                            width: 58px;
-                            height: 30px;
-                            text: "Open";
-                            text-size: 13px;
-                            tip: "Open the image in your image viewer";
-                            clicked => {
-                                State.open-image(i);
-                            }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        SecondaryButton {
-                            width: 58px;
-                            height: 30px;
-                            text: "Copy";
-                            text-size: 13px;
-                            tip: "Copy the image to the clipboard";
-                            clicked => {
-                                State.copy-image(i);
-                            }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        SecondaryButton {
-                            width: 72px;
-                            height: 30px;
-                            text: "catbox";
-                            text-size: 13px;
-                            tip: "Upload to catbox.moe for a public link";
-                            clicked => {
-                                State.upload-image(i);
-                            }
-                        }
                     }
                 }
             }

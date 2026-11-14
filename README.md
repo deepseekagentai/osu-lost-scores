@@ -35,11 +35,12 @@ After every scan the window saves three pictures into the scan's folder:
 
 "Scores to show" sets how many plays the two big pictures list, up to 250. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
 
-The share button in the results view lists the pictures of the shown scan:
+The Images tab, the first one in the results view and the one a scan opens on, shows the three pictures of the shown scan large, one under the other, each with two buttons:
 
-- **Open** shows one in your image viewer;
-- **Copy** puts it on the clipboard, ready to paste into a chat;
+- **Open** shows it in your image viewer;
 - **catbox** uploads it to [catbox.moe](https://catbox.moe) and copies the link.
+
+Open folder above the pictures opens the scan's folder. A scan made before the images existed has none, and the tab says so.
 
 An upload to catbox.moe is anonymous and public: anyone with the link can see the picture, and catbox keeps it until nobody has opened it for two years. It cannot be deleted for free, so the window asks before the first upload, and nothing is uploaded without a click.
 

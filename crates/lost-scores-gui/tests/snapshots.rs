@@ -735,49 +735,97 @@ fn render_walkthrough2_snapshots() {
     draw(&surface, &dir.join("w18-scan-list.png"));
 }
 
-const SHARE_CLICKS: [(f32, f32, f32); 2] = [(650.0, 477.0, 45.0), (1600.0, 1053.0, 45.0)];
+fn synthetic_pictures(folder: PathBuf) {
+    use lost_scores_gui::share::model::ShareOptions;
+    use lost_scores_gui::share::render::{Prepared, render_images, use_offscreen_platform};
 
-fn click(surface: &Rc<MinimalSoftwareWindow>, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    surface.dispatch_event(WindowEvent::PointerMoved { position });
-    surface.dispatch_event(WindowEvent::PointerPressed {
-        position,
-        button: slint::platform::PointerEventButton::Left,
-    });
-    surface.dispatch_event(WindowEvent::PointerReleased {
-        position,
-        button: slint::platform::PointerEventButton::Left,
-    });
+    std::fs::create_dir_all(&folder).unwrap();
+    thread::spawn(move || {
+        use_offscreen_platform().unwrap();
+        let options = ShareOptions {
+            count: 6,
+            include_all: true,
+            show_lost_in_top: false,
+        };
+        let scan = fake_scan(false);
+        let images = render_images(&scan, &options, &Prepared::default(), &TimeZone::UTC).unwrap();
+        for image in images {
+            RgbaImage::from_raw(image.width, image.height, image.rgba)
+                .unwrap()
+                .save(folder.join(image.file))
+                .unwrap();
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+fn preview_from(state: &State<'_>, folder: &std::path::Path, room: f32) {
+    use lost_scores_gui::Preview;
+    use lost_scores_gui::previews::{natural_width, preview_pixels, render_preview};
+
+    let files = [
+        ("Lost Scores", "lost_scores.png"),
+        ("Potential Top", "potential_top.png"),
+        ("Badge", "summary_badge.png"),
+    ];
+    let items: Vec<Preview> = files
+        .iter()
+        .map(|(label, file)| {
+            let path = folder.join(file);
+            let pixels = preview_pixels(natural_width(&path), room, SCALE);
+            let buffer = render_preview(&path, pixels).unwrap();
+            Preview {
+                label: (*label).into(),
+                width: buffer.width() as f32 / SCALE,
+                height: buffer.height() as f32 / SCALE,
+                image: slint::Image::from_rgba8(buffer),
+                ready: true,
+            }
+        })
+        .collect();
+    state.set_previews(ModelRc::new(VecModel::from(items)));
 }
 
 #[test]
 #[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
-fn render_share_snapshots() {
+fn render_images_tab_snapshots() {
     let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
     std::fs::create_dir_all(&dir).unwrap();
+    let scratch = PathBuf::from(
+        std::env::var("LOST_SCORES_SCRATCH")
+            .unwrap_or_else(|_| "/dev/shm/osu-lsa_it_pictures".into()),
+    );
+    synthetic_pictures(scratch.clone());
     let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
     let window = MainWindow::new().unwrap();
+    let state = window.global::<State>();
+    let weak = window.as_weak();
+    let pictures = scratch.clone();
+    state.on_preview_room_changed(move |room| {
+        if let Some(window) = weak.upgrade() {
+            preview_from(&window.global::<State>(), &pictures, room);
+        }
+    });
     window.show().unwrap();
     window
         .window()
         .dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: SCALE,
         });
-    let state = window.global::<State>();
     state.set_osu_dir("/home/player/games/osu!".into());
     connect_sample(&state);
+    state.set_status("Scan finished: 9 lost plays, 6 on ranked maps \u{b7} images ready".into());
     let scan = mods_scan();
     let results = Results::new(&scan);
     state.set_mods_width(lost_scores_gui::view::mods_width(
         results.table.borrow().rows(Tab::Lost),
     ));
     results.present(&state, &scan, Tab::Lost);
-    state.set_show_results(true);
     let labels = [
         "14 November 2026 \u{b7} 09:32",
         "13 November 2026 \u{b7} 21:05",
-        "12 November 2026 \u{b7} 18:40",
     ];
     state.set_scans(ModelRc::new(VecModel::from(
         labels.map(slint::SharedString::from).to_vec(),
@@ -785,49 +833,26 @@ fn render_share_snapshots() {
     state.set_scan_selected(0);
     state.set_scan_date(labels[0].into());
     state.set_has_images(true);
-    let images: Vec<slint::SharedString> = ["Lost Scores", "Potential Top", "Badge"]
-        .map(slint::SharedString::from)
-        .to_vec();
-    state.set_share_images(ModelRc::new(VecModel::from(images)));
-    let weak = window.as_weak();
-    state.on_open_share(move || {
-        weak.upgrade()
-            .unwrap()
-            .global::<State>()
-            .set_share_open(true);
-    });
 
-    for (width, x, y) in SHARE_CLICKS {
-        let height = 800.0;
-        draw_sized(
-            &surface,
-            (width, height),
-            &dir.join(format!("s{width}-header.png")),
-        );
-        click(&surface, x, y);
-        draw_sized(
-            &surface,
-            (width, height),
-            &dir.join(format!("s{width}-share-popup.png")),
-        );
-        state.set_share_open(false);
-    }
+    draw(&surface, &dir.join("status-images-ready.png"));
 
-    state.set_scans_open(false);
-    state.set_has_results(true);
     state.set_show_results(true);
-    draw_sized(&surface, LOGICAL, &dir.join("s650-settle.png"));
-    state.set_scans_open(true);
-    surface.dispatch_event(WindowEvent::PointerMoved {
-        position: slint::LogicalPosition::new(200.0, 191.0),
-    });
-    draw_sized(&surface, LOGICAL, &dir.join("s650-scan-list.png"));
-    std::fs::remove_file(dir.join("s650-settle.png")).unwrap();
+    draw_sized(&surface, LOGICAL, &dir.join("header-no-share-650.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("header-no-share-1600.png"));
 
-    state.set_scans_open(false);
-    state.set_copied_text("Link copied".into());
-    state.set_copied(true);
-    draw_sized(&surface, LOGICAL, &dir.join("s650-toast.png"));
+    state.set_show_results(true);
+    state.set_images_shown(true);
+    draw_sized(&surface, LOGICAL, &dir.join("images-tab-650-overlay.png"));
+    draw_sized(
+        &surface,
+        TWO_COLUMNS,
+        &dir.join("images-tab-1600-columns.png"),
+    );
+
+    state.set_has_images(false);
+    state.set_previews(ModelRc::new(VecModel::from(Vec::new())));
+    state.set_show_results(true);
+    draw_sized(&surface, LOGICAL, &dir.join("images-tab-none-650.png"));
 }
 
 #[test]
