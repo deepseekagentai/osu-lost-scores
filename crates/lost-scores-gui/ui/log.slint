@@ -1,6 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox } from "widgets.slint";
+import { HoverBox, TipArea } from "widgets.slint";
 
 component LogLine inherits HorizontalLayout {
     in property <string> time;
@@ -20,6 +20,25 @@ component LogLine inherits HorizontalLayout {
         font-italic: true;
         wrap: word-wrap;
         horizontal-stretch: 1;
+    }
+}
+
+export component LastLogLine inherits Rectangle {
+    property <string> message: State.log.length > 0 ? State.log[State.log.length - 1].text : "";
+    height: line.preferred-height;
+    line := Text {
+        width: parent.width;
+        text: root.message;
+        color: T.logt;
+        font-size: 12.5px;
+        font-italic: true;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+    TipArea {
+        tip: root.message;
+        anchor: root.absolute-position;
+        anchor-height: root.height;
     }
 }
 

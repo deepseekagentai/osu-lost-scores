@@ -40,7 +40,7 @@ mod tests {
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, VecModel};
 
-    use super::{FootItem, MainWindow, Preview, State, choose_folder};
+    use super::{FootItem, LogEntry, MainWindow, Preview, State, choose_folder};
 
     fn click_start_scan(window: &MainWindow) {
         ElementHandle::find_by_element_type_name(window, "StartScan")
@@ -71,6 +71,35 @@ mod tests {
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
         click_start_scan(&window);
         assert_eq!(started.get(), 1);
+    }
+
+    #[test]
+    fn a_low_window_shows_the_last_log_line_under_the_status() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 700.0));
+        let entry = |text: &str| LogEntry {
+            time: "21:40".into(),
+            text: text.into(),
+        };
+        window
+            .global::<State>()
+            .set_log(ModelRc::new(VecModel::from(vec![
+                entry("14982 replays read in 2.7 s"),
+                entry("Error: could not reach the osu! API: timeout"),
+            ])));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+        let shown = |text: &str| {
+            ElementHandle::find_by_accessible_label(&window, text)
+                .next()
+                .is_some()
+        };
+        assert!(shown("Error: could not reach the osu! API: timeout"));
+        assert!(!shown("14982 replays read in 2.7 s"));
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+        assert!(shown("14982 replays read in 2.7 s"));
     }
 
     #[test]
