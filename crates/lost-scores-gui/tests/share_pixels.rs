@@ -7,6 +7,7 @@ use lost_scores_app::pipeline::PotentialResult;
 use lost_scores_app::rows::{Hits, LostRow, PotentialRow};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
+use lost_scores_gui::share::art::backdrop_wide;
 use lost_scores_gui::share::model::{ShareOptions, ShareRow, lost_rows, potential_rows};
 use lost_scores_gui::share::rasters::{STRIP_HEIGHT, STRIP_WIDTH, rounded_square};
 use lost_scores_gui::share::render::{
@@ -30,6 +31,7 @@ const MOD_LISTS: [&str; 6] = ["NFEZTD", "HDHRSD", "DTNCHT", "FLSOPF", "", "HDDT"
 const CLOCK_COLOR: [u8; 3] = [0x9c, 0x97, 0xa8];
 const TREND_COLOR: [u8; 3] = [0xff, 0x66, 0x66];
 const PP_BLOCK: [u8; 3] = [0x1d, 0x1c, 0x22];
+const BACKDROP_BAND: u32 = 32;
 const STRIP_BANDS: [(u32, u32); 2] = [(0, 12), (104, 116)];
 
 struct Template {
@@ -351,6 +353,7 @@ fn every_prepared_image_appears_pixel_for_pixel() {
         template("lemon 36", &asset("lemon-36.png"), None, |_, _| true),
         1,
     ));
+    wanted.push((wide_backdrop(find(LOST_FILE)), 1));
     check(find(LOST_FILE), wanted, &mut failures);
 
     let mut wanted = row_templates(&potential, &prepared, false);
@@ -362,9 +365,17 @@ fn every_prepared_image_appears_pixel_for_pixel() {
         template("lemon 36", &asset("lemon-36.png"), None, |_, _| true),
         1,
     ));
+    wanted.push((wide_backdrop(find(POTENTIAL_FILE)), 1));
     check(find(POTENTIAL_FILE), wanted, &mut failures);
 
+    let badge_backdrop = template(
+        "badge backdrop",
+        &asset("backdrop-badge.png"),
+        None,
+        |_, y| y < BACKDROP_BAND,
+    );
     let wanted = vec![
+        (badge_backdrop, 1),
         (
             template("badge avatar", &buffer_image(&badge), None, |_, _| true),
             1,
@@ -381,6 +392,15 @@ fn every_prepared_image_appears_pixel_for_pixel() {
         "not drawn pixel for pixel:\n{}",
         failures.join("\n")
     );
+}
+
+fn wide_backdrop(image: &Rendered) -> Template {
+    template(
+        "wide backdrop",
+        &buffer_image(&backdrop_wide(image.height)),
+        None,
+        |_, y| y < BACKDROP_BAND,
+    )
 }
 
 fn encoded(image: &RgbaImage) -> Vec<u8> {
