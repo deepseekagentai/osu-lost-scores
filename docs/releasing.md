@@ -2,7 +2,7 @@
 
 1. Set the version in `[workspace.package]` of `Cargo.toml`, run `cargo build` so that `Cargo.lock` follows, and write `docs/releases/<version>.md`.
 2. Commit, push, and wait for a green CI on Linux and Windows.
-3. Optional test build: run the Release workflow by hand (Actions, Release, "Run workflow", or `gh workflow run release.yml`). It builds the files as artifacts named `<version>-test-<commit>` and publishes nothing.
+3. Optional test build: run the Release workflow by hand on main (Actions, Release, "Run workflow", or `gh workflow run release.yml`). It builds the same files with `<version>-test-<commit>` in their names, as the artifacts Linux, Windows and macOS of the run, and creates no release. Run by hand on a tag, it behaves like the tag push.
 4. Push the tag `v<version>`. The Release workflow checks that the tag matches `Cargo.toml`, builds the files and creates a draft release with them, `SHA256SUMS` and the notes file.
 5. Check the files of the draft (below), then publish the draft by hand.
 
@@ -41,7 +41,7 @@ On a real Windows 10 or 11 machine with osu!stable, with the exe downloaded from
 ### Paths and settings
 - [ ] osu! is found automatically in `%LOCALAPPDATA%\osu!` and can be picked in a custom folder.
 - [ ] A user folder with non-Latin letters (for example `C:\Users\Пользователь`) and a path with spaces.
-- [ ] The keys and settings land in `%APPDATA%\lost-scores`, the maps and covers in `%LOCALAPPDATA%\lost-scores`; Log out removes the keys.
+- [ ] The keys, the settings, the scans and `maps.json` land in `%APPDATA%\lost-scores`, the downloaded `.osu` files, covers and avatars in `%LOCALAPPDATA%\lost-scores`; Log out removes the keys.
 - [ ] The exe started from another folder, and a newer exe started in place of the old one, find the same settings and scans.
 
 ### Scan and pictures
