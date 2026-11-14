@@ -23,6 +23,10 @@ impl Timings {
         self.steps.push((step, took));
     }
 
+    pub fn count(&self, step: &str) -> usize {
+        self.steps.iter().filter(|(name, _)| *name == step).count()
+    }
+
     pub fn time<T>(&mut self, step: &'static str, run: impl FnOnce() -> T) -> T {
         let started = Instant::now();
         let result = run();

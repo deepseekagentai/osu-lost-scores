@@ -127,3 +127,42 @@ fn an_empty_osu_folder_lists_no_lost_plays() {
     assert!(log.contains("0 replays read"));
     assert!(log.contains("total"));
 }
+
+fn check_missing_offline(home: &Path) -> String {
+    let osu = osu_folder(home);
+    let output = lost_scores(
+        home,
+        &[
+            "--offline",
+            "--check-missing",
+            "--osu-dir",
+            osu.to_str().unwrap(),
+            "--player",
+            "p",
+        ],
+    );
+    assert!(output.status.success());
+    text(&output.stderr)
+}
+
+#[test]
+fn check_offline_with_saved_keys_says_to_drop_offline_not_to_log_in() {
+    let home = tempfile::tempdir().unwrap();
+    save_keys(home.path());
+    let log = check_missing_offline(home.path());
+    assert!(
+        log.contains("needs the osu! API: run without --offline"),
+        "{log}"
+    );
+    assert!(!log.contains("login"), "{log}");
+}
+
+#[test]
+fn check_offline_without_keys_says_to_log_in() {
+    let home = tempfile::tempdir().unwrap();
+    let log = check_missing_offline(home.path());
+    assert!(
+        log.contains("needs the osu! API: run `lost-scores login` first"),
+        "{log}"
+    );
+}

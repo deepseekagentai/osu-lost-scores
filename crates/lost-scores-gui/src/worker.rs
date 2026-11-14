@@ -9,8 +9,8 @@ use lost_scores_app::cache;
 use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    self, Api, Event, Lost, PotentialResult, Source, Step, load_catalog, lost, potential, read,
-    refresh_statuses,
+    self, Api, Event, Lost, PotentialResult, Source, Step, find, load_catalog, lost, potential,
+    read, refresh_statuses,
 };
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
@@ -133,15 +133,9 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         &mut events,
     )?;
     proceed!();
-    let found = lost(&read.scan, &catalog, &mut timings);
-    let result = potential(
-        api,
-        &player,
-        &read.scan,
-        &catalog,
-        &mut timings,
-        &mut events,
-    )?;
+    let scores = find(&read.scan, &catalog, &mut timings);
+    let found = lost(&scores, &catalog);
+    let result = potential(api, &player, &scores, &catalog, &mut timings, &mut events)?;
     proceed!();
     sink.send(Message::Saving);
     let scan = saved(job, &player, found, result);
@@ -222,8 +216,9 @@ fn refresh(
     if changed == 0 {
         return None;
     }
-    let found = lost(scan, catalog, timings);
-    let result = match potential(api, player, scan, catalog, timings, events) {
+    let scores = find(scan, catalog, timings);
+    let found = lost(&scores, catalog);
+    let result = match potential(api, player, &scores, catalog, timings, events) {
         Ok(result) => result,
         Err(error) => {
             events(Event::Log(format!(

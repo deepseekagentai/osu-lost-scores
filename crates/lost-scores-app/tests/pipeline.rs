@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use common::{Replay, isolate_environment, write};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    Api, Event, Source, Step, load_catalog, lost, potential, read, refresh_statuses,
+    Api, Event, Source, Step, find, load_catalog, lost, potential, read, refresh_statuses,
 };
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
@@ -318,14 +318,15 @@ fn potential_merges_the_fake_online_top() {
         &mut |_| {},
     )
     .unwrap();
-    let found = lost(&read.scan, &catalog, &mut timings);
+    let scores = find(&read.scan, &catalog, &mut timings);
+    let found = lost(&scores, &catalog);
     assert_eq!((found.total, found.ranked, found.rows.len()), (1, 1, 1));
     let mut events = Vec::new();
     let player = read.player.unwrap();
     let result = potential(
         &mut fake,
         &player,
-        &read.scan,
+        &scores,
         &catalog,
         &mut timings,
         &mut collect(&mut events),
@@ -342,6 +343,7 @@ fn potential_merges_the_fake_online_top() {
     assert!(result.potential_pp > 0.0);
     assert_eq!(result.global_rank, Some(1));
     assert!(fake.calls.contains(&"top 7".to_owned()));
+    assert_eq!(timings.count("lost scores"), 1);
 }
 
 #[test]
@@ -498,4 +500,26 @@ fn check_leaves_the_catalog_file_alone_when_nothing_changed() {
     );
     assert!(!fake.calls.iter().any(|call| call.starts_with("lookup")));
     assert_eq!(fs::read_to_string(&maps).unwrap(), original);
+}
+
+#[test]
+fn check_without_the_api_gives_a_message_the_window_can_show_too() {
+    let dir = osu_folder();
+    let mut source = source(dir, None);
+    source.check_missing = true;
+    let mut events = Vec::new();
+    read(
+        &source,
+        None,
+        "add your own API keys",
+        &mut Timings::new(),
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    let line = log_lines(&events)
+        .into_iter()
+        .find(|line| line.contains("needs the osu! API"))
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert!(!line.contains("--"), "{line}");
+    assert!(line.contains("add your own API keys"), "{line}");
 }

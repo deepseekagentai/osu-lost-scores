@@ -4,6 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::{self, MapCatalog, MapSource, Wanted};
 use lost_scores_core::missing::{OsuFiles, fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
@@ -182,7 +183,7 @@ pub fn read(
                 checking = started.elapsed();
             }
             None => events(Event::Log(format!(
-                "--check-missing needs the osu! API: {api_hint}; continuing without it"
+                "Checking maps missing from Songs needs the osu! API: {api_hint}; continuing without it"
             ))),
         }
     }
@@ -367,25 +368,27 @@ pub fn refresh_statuses(
     Ok(changed)
 }
 
-pub fn lost(scan: &Scan, catalog: &MapCatalog, timings: &mut Timings) -> Lost {
-    let found = timings.time("lost scores", || find_lost::find(&scan.replays, catalog));
+pub fn find<'a>(scan: &'a Scan, catalog: &MapCatalog, timings: &mut Timings) -> Vec<LostScore<'a>> {
+    timings.time("lost scores", || find_lost::find(&scan.replays, catalog))
+}
+
+pub fn lost(found: &[LostScore<'_>], catalog: &MapCatalog) -> Lost {
     Lost {
         total: found.len(),
         ranked: found.iter().filter(|l| l.status.gives_pp()).count(),
-        rows: lost_rows(&found, catalog),
+        rows: lost_rows(found, catalog),
     }
 }
 
 pub fn potential(
     api: &mut dyn Api,
     player: &Player,
-    scan: &Scan,
+    found: &[LostScore<'_>],
     catalog: &MapCatalog,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<PotentialResult> {
-    let found = timings.time("lost scores", || find_lost::find(&scan.replays, catalog));
-    let lost = potential::lost_plays(&found, catalog);
+    let lost = potential::lost_plays(found, catalog);
     let scores: Vec<Score> = timings
         .time("online top", || api.top(player.id))?
         .into_iter()
@@ -412,7 +415,7 @@ pub fn potential(
         potential_accuracy: result.accuracy,
         global_rank: player.global_rank,
         lost_in_top: result.lost_in_top,
-        rows: potential_rows(&result, &scores, &found, &lost),
+        rows: potential_rows(&result, &scores, found, &lost),
         online: online_rows(&scores),
     })
 }

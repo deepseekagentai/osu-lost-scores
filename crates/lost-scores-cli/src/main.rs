@@ -305,7 +305,8 @@ fn show_lost(
             events,
         )?;
     }
-    let found = pipeline::lost(&read.scan, &catalog, timings);
+    let scores = pipeline::find(&read.scan, &catalog, timings);
+    let found = pipeline::lost(&scores, &catalog);
     let show_all = view.all || catalog.is_empty();
     let mut rows = found.rows;
     rows.retain(|row| show_all || row.status.gives_pp());
@@ -377,7 +378,8 @@ fn show_potential(
         timings,
         events,
     )?;
-    let result = pipeline::potential(&mut api, &player, &read.scan, &catalog, timings, events)?;
+    let scores = pipeline::find(&read.scan, &catalog, timings);
+    let result = pipeline::potential(&mut api, &player, &scores, &catalog, timings, events)?;
     if json {
         write_json(
             io::stdout().lock(),
