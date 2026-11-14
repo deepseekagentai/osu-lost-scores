@@ -33,16 +33,26 @@ for size in 16 24 32 48 64 128 256 512; do
     cp "$ICONS/lemon-$size.png" "$target/$APP_ID.png"
 done
 
+case "$binary" in
+    *[\"\`\$\\%]*)
+        echo "warning: the launcher cannot hold the path $binary; it will start lost-scores-gui from PATH" >&2
+        binary=""
+        ;;
+esac
+
 desktop="$DATA/applications/$APP_ID.desktop"
-cp "$HERE/$APP_ID.desktop" "$desktop"
 if [ -n "$binary" ]; then
-    sed -i "s|^Exec=.*|Exec=$binary|" "$desktop"
+    EXEC_LINE="Exec=\"$binary\"" \
+        awk '/^Exec=/ { print ENVIRON["EXEC_LINE"]; next } { print }' "$HERE/$APP_ID.desktop" > "$desktop.new"
+    mv -f "$desktop.new" "$desktop"
+else
+    cp "$HERE/$APP_ID.desktop" "$desktop"
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DATA/applications" || true
 fi
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+if [ -f "$DATA/icons/hicolor/icon-theme.cache" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t "$DATA/icons/hicolor" || true
 fi
 
