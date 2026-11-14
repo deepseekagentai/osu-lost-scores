@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lost_scores_app::history::{self, ScanEntry};
 
@@ -36,6 +36,23 @@ pub fn older_prompt(count: usize, bytes: u64) -> String {
 
 pub fn older_done(count: usize) -> String {
     format!("Moved {} to the trash", older_scans(count))
+}
+
+pub fn move_to_trash(folders: &[PathBuf]) -> Result<(), trash::Error> {
+    trash_context().delete_all(folders)
+}
+
+#[cfg(target_os = "macos")]
+fn trash_context() -> trash::TrashContext {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos};
+    let mut context = trash::TrashContext::default();
+    context.set_delete_method(DeleteMethod::NsFileManager);
+    context
+}
+
+#[cfg(not(target_os = "macos"))]
+fn trash_context() -> trash::TrashContext {
+    trash::TrashContext::default()
 }
 
 pub fn trash_message(error: &trash::Error) -> String {
@@ -99,6 +116,16 @@ mod tests {
     use lost_scores_app::history::{self, ScanEntry};
 
     use super::{older_done, older_prompt, reread, shown_after_delete, size_text, trash_message};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_macos_the_trash_does_not_ask_finder() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        assert!(matches!(
+            super::trash_context().delete_method(),
+            DeleteMethod::NsFileManager
+        ));
+    }
 
     #[test]
     fn sizes_read_in_megabytes() {

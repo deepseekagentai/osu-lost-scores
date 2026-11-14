@@ -25,7 +25,7 @@ use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
-use crate::scans::{older_done, older_prompt, reread, trash_message};
+use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
@@ -596,7 +596,7 @@ impl Session {
         let weak = self.weak.clone();
         thread::spawn(move || {
             let result = history::remove(&dir, &removal.folders, |folders| {
-                trash::delete_all(folders).map_err(|error| anyhow::anyhow!(trash_message(&error)))
+                move_to_trash(folders).map_err(|error| anyhow::anyhow!(trash_message(&error)))
             });
             on_ui(&weak, move |app| {
                 match result {
