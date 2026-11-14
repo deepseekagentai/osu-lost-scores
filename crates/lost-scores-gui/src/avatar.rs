@@ -36,7 +36,7 @@ pub fn render_avatar(bytes: &[u8], pixels: u32) -> Result<SharedPixelBuffer<Rgba
     ))
 }
 
-fn round_corners(image: &mut image::RgbaImage, radius: f32) {
+pub(crate) fn round_corners(image: &mut image::RgbaImage, radius: f32) {
     let size = image.width() as f32;
     for (x, y, pixel) in image.enumerate_pixels_mut() {
         let dx = (x as f32 + 0.5 - radius)

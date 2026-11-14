@@ -5,6 +5,7 @@ pub mod layout;
 pub mod log;
 pub mod newest;
 pub mod scan;
+pub mod share;
 pub mod table;
 pub mod update;
 pub mod view;
