@@ -6,7 +6,7 @@ use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 use slint::{Color, Model, ModelNotify, ModelRc, ModelTracker, VecModel};
 
-use crate::table::{Detail, Item, Tab, Table};
+use crate::table::{Detail, Item, Tab, Table, mod_acronyms};
 use crate::{FootItem, ModPill, ScoreRow};
 
 const MOD_FALLBACK: u32 = 0x9aa0aa;
@@ -32,20 +32,6 @@ pub fn mod_color(acronym: &str) -> u32 {
         "TD" => 0xffcc22,
         _ => MOD_FALLBACK,
     }
-}
-
-pub fn mod_acronyms(mods: &str) -> Vec<&str> {
-    let mut list = Vec::new();
-    let mut rest = mods;
-    while !rest.is_empty() {
-        let end = rest
-            .char_indices()
-            .nth(2)
-            .map_or(rest.len(), |(index, _)| index);
-        list.push(&rest[..end]);
-        rest = &rest[end..];
-    }
-    list
 }
 
 pub struct Chip {
@@ -79,6 +65,21 @@ pub fn weighted_text(weight: f64, weighted: f64) -> String {
 
 pub fn lost_text(pp: f64, kept: f64) -> String {
     format!("-{:.1}pp", (pp - kept).max(0.0))
+}
+
+pub const MOD_PILL_WIDTH: f32 = 26.0;
+pub const MOD_PILL_GAP: f32 = 3.0;
+
+pub fn mods_width(items: &[Item]) -> f32 {
+    let longest = items
+        .iter()
+        .map(|item| mod_acronyms(&item.mods).len())
+        .max()
+        .unwrap_or(0);
+    if longest == 0 {
+        return 0.0;
+    }
+    longest as f32 * MOD_PILL_WIDTH + (longest - 1) as f32 * MOD_PILL_GAP
 }
 
 fn color(rgb: u32) -> Color {
@@ -139,6 +140,7 @@ pub fn row(item: &Item) -> ScoreRow {
         sub_red: sub_red.into(),
         kept_tip: kept_tip.into(),
         lost,
+        fresh: item.fresh,
         status: chip.as_ref().map_or("", |chip| chip.text).into(),
         status_color: color(chip.as_ref().map_or(0, |chip| chip.background)),
         status_text: color(chip.as_ref().map_or(0, |chip| chip.ink)),
@@ -149,8 +151,9 @@ pub fn foot(table: &Table, tab: Tab) -> ModelRc<FootItem> {
     let items: Vec<FootItem> = table
         .footer(tab)
         .into_iter()
-        .map(|(label, value)| FootItem {
-            positive: value.starts_with('+'),
+        .zip(table.footer_tones(tab))
+        .map(|((label, value), tone)| FootItem {
+            tone,
             label: label.into(),
             value: value.into(),
         })
@@ -213,7 +216,7 @@ mod tests {
     use slint::Model;
 
     use super::{
-        beatmap_link, lost_text, mod_acronyms, mod_color, rank_style, row, status_chip,
+        beatmap_link, lost_text, mod_acronyms, mod_color, mods_width, rank_style, row, status_chip,
         weighted_text,
     };
     use crate::table::{Tab, Table};
@@ -321,5 +324,65 @@ mod tests {
         assert_eq!(shown.link, "b/5");
         assert_eq!(shown.mods.row_count(), 2);
         assert_eq!((shown.c100, shown.c50, shown.miss), (12, 3, 1));
+    }
+
+    #[test]
+    fn mods_column_fits_the_longest_list() {
+        let with = |mods: &str| {
+            let mut row = lost_row();
+            row.mods = mods.into();
+            row
+        };
+        let scan = |rows| SavedScan {
+            version: VERSION,
+            made_at: 0,
+            player_id: 1,
+            player_name: "Player".into(),
+            include_all: true,
+            check_missing: false,
+            lost: rows,
+            lost_total: 0,
+            lost_ranked: 0,
+            potential: None,
+        };
+        let table = Table::in_zone(
+            &scan(vec![with(""), with("HD"), with("HDHRDTFL")]),
+            &TimeZone::UTC,
+        );
+        assert_eq!(mods_width(table.rows(Tab::Lost)), 4.0 * 26.0 + 3.0 * 3.0);
+        let table = Table::in_zone(&scan(vec![with(""), with("DT")]), &TimeZone::UTC);
+        assert_eq!(mods_width(table.rows(Tab::Lost)), 26.0);
+        let table = Table::in_zone(&scan(vec![with("")]), &TimeZone::UTC);
+        assert_eq!(mods_width(table.rows(Tab::Lost)), 0.0);
+        assert_eq!(mods_width(&[]), 0.0);
+    }
+
+    fn lost_row() -> LostRow {
+        LostRow {
+            pp: 1.0,
+            kept_pp: 0.0,
+            score: 1,
+            kept_score: 0,
+            mods: String::new(),
+            unix_time: 0,
+            played: String::new(),
+            status: MapStatus::Ranked,
+            beatmap_md5: String::new(),
+            beatmap_id: None,
+            artist: "A".into(),
+            title: "T".into(),
+            version: "V".into(),
+            file: "a.osr".into(),
+            creator: "C".into(),
+            hits: Hits {
+                n300: 1,
+                n100: 0,
+                n50: 0,
+                misses: 0,
+            },
+            accuracy: 100.0,
+            grade: Grade::A,
+            max_combo: 1,
+        }
     }
 }

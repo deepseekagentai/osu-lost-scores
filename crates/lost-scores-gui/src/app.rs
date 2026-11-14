@@ -22,13 +22,14 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::load_newest;
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
-use crate::table::{Column, Tab, Table, when, wrap};
+use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
 use crate::update::update_message;
-use crate::view::{RowsModel, foot};
+use crate::view::{RowsModel, foot, mods_width};
 use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, State, choose_folder, show_path};
 
 const AVATAR_LOGICAL: f32 = 120.0;
+const ROW_HEIGHT: f32 = 64.0;
 const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
 const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
@@ -227,8 +228,7 @@ impl Session {
         state.on_set_include_all(move |value| {
             session.window.global::<State>().set_include_all(value);
             session.change_settings(|settings| settings.include_all = value);
-            session.table.borrow_mut().set_include_all(value);
-            session.show_tab(session.tab.get());
+            session.include_in_place(value);
         });
         let session = self.clone();
         state.on_set_check_missing(move |value| {
@@ -423,15 +423,36 @@ impl Session {
         self.show_tab(self.tab.get());
     }
 
+    fn include_in_place(&self, value: bool) {
+        let tab = self.tab.get();
+        let top = (-self.window.global::<State>().get_scroll_y()).max(0.0);
+        let first = (top / ROW_HEIGHT) as usize;
+        let offset = top - first as f32 * ROW_HEIGHT;
+        let before = self.table.borrow().rows(tab).to_vec();
+        self.table.borrow_mut().set_include_all(value);
+        self.show_rows(tab);
+        let anchor = anchor_index(&before, self.table.borrow().rows(tab), first);
+        match anchor {
+            Some(index) => self.jump_to(-(index as f32 * ROW_HEIGHT + offset), false),
+            None => self.jump(0, false),
+        }
+    }
+
     fn show_tab(&self, tab: Tab) {
+        self.table.borrow_mut().clear_fresh();
+        self.show_rows(tab);
+        self.jump(0, false);
+    }
+
+    fn show_rows(&self, tab: Tab) {
         self.tab.set(tab);
         let state = self.window.global::<State>();
         state.set_tab(tab.index() as i32);
         state.set_foot(foot(&self.table.borrow(), tab));
         self.rows.show(tab);
         self.show_sorting();
+        state.set_mods_width(mods_width(self.table.borrow().rows(tab)));
         self.reset_search();
-        self.jump(0);
     }
 
     fn reset_search(&self) {
@@ -470,14 +491,19 @@ impl Session {
                 self.position.set(position);
                 self.show_match(true);
             }
-            None if self.matches.borrow().is_empty() => self.jump(0),
+            None if self.matches.borrow().is_empty() => self.jump(0, false),
             None => self.show_match(true),
         }
     }
 
-    fn jump(&self, row: i32) {
+    fn jump(&self, row: i32, animated: bool) {
+        self.jump_to(-(row as f32 * ROW_HEIGHT), animated);
+    }
+
+    fn jump_to(&self, y: f32, animated: bool) {
         let state = self.window.global::<State>();
-        state.set_jump_to(row);
+        state.set_jump_y(y);
+        state.set_jump_animated(animated);
         state.set_jump_serial(state.get_jump_serial() + 1);
     }
 
@@ -515,7 +541,7 @@ impl Session {
             Some(&row) => {
                 state.set_search_index(row as i32);
                 if jump {
-                    self.jump(row as i32);
+                    self.jump(row as i32, true);
                 }
             }
             None => state.set_search_index(-1),
@@ -656,6 +682,8 @@ impl Session {
         state.set_rank(profile.texts.rank.clone().into());
         state.set_perf_potential("".into());
         state.set_acc_potential("".into());
+        state.set_perf_tone(0);
+        state.set_acc_tone(0);
         state.set_stats_ready(true);
     }
 
@@ -878,6 +906,12 @@ impl Session {
         state.set_perf_potential(thousands(potential.potential_pp).into());
         state.set_acc_now(format!("{:.2}%", potential.current_accuracy).into());
         state.set_acc_potential(format!("{:.2}%", potential.potential_accuracy).into());
+        state.set_perf_tone(tone(potential.current_pp, potential.potential_pp, 0));
+        state.set_acc_tone(tone(
+            potential.current_accuracy,
+            potential.potential_accuracy,
+            2,
+        ));
         state.set_rank(
             potential
                 .global_rank

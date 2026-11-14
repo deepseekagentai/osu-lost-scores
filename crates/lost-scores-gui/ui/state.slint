@@ -31,6 +31,7 @@ export struct ScoreRow {
     sub-red: string,
     kept-tip: string,
     lost: bool,
+    fresh: bool,
     status: string,
     status-color: color,
     status-text: color,
@@ -39,7 +40,7 @@ export struct ScoreRow {
 export struct FootItem {
     label: string,
     value: string,
-    positive: bool,
+    tone: int,
 }
 
 export global State {
@@ -58,6 +59,8 @@ export global State {
     in-out property <string> perf-potential;
     in-out property <string> acc-now;
     in-out property <string> acc-potential;
+    in-out property <int> perf-tone;
+    in-out property <int> acc-tone;
     in-out property <string> rank;
 
 
@@ -97,7 +100,11 @@ export global State {
     in-out property <string> search-text;
     in-out property <string> search-label;
     in-out property <int> search-index: -1;
-    in-out property <int> jump-to;
+    in-out property <length> jump-y;
+    in-out property <bool> jump-animated;
+    in-out property <length> scroll-y;
+    in-out property <length> mods-width;
+    out property <length> mods-col: max(self.mods-width, 48px);
     in-out property <int> jump-serial;
     in-out property <bool> copied;
 

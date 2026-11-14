@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -104,9 +105,45 @@ pub struct Item {
     pub status: Option<MapStatus>,
     pub beatmap_id: Option<u32>,
     pub detail: Detail,
+    pub fresh: bool,
     artist_key: String,
     title_key: String,
+    version_key: String,
+    mod_key: (usize, Vec<(u8, String)>),
     haystack: String,
+}
+
+const MOD_ORDER: [&str; 12] = [
+    "NF", "EZ", "TD", "HD", "HR", "SD", "DT", "HT", "NC", "FL", "SO", "PF",
+];
+
+pub fn mod_acronyms(mods: &str) -> Vec<&str> {
+    let mut list = Vec::new();
+    let mut rest = mods;
+    while !rest.is_empty() {
+        let end = rest
+            .char_indices()
+            .nth(2)
+            .map_or(rest.len(), |(index, _)| index);
+        list.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    list
+}
+
+fn mod_key(mods: &str) -> (usize, Vec<(u8, String)>) {
+    let mut keys: Vec<(u8, String)> = mod_acronyms(mods)
+        .into_iter()
+        .map(|acronym| {
+            let rank = MOD_ORDER
+                .iter()
+                .position(|known| *known == acronym)
+                .map_or(u8::MAX, |position| position as u8);
+            (rank, acronym.to_owned())
+        })
+        .collect();
+    keys.sort();
+    (keys.len(), keys)
 }
 
 impl Item {
@@ -150,26 +187,27 @@ impl Item {
             status,
             beatmap_id,
             detail,
+            fresh: false,
             artist_key: artist.to_lowercase(),
             title_key: title.to_lowercase(),
+            version_key: version.to_lowercase(),
+            mod_key: mod_key(mods),
             haystack,
         }
     }
 
-    pub fn mod_count(&self) -> usize {
-        self.mods.len() / 2
-    }
-
-    fn compare(&self, other: &Item, column: Column) -> Ordering {
-        match column {
+    fn compare(&self, other: &Item, column: Column, descending: bool) -> Ordering {
+        let order = match column {
             Column::Beatmap => self
-                .artist_key
-                .cmp(&other.artist_key)
-                .then_with(|| self.title_key.cmp(&other.title_key)),
-            Column::Mods => self
-                .mod_count()
-                .cmp(&other.mod_count())
-                .then_with(|| self.mods.cmp(&other.mods)),
+                .title_key
+                .cmp(&other.title_key)
+                .then_with(|| self.artist_key.cmp(&other.artist_key))
+                .then_with(|| self.version_key.cmp(&other.version_key)),
+            Column::Mods => {
+                let groups = self.mod_key.cmp(&other.mod_key);
+                let groups = if descending { groups.reverse() } else { groups };
+                return groups.then_with(|| other.pp.total_cmp(&self.pp));
+            }
             Column::Hits => self
                 .hits
                 .misses
@@ -179,7 +217,8 @@ impl Item {
             Column::Score => self.score.cmp(&other.score),
             Column::Accuracy => self.accuracy.total_cmp(&other.accuracy),
             Column::Pp => self.pp.total_cmp(&other.pp),
-        }
+        };
+        if descending { order.reverse() } else { order }
     }
 }
 
@@ -187,6 +226,7 @@ impl Item {
 struct TabRows {
     items: Vec<Item>,
     footer: Vec<(String, String)>,
+    tones: Vec<i32>,
     sort: Option<(Column, bool)>,
 }
 
@@ -240,6 +280,36 @@ pub fn when_short(unix: i64, zone: &TimeZone) -> String {
     )
 }
 
+type RowKey<'a> = (i64, Option<u32>, u64, &'a str);
+
+fn row_key(item: &Item) -> RowKey<'_> {
+    (item.unix_time, item.beatmap_id, item.score, &item.title)
+}
+
+pub fn anchor_index(before: &[Item], after: &[Item], first_visible: usize) -> Option<usize> {
+    let positions: HashMap<RowKey, usize> = after
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (row_key(item), index))
+        .collect();
+    let start = first_visible.min(before.len());
+    before[start..]
+        .iter()
+        .chain(before[..start].iter().rev())
+        .find_map(|item| positions.get(&row_key(item)).copied())
+}
+
+pub fn tone(now: f64, potential: f64, decimals: i32) -> i32 {
+    let scale = 10f64.powi(decimals);
+    let now = (now * scale).round();
+    let potential = (potential * scale).round();
+    match potential.total_cmp(&now) {
+        Ordering::Greater => 1,
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+    }
+}
+
 pub fn wrap(current: usize, total: usize, step: i32) -> usize {
     if total == 0 {
         return 0;
@@ -277,17 +347,25 @@ impl Table {
     }
 
     fn rebuild_lost(&mut self) {
-        let items: Vec<Item> = self
+        let mut items: Vec<Item> = self
             .lost_pool
             .iter()
             .filter(|item| self.include_all || item.status.is_some_and(MapStatus::gives_pp))
             .cloned()
             .collect();
+        let previous = &self.tabs[Tab::Lost.index()].items;
+        if !previous.is_empty() {
+            let known: HashSet<RowKey> = previous.iter().map(row_key).collect();
+            for item in &mut items {
+                item.fresh = !known.contains(&row_key(item));
+            }
+        }
         let footer = lost_footer(&items);
         let sort = self.tabs[Tab::Lost.index()].sort;
         self.tabs[Tab::Lost.index()] = TabRows {
             items,
             footer,
+            tones: Vec::new(),
             sort: None,
         };
         let (column, descending) = sort.unwrap_or((Column::Pp, true));
@@ -302,7 +380,17 @@ impl Table {
         self.tabs[tab.index()].sort.unwrap_or((Column::Pp, true))
     }
 
+    pub fn clear_fresh(&mut self) {
+        for item in &mut self.tabs[Tab::Lost.index()].items {
+            item.fresh = false;
+        }
+        for item in &mut self.lost_pool {
+            item.fresh = false;
+        }
+    }
+
     pub fn sort(&mut self, tab: Tab, column: Column) {
+        self.clear_fresh();
         let descending = match self.tabs[tab.index()].sort {
             Some((current, descending)) if current == column => !descending,
             _ => column.first_click_descending(),
@@ -312,10 +400,7 @@ impl Table {
 
     fn apply(&mut self, tab: Tab, column: Column, descending: bool) {
         let rows = &mut self.tabs[tab.index()];
-        rows.items.sort_by(|a, b| {
-            let order = a.compare(b, column);
-            if descending { order.reverse() } else { order }
-        });
+        rows.items.sort_by(|a, b| a.compare(b, column, descending));
         rows.sort = Some((column, descending));
     }
 
@@ -355,6 +440,13 @@ impl Table {
 
     pub fn footer(&self, tab: Tab) -> Vec<(String, String)> {
         self.tabs[tab.index()].footer.clone()
+    }
+
+    pub fn footer_tones(&self, tab: Tab) -> Vec<i32> {
+        let rows = &self.tabs[tab.index()];
+        let mut tones = rows.tones.clone();
+        tones.resize(rows.footer.len(), 0);
+        tones
     }
 }
 
@@ -460,6 +552,7 @@ fn online_tab(scan: &SavedScan, zone: &TimeZone) -> TabRows {
     TabRows {
         items,
         footer,
+        tones: Vec::new(),
         sort: None,
     }
 }
@@ -510,9 +603,17 @@ fn potential_tab(zone: &TimeZone, potential: &PotentialResult) -> TabRows {
         ),
         pair("Lost plays in the top", potential.lost_in_top.to_string()),
     ];
+    let tones = vec![
+        0,
+        0,
+        tone(0.0, gain, 2),
+        tone(potential.current_accuracy, potential.potential_accuracy, 2),
+        0,
+    ];
     TabRows {
         items,
         footer,
+        tones,
         sort: None,
     }
 }
@@ -528,7 +629,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{Column, Tab, Table, when_short, wrap};
+    use super::{Column, Tab, Table, anchor_index, tone, when_short, wrap};
 
     const SEPTEMBER_2024: i64 = 1_725_406_740;
 
@@ -599,8 +700,16 @@ mod tests {
         assert_eq!(table.sorting(Tab::Lost), (Column::Pp, true));
     }
 
+    fn order(table: &Table) -> Vec<String> {
+        table
+            .rows(Tab::Lost)
+            .iter()
+            .map(|item| format!("{}/{}/{}", item.title, item.artist, item.version))
+            .collect()
+    }
+
     #[test]
-    fn a_second_click_reverses_the_order() {
+    fn a_second_click_reverses() {
         let mut table = table(vec![
             lost(100.0, 90.0, "A", "x", ""),
             lost(300.0, 90.0, "B", "y", ""),
@@ -610,6 +719,19 @@ mod tests {
         assert_eq!(pps(&table), [100.0, 200.0, 300.0]);
         table.sort(Tab::Lost, Column::Pp);
         assert_eq!(pps(&table), [300.0, 200.0, 100.0]);
+        table.sort(Tab::Lost, Column::Beatmap);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Beatmap, false));
+        assert_eq!(order(&table), ["x/A/Insane", "y/B/Insane", "z/C/Insane"]);
+        table.sort(Tab::Lost, Column::Beatmap);
+        assert_eq!(order(&table), ["z/C/Insane", "y/B/Insane", "x/A/Insane"]);
+        table.sort(Tab::Lost, Column::Hits);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Hits, false));
+        table.sort(Tab::Lost, Column::Mods);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Mods, false));
+        table.sort(Tab::Lost, Column::Score);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Score, true));
+        table.sort(Tab::Lost, Column::Accuracy);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Accuracy, true));
     }
 
     #[test]
@@ -620,54 +742,101 @@ mod tests {
             lost(200.0, 90.0, "Other", "third", ""),
         ]);
         table.sort(Tab::Lost, Column::Beatmap);
-        let order: Vec<&str> = table
-            .rows(Tab::Lost)
-            .iter()
-            .map(|item| item.artist.as_str())
-            .collect();
-        assert_eq!(order, ["Other", "Same", "Same"]);
+        assert_eq!(
+            order(&table),
+            [
+                "first/Same/Insane",
+                "second/Same/Insane",
+                "third/Other/Insane"
+            ]
+        );
         table.sort(Tab::Lost, Column::Accuracy);
-        let titles: Vec<&str> = table
-            .rows(Tab::Lost)
-            .iter()
-            .map(|item| item.title.as_str())
-            .collect();
-        assert_eq!(titles, ["third", "first", "second"]);
+        assert_eq!(
+            order(&table),
+            [
+                "first/Same/Insane",
+                "second/Same/Insane",
+                "third/Other/Insane"
+            ]
+        );
     }
 
     #[test]
-    fn mods_sort_by_count() {
+    fn beatmap_sorts_by_title() {
+        let mut hard = lost(1.0, 0.0, "A", "alpha", "");
+        hard.version = "Hard".into();
+        let mut easy = lost(2.0, 0.0, "A", "alpha", "");
+        easy.version = "Easy".into();
         let mut table = table(vec![
-            lost(1.0, 0.0, "A", "a", "HDDT"),
-            lost(2.0, 0.0, "A", "b", ""),
-            lost(3.0, 0.0, "A", "c", "HD"),
-            lost(4.0, 0.0, "A", "d", "DT"),
+            lost(3.0, 0.0, "Z", "beta", ""),
+            lost(4.0, 0.0, "Y", "Alpha", ""),
+            hard,
+            lost(5.0, 0.0, "B", "alpha", ""),
+            easy,
+        ]);
+        table.sort(Tab::Lost, Column::Beatmap);
+        assert_eq!(
+            order(&table),
+            [
+                "alpha/A/Easy",
+                "alpha/A/Hard",
+                "alpha/B/Insane",
+                "Alpha/Y/Insane",
+                "beta/Z/Insane"
+            ]
+        );
+    }
+
+    #[test]
+    fn mods_group_identical_combinations_nm_first() {
+        let mut table = table(vec![
+            lost(100.0, 0.0, "A", "a", "HDDT"),
+            lost(10.0, 0.0, "A", "b", "HD"),
+            lost(300.0, 0.0, "A", "c", "DTHD"),
+            lost(50.0, 0.0, "A", "d", ""),
+            lost(200.0, 0.0, "A", "e", "DT"),
+            lost(20.0, 0.0, "A", "f", "HR"),
+            lost(70.0, 0.0, "A", "g", ""),
+            lost(5.0, 0.0, "A", "h", "NFEZ"),
         ]);
         table.sort(Tab::Lost, Column::Mods);
-        let mods: Vec<&str> = table
-            .rows(Tab::Lost)
-            .iter()
-            .map(|item| item.mods.as_str())
-            .collect();
-        assert_eq!(mods, ["", "DT", "HD", "HDDT"]);
+        assert_eq!(table.sorting(Tab::Lost), (Column::Mods, false));
+        assert_eq!(
+            pps(&table),
+            [70.0, 50.0, 10.0, 20.0, 200.0, 5.0, 300.0, 100.0]
+        );
+        table.sort(Tab::Lost, Column::Mods);
+        assert_eq!(
+            pps(&table),
+            [300.0, 100.0, 5.0, 200.0, 20.0, 10.0, 70.0, 50.0]
+        );
     }
 
     #[test]
-    fn hits_sort_by_misses_then_fifties_then_hundreds() {
-        let mut few = lost(1.0, 0.0, "A", "few", "");
-        few.hits.misses = 1;
-        let mut many = lost(2.0, 0.0, "A", "many", "");
-        many.hits.misses = 3;
-        let mut clean = lost(3.0, 0.0, "A", "clean", "");
-        clean.hits.misses = 0;
-        let mut table = table(vec![many, clean, few]);
+    fn hits_sort_by_misses_then_50s_then_100s() {
+        let mut rows = Vec::new();
+        for (name, misses, n50, n100) in [
+            ("m1", 1, 0, 0),
+            ("clean", 0, 0, 0),
+            ("f2", 0, 2, 0),
+            ("f1h9", 0, 1, 9),
+            ("f1h3", 0, 1, 3),
+            ("m3", 3, 0, 0),
+        ] {
+            let mut row = lost(1.0, 0.0, "A", name, "");
+            row.hits.misses = misses;
+            row.hits.n50 = n50;
+            row.hits.n100 = n100;
+            rows.push(row);
+        }
+        let mut table = table(rows);
         table.sort(Tab::Lost, Column::Hits);
         let titles: Vec<&str> = table
             .rows(Tab::Lost)
             .iter()
             .map(|item| item.title.as_str())
             .collect();
-        assert_eq!(titles, ["clean", "few", "many"]);
+        assert_eq!(titles, ["clean", "f1h3", "f1h9", "f2", "m1", "m3"]);
     }
 
     #[test]
@@ -778,10 +947,10 @@ mod tests {
         assert_eq!(titles(&table), ["ranked", "approved"]);
         table.sort(Tab::Lost, Column::Beatmap);
         table.set_include_all(true);
-        assert_eq!(titles(&table), ["ranked", "loved", "approved", "grave"]);
+        assert_eq!(titles(&table), ["approved", "grave", "loved", "ranked"]);
         assert_eq!(table.sorting(Tab::Lost), (Column::Beatmap, false));
         table.set_include_all(false);
-        assert_eq!(titles(&table), ["ranked", "approved"]);
+        assert_eq!(titles(&table), ["approved", "ranked"]);
     }
 
     #[test]
@@ -860,6 +1029,59 @@ mod tests {
         );
         assert_eq!(table.rows(Tab::Potential).len(), 2);
         assert_eq!(table.rows(Tab::Online).len(), 1);
+        assert_eq!(table.footer_tones(Tab::Potential), [0, 0, 1, -1, 0]);
+        assert_eq!(table.footer_tones(Tab::Lost), [0, 0, 0]);
+    }
+
+    #[test]
+    fn include_keeps_the_first_visible_row_in_place() {
+        let mut rows = Vec::new();
+        for (pp, title, status) in [
+            (500.0, "A", MapStatus::Ranked),
+            (400.0, "B", MapStatus::Loved),
+            (300.0, "C", MapStatus::Ranked),
+            (200.0, "D", MapStatus::Loved),
+            (100.0, "E", MapStatus::Ranked),
+        ] {
+            let mut row = lost(pp, 0.0, "X", title, "");
+            row.status = status;
+            row.unix_time += pp as i64;
+            rows.push(row);
+        }
+        let mut table = table(rows);
+        let all = table.rows(Tab::Lost).to_vec();
+        table.set_include_all(false);
+        let ranked = table.rows(Tab::Lost).to_vec();
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(anchor_index(&all, &ranked, 0), Some(0));
+        assert_eq!(anchor_index(&all, &ranked, 1), Some(1));
+        assert_eq!(anchor_index(&all, &ranked, 2), Some(1));
+        assert_eq!(anchor_index(&all, &ranked, 3), Some(2));
+        assert_eq!(anchor_index(&ranked, &all, 1), Some(2));
+        assert_eq!(anchor_index(&ranked, &all, 2), Some(4));
+        let tail = vec![all[1].clone(), all[3].clone()];
+        assert_eq!(anchor_index(&tail, &ranked, 0), None);
+        assert_eq!(anchor_index(&all, &ranked, 9), Some(2));
+        assert_eq!(anchor_index(&[], &ranked, 0), None);
+        table.set_include_all(true);
+        assert!(
+            table
+                .rows(Tab::Lost)
+                .iter()
+                .filter(|item| item.fresh)
+                .count()
+                == 2
+        );
+    }
+
+    #[test]
+    fn potential_tone_follows_the_change() {
+        assert_eq!(tone(8557.0, 8668.0, 0), 1);
+        assert_eq!(tone(98.38, 97.95, 2), -1);
+        assert_eq!(tone(98.38, 98.38, 2), 0);
+        assert_eq!(tone(8557.2, 8557.4, 0), 0);
+        assert_eq!(tone(98.381, 98.384, 2), 0);
+        assert_eq!(tone(98.38, 98.39, 2), 1);
     }
 
     #[test]

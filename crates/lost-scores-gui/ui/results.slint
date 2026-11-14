@@ -201,6 +201,19 @@ component RowView inherits Rectangle {
     height: 58px;
     border-radius: 8px;
     clip: true;
+    property <bool> faded: !root.item.fresh;
+    opacity: root.faded ? 1 : 0;
+    animate opacity {
+        duration: 200ms;
+        easing: ease-out;
+    }
+    Timer {
+        running: !root.faded;
+        interval: 30ms;
+        triggered => {
+            root.faded = true;
+        }
+    }
     background: root.item.lost ? T.row-lost : T.row;
     ta := TouchArea {
         pointer-event(event) => {
@@ -257,9 +270,9 @@ component RowView inherits Rectangle {
             }
         }
         HorizontalLayout {
-            width: root.narrow ? 60px : 84px;
+            width: State.mods-col;
             spacing: 3px;
-            alignment: start;
+            alignment: end;
             for m in root.item.mods: VerticalLayout {
                 alignment: center;
                 Rectangle {
@@ -274,12 +287,6 @@ component RowView inherits Rectangle {
                         font-weight: 600;
                     }
                 }
-            }
-            if root.item.mods.length == 0: Text {
-                text: "NM";
-                color: T.arrow;
-                font-size: 11.5px;
-                vertical-alignment: center;
             }
         }
         if !root.narrow: HorizontalLayout {
@@ -568,15 +575,6 @@ component SearchButtons inherits HorizontalLayout {
             State.search-step(1);
         }
     }
-    IconButton {
-        width: 62px;
-        height: 40px;
-        icon: @image-url("../assets/i-mag.svg");
-        tip: "Go to the match";
-        clicked => {
-            State.search-step(0);
-        }
-    }
 }
 
 component OpenFolder inherits VerticalLayout {
@@ -614,7 +612,7 @@ component FootPair inherits HorizontalLayout {
     }
     Text {
         text: root.item.value;
-        color: root.item.positive ? T.up : #ffffff;
+        color: root.item.tone > 0 ? T.up : (root.item.tone < 0 ? T.down : #ffffff);
         font-size: 14.5px;
         font-weight: 600;
         vertical-alignment: center;
@@ -632,8 +630,36 @@ export component ResultsPanel inherits Rectangle {
     changed width => {
         root.narrow = root.width < 980px;
     }
+    property <length> view-y: list.content-y;
+    property <bool> gliding: false;
+    property <length> glide-from;
+    property <length> glide-to;
+    property <duration> glide-start;
+    changed view-y => {
+        State.scroll-y = root.view-y;
+    }
     changed jump => {
-        list.content-y = Math.min(0px, Math.max(-(State.jump-to * 64px), list.visible-height - list.content-height));
+        root.glide-to = Math.min(0px, Math.max(State.jump-y, list.visible-height - list.content-height));
+        if (State.jump-animated) {
+            root.glide-from = list.content-y;
+            root.glide-start = animation-tick();
+            root.gliding = true;
+        } else {
+            root.gliding = false;
+            list.content-y = root.glide-to;
+        }
+    }
+    Timer {
+        running: root.gliding;
+        interval: 16ms;
+        triggered => {
+            let t = Math.min(1.0, (animation-tick() - root.glide-start) / 250ms);
+            let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+            list.content-y = root.glide-from + (root.glide-to - root.glide-from) * eased;
+            if (t >= 1.0) {
+                root.gliding = false;
+            }
+        }
     }
     VerticalLayout {
         padding-left: 26px;
@@ -731,9 +757,10 @@ export component ResultsPanel inherits Rectangle {
                 column: 0;
             }
             HeaderCell {
-                width: root.narrow ? 60px : 84px;
+                width: State.mods-col;
                 text: "Mods";
                 column: 1;
+                place: end;
             }
             if !root.narrow: HeaderCell {
                 width: 172px;

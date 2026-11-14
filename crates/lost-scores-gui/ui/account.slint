@@ -7,6 +7,7 @@ component StatValue inherits HorizontalLayout {
     in property <string> now;
     in property <string> potential;
     in property <string> unit;
+    in property <int> tone;
     spacing: 4px;
     Text {
         text: root.now;
@@ -23,7 +24,7 @@ component StatValue inherits HorizontalLayout {
     }
     if root.potential != "": Text {
         text: root.potential;
-        color: T.acc;
+        color: root.tone > 0 ? T.up : (root.tone < 0 ? T.down : #ffffff);
         font-size: 16px;
         font-weight: 600;
         vertical-alignment: bottom;
@@ -80,16 +81,22 @@ component Profile inherits HorizontalLayout {
         Rectangle {
             width: 120px;
             height: 120px;
-            border-radius: 16px;
-            background: T.field;
-            if State.has-avatar: Image {
-                source: State.avatar;
+            frame := Rectangle {
                 x: round(parent.absolute-position.x / 4px) * 4px - parent.absolute-position.x;
                 y: round(parent.absolute-position.y / 4px) * 4px - parent.absolute-position.y;
                 width: 120px;
                 height: 120px;
-                image-fit: fill;
-                image-rendering: pixelated;
+                border-radius: 16px;
+                background: T.field;
+                if State.has-avatar: Image {
+                    x: 0px;
+                    y: 0px;
+                    source: State.avatar;
+                    width: 120px;
+                    height: 120px;
+                    image-fit: fill;
+                    image-rendering: pixelated;
+                }
             }
         }
     }
@@ -148,6 +155,7 @@ component Profile inherits HorizontalLayout {
                 StatValue {
                     now: State.perf-now;
                     potential: State.perf-potential;
+                    tone: State.perf-tone;
                     unit: "pp";
                 }
             }
@@ -156,6 +164,7 @@ component Profile inherits HorizontalLayout {
                 StatValue {
                     now: State.acc-now;
                     potential: State.acc-potential;
+                    tone: State.acc-tone;
                 }
             }
             Stat {
@@ -166,8 +175,7 @@ component Profile inherits HorizontalLayout {
         HorizontalLayout {
             spacing: 10px;
             Toggle {
-                icon-off: @image-url("../assets/i-check.svg");
-                icon-on: @image-url("../assets/i-xmark.svg");
+                icon: @image-url("../assets/i-heart.svg");
                 tip: "Include unranked and loved beatmaps";
                 on: State.include-all;
                 enabled: !State.busy;
@@ -176,8 +184,7 @@ component Profile inherits HorizontalLayout {
                 }
             }
             Toggle {
-                icon-off: @image-url("../assets/i-mag-x.svg");
-                icon-on: @image-url("../assets/i-mag.svg");
+                icon: @image-url("../assets/i-cloud-down.svg");
                 tip: "Check missing beatmap IDs (may take a long time)";
                 on: State.check-missing;
                 enabled: !State.busy;
@@ -186,8 +193,7 @@ component Profile inherits HorizontalLayout {
                 }
             }
             Toggle {
-                icon-off: @image-url("../assets/i-eye-slash.svg");
-                icon-on: @image-url("../assets/i-eye.svg");
+                icon: @image-url("../assets/i-image.svg");
                 tip: "Ensure at least one lost score is visible in the top plays image";
                 on: State.show-lost;
                 enabled: !State.busy;
@@ -236,6 +242,8 @@ component Profile inherits HorizontalLayout {
 
 export component AccountCard inherits HoverBox {
     preferred-height: inner.preferred-height;
+    max-height: inner.preferred-height;
+    vertical-stretch: 0;
     border-radius: 12px;
     background: T.card;
     inner := VerticalLayout {
