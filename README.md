@@ -73,6 +73,17 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 - `--timings` prints how long each step took.
 - `lost-scores scan --output replays.json` dumps every replay of the player with its beatmap and pp, for checks. `--maps <file>` uses another map catalog instead of the saved one.
 
+## Privacy
+
+The program has no telemetry and goes online only for what you ask it to do:
+
+- a scan asks the osu! API, with your keys, about your player, your online top and the statuses of your maps; the check for missing beatmap IDs also downloads the `.osu` files of the maps you no longer have;
+- the window loads your avatar from a.ppy.sh and the map covers from assets.ppy.sh;
+- "Check for updates" asks GitHub for the latest release;
+- the catbox button uploads the pictures of the shown scan to catbox.moe.
+
+Your keys, settings and scans stay on your computer.
+
 ## Build from source
 
 With the current stable Rust:
