@@ -4,45 +4,54 @@ Finds your osu!stable plays that ScoreV1 overwrote and the pp they were worth.
 
 Until October 2024 the osu!stable server kept one play per beatmap and mod combination: the one with the highest score. A new play with a higher score replaced the old one even when the old play was worth more pp, and a play that scored less than your record was not kept at all. That pp disappeared from your profile. Your local replays still have those plays, and this tool reads them back.
 
-This is a Rust rewrite of the original Python desktop app. It is in early development.
+This is a Rust rewrite of the original Python desktop app.
+
+## Download
+
+Get the files from the [latest release](https://github.com/kz-lemon4ik/osu-lost-scores/releases/latest).
+
+- **Windows 10 and 11:** `lost-scores-<version>-windows-x64.exe`. It is one file and needs no installation: put it anywhere and run it. The settings, the keys and the scans are kept in `%APPDATA%\lost-scores`, the downloaded maps and covers in `%LOCALAPPDATA%\lost-scores`, so a newer version simply replaces the file. To remove the program, delete the file and these two folders.
+- **Linux:** `lost-scores-<version>-linux-x64.tar.gz`, for distributions with glibc 2.35 or newer. Unpack it and run `./lost-scores-gui`, or run `./install.sh` to copy the programs into `~/.local/bin` and add the launcher entry and the icons.
+- **macOS 11 or newer on Apple Silicon:** `lost-scores-<version>-macos-arm64.zip`. Unpack it and move Lost Scores to Applications. osu!stable runs on a Mac only through Wine, so pick its osu! folder with the folder button.
+- On Linux and macOS the settings, the keys and the scans are kept in `~/.config/lost-scores` and `~/.local/share/lost-scores`, the downloaded maps and covers in `~/.cache/lost-scores`.
+- The command line `lost-scores` comes in the Linux archive and, for Windows and macOS, in `lost-scores-cli-<version>-windows-x64.zip` and `lost-scores-cli-<version>-macos-arm64.zip`.
+- `SHA256SUMS` has the checksums of every file.
+
+The program is not signed yet, so the first start needs one more step:
+
+- **Windows:** SmartScreen may say "Windows protected your PC". Choose "More info", then "Run anyway".
+- **macOS:** the system says it cannot verify Lost Scores. Choose Done, open System Settings, Privacy & Security, and choose "Open Anyway" next to Lost Scores. For the command line, run `xattr -d com.apple.quarantine lost-scores` once.
+
+You need osu!stable with your replays and, for now, the keys of your own osu! OAuth application: create one at https://osu.ppy.sh/home/account/edit. The program only reads the osu! folder and never changes it.
 
 ## Window
 
-    cargo install --locked --path crates/lost-scores-gui
-    lost-scores-gui
-
-The window runs the same scan as the command line and shows the result as a table. It needs the keys of your own osu! OAuth application for now: choose "Use Custom API Keys" and the player name, and the keys are checked before they are saved.
+The window runs the same scan as the command line. Choose "Use Custom API Keys" and the player name; the keys are checked before they are saved.
 
 - The osu! folder is found the same way as in the command line and remembered; the folder button picks another one.
 - Start Scan shows the progress and a log. Every finished scan is kept in the scan history, and the results view opens any earlier scan.
-- The results view has three tabs: Lost Scores, Online Top and Potential Top. A click on a column header sorts by it and a second click reverses the order. The search field finds text in titles, artists, difficulties, mappers, mods and dates and steps through the matches. A right click on a row copies it as text. "Open folder" opens the folder of the shown scan.
-- Below 790 px high the log is hidden. From 1480 px wide the controls and the results sit side by side; in a narrower window See Full Results shows the results over the controls, and Back returns to the controls.
+- The results open on the pictures of the scan (see Share images). The Images | Table switch in the results header shows the tables instead: Lost Scores, Online Top and Potential Top. A click on a column header sorts by it and a second click reverses the order. The search field finds text in titles, artists, difficulties, mappers, mods and dates and steps through the matches. A right click on a row copies it as text. The folder icon in the header opens the folder of the shown scan.
+- Below 790 px high the log is hidden. From 1480 px wide the controls and the results sit side by side; in a narrower window the results open over the controls when a scan ends, See Full Results opens them again, and Back returns to the controls.
+- Esc closes the top layer: a menu, a sheet, then the results. In the search field it clears the search first.
 - The settings are shared with the command line. Clear cache removes the downloaded avatars and covers and keeps the scan history, the map catalog and the settings.
 
-On Linux the launcher entry and the icons come from a script. Run it after installing the program:
-
-    packaging/linux/install.sh
-
-It copies `kz.lemon4ik.LostScores.desktop` and the lemon icons into `$XDG_DATA_HOME` (`~/.local/share` by default). Under Wayland the window takes its icon from this entry, which has the same app id as the window. On Windows the icon is built into the executable.
+On Linux the launcher entry and the icons come from `install.sh`. It copies `kz.lemon4ik.LostScores.desktop` and the lemon icons into `$XDG_DATA_HOME` (`~/.local/share` by default). Under Wayland the window takes its icon from this entry, which has the same app id as the window. On Windows the icon is built into the executable.
 
 ## Share images
 
 After every scan the window saves three pictures into the scan's folder:
 
+- `summary_badge.png`: a small card with the main numbers;
 - `lost_scores.png`: your lost plays on ranked maps, or on all maps when the scan included unranked and loved ones;
-- `potential_top.png`: your top 200 as it would be with the lost plays kept, with the pp and accuracy it would give;
-- `summary_badge.png`: a small card with the same numbers.
+- `potential_top.png`: your top 200 as it would be with the lost plays kept, with the pp and accuracy it would give.
 
 "Scores to show" sets how many plays the two big pictures list, up to 250. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
 
-The Images mode of the Table | Images switch in the results header, the one a scan opens on, shows the three pictures of the shown scan large, one under the other, each with two buttons:
+The Images mode shows the three pictures of the shown scan one under the other, in that order. A click on a picture opens it in your image viewer, and a right click offers Copy image and Open. The arrows in the corner jump to the previous or the next picture.
 
-- **Open** shows it in your image viewer;
-- **catbox** uploads it to [catbox.moe](https://catbox.moe) and copies the link.
+The catbox button next to the switch uploads all three pictures to [catbox.moe](https://catbox.moe) and copies their links, one per line. While it uploads, the button counts the pictures. Then it says whether the links were copied, and after a failure its tooltip shows why. A scan made before the images existed has none, and the view says so.
 
-The folder icon in the header opens the scan's folder. A scan made before the images existed has none, and the view says so.
-
-An upload to catbox.moe is anonymous and public: anyone with the link can see the picture, and catbox keeps it until nobody has opened it for two years. It cannot be deleted for free, so the window asks before the first upload, and nothing is uploaded without a click.
+An upload to catbox.moe is anonymous and public: anyone with the link can see the pictures, and catbox keeps each one until nobody has opened it for two years. They cannot be deleted for free, so the window asks before the first upload, and nothing is uploaded without a click.
 
 Covers come from assets.ppy.sh and are cached; Clear cache removes them.
 
@@ -54,9 +63,6 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 
 ## Command line
 
-    cargo install --locked --path crates/lost-scores-cli
-    lost-scores
-
 `lost-scores` finds the osu! folder and remembers it, reads the player name and the Songs folder from the osu! config, calculates pp for your replays and prints the plays that ScoreV1 overwrote, best first. It never writes to the osu! folder. `lost-scores --help` lists every option with examples and shows where the settings, keys and map data are kept.
 
 - `--all` also shows loved and unranked maps; `--sort date`, `--limit N` and `--json` change the output.
@@ -66,6 +72,15 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 - `--osu-dir`, `--player` and `--songs-dir` override the detection. Options of a command go after it: `lost-scores potential --offline`.
 - `--timings` prints how long each step took.
 - `lost-scores scan --output replays.json` dumps every replay of the player with its beatmap and pp, for checks. `--maps <file>` uses another map catalog instead of the saved one.
+
+## Build from source
+
+With the current stable Rust:
+
+    cargo install --locked --path crates/lost-scores-gui
+    cargo install --locked --path crates/lost-scores-cli
+
+On Linux the window needs the fontconfig development files (`libfontconfig1-dev` on Debian and Ubuntu). After installing, `packaging/linux/install.sh` adds the launcher entry and the icons.
 
 ## Credits
 
