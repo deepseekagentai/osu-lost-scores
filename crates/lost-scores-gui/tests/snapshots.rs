@@ -567,3 +567,122 @@ fn render_results_snapshots() {
         &dir.join("26-keys-sheet-short.png"),
     );
 }
+
+fn mods_scan() -> SavedScan {
+    let mut scan = fake_scan(false);
+    scan.lost.push(lost_row(
+        "Eighth Artist",
+        "Four Mods Sample",
+        "Overdose",
+        "HDHRDTFL",
+        Grade::S,
+        MapStatus::Ranked,
+        360.0,
+        340.0,
+        20,
+    ));
+    scan.lost.push(lost_row(
+        "Ninth Artist",
+        "Another Combo Sample",
+        "Lunatic",
+        "HRDT",
+        Grade::A,
+        MapStatus::Ranked,
+        330.0,
+        300.0,
+        30,
+    ));
+    scan.lost_total = scan.lost.len();
+    scan
+}
+
+fn connect_sample(state: &State<'_>) {
+    state.set_connected(true);
+    state.set_user_name("SamplePlayer".into());
+    state.set_avatar(avatar());
+    state.set_has_avatar(true);
+    state.set_stats_ready(true);
+    state.set_perf_now("8,557".into());
+    state.set_perf_potential("8,668".into());
+    state.set_perf_tone(1);
+    state.set_acc_now("98.38%".into());
+    state.set_acc_potential("97.95%".into());
+    state.set_acc_tone(-1);
+    state.set_rank("#14,856".into());
+    state.set_status("Scan finished: 9 lost plays, 6 on ranked maps".into());
+    state.set_progress(1.0);
+    state.set_log(log(&[
+        ("[17:50:02]", "player: SamplePlayer"),
+        ("[17:50:15]", "9 lost plays found, 6 of them on ranked maps"),
+    ]));
+}
+
+#[test]
+#[ignore = "writes PNG snapshots to $LOST_SCORES_SNAPSHOTS"]
+fn render_walkthrough_snapshots() {
+    let dir = PathBuf::from(std::env::var("LOST_SCORES_SNAPSHOTS").expect("LOST_SCORES_SNAPSHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
+    let state = window.global::<State>();
+    state.set_osu_dir("/home/player/games/osu!".into());
+    connect_sample(&state);
+    state.set_include_all(false);
+    state.set_check_missing(false);
+    state.set_show_lost(false);
+    draw(&surface, &dir.join("w01-card-toggles-off.png"));
+    state.set_include_all(true);
+    state.set_check_missing(true);
+    state.set_show_lost(true);
+    draw(&surface, &dir.join("w02-card-toggles-on.png"));
+
+    let scan = mods_scan();
+    let results = Results::new(&scan);
+    state.set_mods_width(lost_scores_gui::view::mods_width(
+        results.table.borrow().rows(Tab::Lost),
+    ));
+    results.present(&state, &scan, Tab::Lost);
+    state.set_show_results(true);
+    draw(&surface, &dir.join("w03-results-four-mods-narrow.png"));
+    draw_sized(&surface, WIDE, &dir.join("w04-results-four-mods-wide.png"));
+    state.set_show_results(false);
+    draw_sized(
+        &surface,
+        (1480.0, 800.0),
+        &dir.join("w05-two-columns-1480x800.png"),
+    );
+    draw_sized(
+        &surface,
+        (2048.0, 1280.0),
+        &dir.join("w06-two-columns-2048x1280.png"),
+    );
+    state.set_show_results(true);
+
+    let sorts = [
+        ("w07-sort-beatmap", Column::Beatmap, 1),
+        ("w08-sort-mods", Column::Mods, 1),
+        ("w09-sort-mods-reversed", Column::Mods, 2),
+        ("w10-sort-hits", Column::Hits, 1),
+        ("w11-sort-score", Column::Score, 1),
+        ("w12-sort-accuracy", Column::Accuracy, 1),
+        ("w13-sort-pp", Column::Pp, 1),
+    ];
+    for (name, column, clicks) in sorts {
+        results.present(&state, &scan, Tab::Lost);
+        for _ in 0..clicks {
+            results.table.borrow_mut().sort(Tab::Lost, column);
+        }
+        results.rows.refresh();
+        let (column, descending) = results.table.borrow().sorting(Tab::Lost);
+        state.set_sort_column(column.index());
+        state.set_sort_desc(descending);
+        draw_sized(&surface, WIDE, &dir.join(format!("{name}.png")));
+    }
+}
