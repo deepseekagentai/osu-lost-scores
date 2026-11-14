@@ -9,6 +9,7 @@ use lost_scores_core::maps::MapStatus;
 use crate::table::when_day;
 use crate::view::{lost_text, weighted_text};
 
+pub const MAX_IMAGE_ROWS: usize = 200;
 pub const MOD_ICON_WIDTH: f32 = 30.0;
 pub const MOD_ICON_GAP: f32 = 2.0;
 
@@ -68,11 +69,12 @@ pub fn lost_count(scan: &SavedScan, options: &ShareOptions) -> usize {
 pub fn lost_rows(scan: &SavedScan, options: &ShareOptions) -> Vec<ShareRow> {
     ranked_or_all(scan, options)
         .into_iter()
-        .take(options.count)
-        .map(|index| {
+        .take(options.count.min(MAX_IMAGE_ROWS))
+        .enumerate()
+        .map(|(position, index)| {
             let row = &scan.lost[index];
             ShareRow {
-                place: String::new(),
+                place: format!("#{}", position + 1),
                 set_id: row.beatmapset_id,
                 grade: row.grade,
                 title: row.title.clone(),
@@ -100,7 +102,8 @@ pub fn potential_rows(scan: &SavedScan, options: &ShareOptions) -> Vec<ShareRow>
     let shown = match first_lost {
         Some(index) if options.show_lost_in_top => options.count.max(index + 1),
         _ => options.count,
-    };
+    }
+    .min(MAX_IMAGE_ROWS);
     potential
         .rows
         .iter()
@@ -188,8 +191,8 @@ mod tests {
     use lost_scores_core::maps::MapStatus;
 
     use super::{
-        ShareOptions, badge_lost_line, badge_when_line, lost_count, lost_rows, mods_width,
-        potential_rows, stats, subtitle,
+        MAX_IMAGE_ROWS, ShareOptions, badge_lost_line, badge_when_line, lost_count, lost_rows,
+        mods_width, potential_rows, stats, subtitle,
     };
 
     const MADE_AT: i64 = 1_794_649_471;
@@ -303,7 +306,9 @@ mod tests {
         let ranked = lost_rows(&scan, &options(10, false, false));
         let titles: Vec<&str> = ranked.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(titles, ["Title 200", "Title 100"]);
-        assert!(ranked.iter().all(|row| row.place.is_empty() && !row.lost));
+        let places: Vec<&str> = ranked.iter().map(|row| row.place.as_str()).collect();
+        assert_eq!(places, ["#1", "#2"]);
+        assert!(ranked.iter().all(|row| !row.lost));
         assert_eq!(
             subtitle(&scan, &options(10, false, false)),
             "peppy scammed me for 2 of them!"
@@ -316,6 +321,27 @@ mod tests {
         assert_eq!(
             subtitle(&scan, &options(10, true, false)),
             "peppy scammed me for 4 of them!"
+        );
+    }
+
+    #[test]
+    fn the_image_never_draws_more_than_the_row_cap() {
+        let rows = (0..300)
+            .map(|n| lost(1000.0 - f64::from(n), MapStatus::Ranked, ""))
+            .collect();
+        let many = scan(rows, None);
+        let shown = lost_rows(&many, &options(999, false, false));
+        assert_eq!(shown.len(), MAX_IMAGE_ROWS);
+        assert_eq!(shown.len(), 200);
+        assert_eq!(shown[199].place, "#200");
+
+        let tall = (1..=250)
+            .map(|place| weighted(place, place == 230, ""))
+            .collect();
+        let top = scan(Vec::new(), Some(potential(tall, Some(1))));
+        assert_eq!(
+            potential_rows(&top, &options(999, false, true)).len(),
+            MAX_IMAGE_ROWS
         );
     }
 

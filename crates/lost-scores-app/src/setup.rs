@@ -15,7 +15,7 @@ pub struct UserConfig {
     pub beatmap_directory: Option<String>,
 }
 
-pub const SCORES_TO_SHOW: RangeInclusive<u16> = 1..=999;
+pub const SCORES_TO_SHOW: RangeInclusive<u16> = 1..=200;
 const DEFAULT_SCORES_TO_SHOW: u16 = 10;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +230,7 @@ mod tests {
     fn out_of_range_scores_to_show_are_clamped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        for (stored, expected) in [(0, 1), (5000, 999), (65535, 999), (42, 42)] {
+        for (stored, expected) in [(0, 1), (5000, 200), (65535, 200), (42, 42)] {
             fs::write(&path, format!(r#"{{"scores_to_show":{stored}}}"#)).unwrap();
             assert_eq!(load_settings(&path).scores_to_show, expected);
         }
@@ -320,12 +320,12 @@ mod tests {
     }
 
     #[test]
-    fn scores_to_show_accepts_1_to_999_only() {
-        for text in ["0", "1000", "abc", ""] {
+    fn scores_to_show_accepts_1_to_200_only() {
+        for text in ["0", "201", "1000", "abc", ""] {
             assert_eq!(parse_scores_to_show(text), None, "{text:?}");
         }
         assert_eq!(parse_scores_to_show(" 25 "), Some(25));
-        assert_eq!(parse_scores_to_show("999"), Some(999));
+        assert_eq!(parse_scores_to_show("200"), Some(200));
         assert_eq!(parse_scores_to_show("1"), Some(1));
     }
 }
