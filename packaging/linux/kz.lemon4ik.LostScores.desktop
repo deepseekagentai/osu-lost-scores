@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=osu! Lost Scores Analyzer
+Comment=Find the osu!stable plays that ScoreV1 overwrote
+Exec=lost-scores-gui
+Icon=kz.lemon4ik.LostScores
+Terminal=false
+Categories=Utility;
+StartupWMClass=kz.lemon4ik.LostScores

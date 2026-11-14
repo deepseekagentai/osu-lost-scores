@@ -6,6 +6,25 @@ Until October 2024 the osu!stable server kept one play per beatmap and mod combi
 
 This is a Rust rewrite of the original Python desktop app. It is in early development.
 
+## Window
+
+    cargo install --locked --path crates/lost-scores-gui
+    lost-scores-gui
+
+The window runs the same scan as the command line and shows the result as a table. It needs the keys of your own osu! OAuth application for now: choose "Use Custom API Keys" and the player name, and the keys are checked before they are saved.
+
+- The osu! folder is found the same way as in the command line and remembered; the folder button picks another one.
+- Start Scan shows the progress and a log. Every finished scan is kept in the scan history, and the results view opens any earlier scan.
+- The results view has three tabs: Lost Scores, Online Top and Potential Top. A click on a column header sorts by it and a second click reverses the order. The search field finds text in titles, artists, difficulties, mappers, mods and dates and steps through the matches. A right click on a row copies it as text. "Open folder" opens the folder of the shown scan.
+- Below 790 px high the log is hidden. From 1480 px wide the controls and the results sit side by side; in a narrower window See Full Results shows the results over the controls, and Back returns to the controls.
+- The settings are shared with the command line. Clear cache removes the downloaded avatars and covers and keeps the scan history, the map catalog and the settings.
+
+On Linux the launcher entry and the icons come from a script. Run it after installing the program:
+
+    packaging/linux/install.sh
+
+It copies `kz.lemon4ik.LostScores.desktop` and the lemon icons into `$XDG_DATA_HOME` (`~/.local/share` by default). Under Wayland the window takes its icon from this entry, which has the same app id as the window. On Windows the icon is built into the executable.
+
 ## Command line
 
     cargo install --locked --path crates/lost-scores-cli
@@ -20,6 +39,13 @@ This is a Rust rewrite of the original Python desktop app. It is in early develo
 - `--osu-dir`, `--player` and `--songs-dir` override the detection. Options of a command go after it: `lost-scores potential --offline`.
 - `--timings` prints how long each step took.
 - `lost-scores scan --output replays.json` dumps every replay of the player with its beatmap and pp, for checks. `--maps <file>` uses another map catalog instead of the saved one.
+
+## Credits
+
+- [Twemoji](https://github.com/jdecked/twemoji) (CC BY 4.0), the lemon.
+- [Font Awesome Free](https://fontawesome.com) (CC BY 4.0), the icons.
+- [Fredoka](https://fonts.google.com/specimen/Fredoka) (OFL 1.1, the licence is in `crates/lost-scores-gui/assets/OFL.txt`).
+- [Slint](https://slint.dev) (GPLv3, or the royalty-free licence with attribution), the window toolkit.
 
 ## License
 

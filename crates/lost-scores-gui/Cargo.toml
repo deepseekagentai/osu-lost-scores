@@ -32,3 +32,6 @@ slint-build = "1.18"
 [dev-dependencies]
 i-slint-backend-testing = "1.18"
 tempfile = "3.27.0"
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"

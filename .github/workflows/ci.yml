@@ -38,3 +38,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      - name: Executable icon
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p lost-scores-gui
+          ./packaging/windows/check-icon.ps1 target/debug/lost-scores-gui.exe
