@@ -62,6 +62,17 @@ fn ranked_or_all(scan: &SavedScan, options: &ShareOptions) -> Vec<usize> {
     picked
 }
 
+pub fn cover_sets(scan: &SavedScan, options: &ShareOptions) -> Vec<u32> {
+    let mut set_ids: Vec<u32> = lost_rows(scan, options)
+        .iter()
+        .chain(potential_rows(scan, options).iter())
+        .filter_map(|row| row.set_id)
+        .collect();
+    set_ids.sort_unstable();
+    set_ids.dedup();
+    set_ids
+}
+
 pub fn lost_count(scan: &SavedScan, options: &ShareOptions) -> usize {
     ranked_or_all(scan, options).len()
 }

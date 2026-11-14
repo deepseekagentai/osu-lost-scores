@@ -22,7 +22,7 @@ use slint::{
 use crate::avatar;
 use crate::share::art::{self, Art};
 use crate::share::model::{
-    ShareOptions, ShareRow, badge_lost_line, badge_when_line, lost_rows, mods_width,
+    ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_sets, lost_rows, mods_width,
     potential_rows, stats, subtitle,
 };
 use crate::share::rasters::{self, Fetch, HttpFetch};
@@ -299,13 +299,7 @@ pub fn prepare(
     caches: &Caches,
     fetch: &mut dyn Fetch,
 ) -> Prepared {
-    let mut set_ids: Vec<u32> = lost_rows(scan, options)
-        .iter()
-        .chain(potential_rows(scan, options).iter())
-        .filter_map(|row| row.set_id)
-        .collect();
-    set_ids.sort_unstable();
-    set_ids.dedup();
+    let set_ids = cover_sets(scan, options);
     let mut covers_failed = 0;
     let mut strips = HashMap::new();
     if let Some(dir) = caches.covers.as_deref() {

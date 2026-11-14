@@ -28,6 +28,8 @@ pub enum Step {
     Refresh,
     OnlineTop,
     Potential,
+    Covers,
+    Images,
 }
 
 #[derive(Clone, Debug, PartialEq)]

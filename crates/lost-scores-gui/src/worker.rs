@@ -1,18 +1,23 @@
 use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use lost_scores_app::cache;
 use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    self, Api, Event, Lost, PotentialResult, Source, load_catalog, lost, potential, read,
+    self, Api, Event, Lost, PotentialResult, Source, Step, load_catalog, lost, potential, read,
     refresh_statuses,
 };
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
 use lost_scores_core::maps::MapCatalog;
+
+use crate::share::rasters::{self, HttpFetch};
+use crate::share::{ShareOptions, cover_sets};
 
 const API_HINT: &str = "add your own API keys";
 const PROGRESS_GAP: Duration = Duration::from_millis(33);
@@ -21,6 +26,9 @@ pub struct Job {
     pub source: Source,
     pub scans_dir: PathBuf,
     pub include_all: bool,
+    pub renderer: PathBuf,
+    pub share_count: usize,
+    pub show_lost_in_top: bool,
 }
 
 pub struct Finished {
@@ -137,12 +145,16 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     sink.send(Message::Saving);
     let scan = saved(job, &player, found, result);
     let folder = history::save(&job.scans_dir, &scan)?;
+    let shown = scan.clone();
     if !sink.send(Message::Finished(Box::new(Finished {
         scan,
         folder: folder.clone(),
     }))) {
         return Ok(Outcome::Closed);
     }
+    proceed!();
+    images(job, &shown, &folder, &mut events);
+    proceed!();
     let finished = Completed {
         job,
         scan: &read.scan,
@@ -221,10 +233,13 @@ fn refresh(
     };
     let updated = saved(job, player, found, result);
     match history::replace(folder, &updated) {
-        Ok(()) => Some(Box::new(Finished {
-            scan: updated,
-            folder: folder.to_path_buf(),
-        })),
+        Ok(()) => {
+            images(job, &updated, folder, events);
+            Some(Box::new(Finished {
+                scan: updated,
+                folder: folder.to_path_buf(),
+            }))
+        }
         Err(error) => {
             events(Event::Log(format!(
                 "could not save the updated scan: {error:#}"
@@ -232,6 +247,68 @@ fn refresh(
             None
         }
     }
+}
+
+pub fn render_command(renderer: &Path, folder: &Path) -> Command {
+    let mut command = Command::new(renderer);
+    command.arg("render-images").arg(folder);
+    command
+}
+
+fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Event)) {
+    let options = ShareOptions {
+        count: job.share_count,
+        include_all: scan.include_all,
+        show_lost_in_top: job.show_lost_in_top,
+    };
+    if let Some(dir) = cache::covers_dir() {
+        let sets = cover_sets(scan, &options);
+        let mut progress = |done, total| {
+            events(Event::Progress {
+                step: Step::Covers,
+                done,
+                total,
+            });
+        };
+        rasters::covers(&sets, &dir, &mut HttpFetch::new(), &mut progress);
+    }
+    events(Event::Progress {
+        step: Step::Images,
+        done: 0,
+        total: 1,
+    });
+    match run_renderer(&job.renderer, folder) {
+        Ok(warnings) => {
+            for line in warnings {
+                events(Event::Log(line));
+            }
+            events(Event::Log(format!("Images saved to {}", folder.display())));
+        }
+        Err(error) => events(Event::Log(format!("Could not create the images: {error}"))),
+    }
+}
+
+fn run_renderer(renderer: &Path, folder: &Path) -> Result<Vec<String>> {
+    let output = render_command(renderer, folder)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+        .map_err(|error| anyhow!("cannot start {}: {error}", renderer.display()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut lines = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned);
+    if output.status.success() {
+        return Ok(lines.collect());
+    }
+    Err(anyhow!(
+        "{}",
+        lines
+            .next_back()
+            .unwrap_or_else(|| format!("the renderer stopped with {}", output.status))
+    ))
 }
 
 #[cfg(test)]

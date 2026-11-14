@@ -855,6 +855,9 @@ impl Session {
                 },
                 scans_dir,
                 include_all: settings.include_all,
+                renderer: std::env::current_exe().unwrap_or_default(),
+                share_count: usize::from(clamped_scores(settings.scores_to_show)),
+                show_lost_in_top: settings.show_lost_in_top_image,
             }
         };
         self.scan.borrow_mut().start();

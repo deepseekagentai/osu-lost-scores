@@ -95,6 +95,8 @@ pub fn status_text(step: Step, done: usize, total: usize) -> String {
         }
         Step::OnlineTop => "Fetching your top plays...".to_owned(),
         Step::Potential => "Building the potential top...".to_owned(),
+        Step::Covers => format!("Downloading covers: {done} of {total}"),
+        Step::Images => "Creating images...".to_owned(),
     }
 }
 
@@ -107,7 +109,7 @@ fn span(step: Step) -> (f32, f32) {
         Step::Catalog => (0.65, 0.25),
         Step::OnlineTop => (0.90, 0.05),
         Step::Potential => (0.95, 0.05),
-        Step::Refresh => (1.0, 0.0),
+        Step::Refresh | Step::Covers | Step::Images => (1.0, 0.0),
     }
 }
 
@@ -255,6 +257,15 @@ mod tests {
         state.start();
         assert_eq!(state.status, "Starting scan...");
         assert!(!state.can_start(true));
+    }
+
+    #[test]
+    fn image_steps_have_their_own_status() {
+        assert_eq!(
+            status_text(Step::Covers, 3, 12),
+            "Downloading covers: 3 of 12"
+        );
+        assert_eq!(status_text(Step::Images, 0, 1), "Creating images...");
     }
 
     #[test]

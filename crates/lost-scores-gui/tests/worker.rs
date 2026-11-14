@@ -5,10 +5,10 @@ use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 
 use lost_scores_app::history;
 use lost_scores_app::online::Player;
-use lost_scores_app::pipeline::{Api, Source};
+use lost_scores_app::pipeline::{Api, Event, Source};
 use lost_scores_core::maps::{FetchedMap, MapSource};
 use lost_scores_core::missing::OsuFiles;
-use lost_scores_gui::worker::{Job, Message, Outcome, Sink, run};
+use lost_scores_gui::worker::{Job, Message, Outcome, Sink, render_command, run};
 use osu_api::{ApiError, Score};
 use tempfile::TempDir;
 
@@ -127,7 +127,30 @@ fn job(root: &Path) -> Job {
         },
         scans_dir: root.join("scans"),
         include_all: true,
+        renderer: root.join("no-such-renderer"),
+        share_count: 20,
+        show_lost_in_top: true,
     }
+}
+
+fn logs(sink: &Recorder) -> Vec<String> {
+    sink.messages
+        .borrow()
+        .iter()
+        .filter_map(|message| match message {
+            Message::Event(Event::Log(text)) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn renderer_script(root: &Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = root.join("renderer.sh");
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }
 
 #[test]
@@ -188,4 +211,74 @@ fn a_closed_window_never_starts_the_scan() {
     let outcome = run(&job, &mut Fake { known: true }, &sink);
     assert!(matches!(outcome, Outcome::Closed));
     assert!(sink.messages.borrow().is_empty());
+}
+
+#[test]
+fn a_failed_render_keeps_the_scan() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let sink = Recorder::open();
+    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    assert!(matches!(outcome, Outcome::Finished));
+    assert_eq!(history::list(&job.scans_dir).len(), 1);
+    let messages = sink.messages.borrow();
+    assert!(messages.iter().any(|m| matches!(m, Message::Finished(_))));
+    assert!(matches!(messages.last(), Some(Message::Refreshed(None))));
+    drop(messages);
+    let lines = logs(&sink);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Could not create the images: ")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|line| line.starts_with("Images saved")));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_renderer_that_exits_with_an_error_reports_its_line() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let mut job = job(root.path());
+    job.renderer = renderer_script(root.path(), "echo 'cannot render: boom' >&2\nexit 1");
+    let sink = Recorder::open();
+    let outcome = run(&job, &mut Fake { known: true }, &sink);
+    assert!(matches!(outcome, Outcome::Finished));
+    assert_eq!(history::list(&job.scans_dir).len(), 1);
+    assert!(
+        logs(&sink)
+            .iter()
+            .any(|line| line == "Could not create the images: cannot render: boom")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_renderer_that_succeeds_is_logged_with_its_warnings() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let mut job = job(root.path());
+    job.renderer = renderer_script(
+        root.path(),
+        "echo '2 of 9 covers could not be downloaded' >&2",
+    );
+    let sink = Recorder::open();
+    run(&job, &mut Fake { known: true }, &sink);
+    let lines = logs(&sink);
+    let folder = history::list(&job.scans_dir)[0].folder.clone();
+    assert!(lines.contains(&"2 of 9 covers could not be downloaded".to_owned()));
+    assert!(lines.contains(&format!("Images saved to {}", folder.display())));
+}
+
+#[test]
+fn the_render_command_points_at_the_new_folder() {
+    let command = render_command(
+        Path::new("/opt/lost-scores-gui"),
+        Path::new("/scans/2026-11-14_09-44-31Z"),
+    );
+    assert_eq!(command.get_program(), "/opt/lost-scores-gui");
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(args, ["render-images", "/scans/2026-11-14_09-44-31Z"]);
 }
