@@ -5,10 +5,10 @@ mod common;
 fn the_temporary_home_goes_away_with_its_last_user() {
     let first = common::isolate_environment();
     let home = common::isolated_home();
-    assert!(home.parent().unwrap().is_dir());
+    assert!(home.is_dir());
     let second = common::isolate_environment();
     drop(first);
-    assert!(common::isolated_home().parent().unwrap().is_dir());
+    assert!(common::isolated_home().is_dir());
     drop(second);
     assert!(!home.exists(), "{}", home.display());
 }
