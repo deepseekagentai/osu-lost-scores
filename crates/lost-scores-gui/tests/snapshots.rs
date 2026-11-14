@@ -720,4 +720,14 @@ fn render_walkthrough2_snapshots() {
     draw(&surface, &dir.join("w16-results-overlay-settled.png"));
     state.set_show_results(false);
     draw(&surface, &dir.join("w17-controls-after-back.png"));
+
+    state.set_show_results(true);
+    state.set_scans(ModelRc::new(VecModel::from(vec![
+        "14 November 2026 · 09:44".into(),
+        "14 November 2026 · 09:32".into(),
+        "14 November 2026 · 08:57".into(),
+    ])));
+    state.set_scan_selected(0);
+    state.set_scans_open(true);
+    draw(&surface, &dir.join("w18-scan-list.png"));
 }

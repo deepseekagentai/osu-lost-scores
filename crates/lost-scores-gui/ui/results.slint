@@ -843,7 +843,7 @@ export component ResultsPanel inherits Rectangle {
         x: root.show-back ? 116px : 26px;
         y: 24px + 42px + 6px;
         width: 320px;
-        height: min(300px, 44px + State.scans.length * 36px);
+        height: min(300px, 16px + State.scans.length * 34px + (State.scans.length > 1 ? 26px : 0px));
         border-radius: 10px;
         background: T.card;
         border-width: 2px;
@@ -851,30 +851,33 @@ export component ResultsPanel inherits Rectangle {
         TouchArea { }
         VerticalLayout {
             padding: 8px;
-            spacing: 2px;
-            Text {
-                text: "Older scans";
-                color: T.k;
-                font-size: 12.5px;
-                font-italic: true;
-            }
             ListView {
-                for label[i] in State.scans: Rectangle {
-                    height: 34px;
-                    border-radius: 6px;
-                    background: ta.has-hover ? T.btn : transparent;
-                    Text {
-                        x: 10px;
-                        text: label;
-                        color: i == State.scan-selected ? T.acc : #ffffff;
-                        font-size: 14px;
-                        font-weight: i == State.scan-selected ? 600 : 400;
+                for label[i] in State.scans: VerticalLayout {
+                    if i == 1: Text {
+                        height: 26px;
+                        text: "Older scans";
+                        color: T.k;
+                        font-size: 12.5px;
+                        font-italic: true;
                         vertical-alignment: center;
                     }
-                    ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            State.select-scan(i);
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: ta.has-hover ? T.btn : transparent;
+                        Text {
+                            x: 10px;
+                            text: label;
+                            color: i == State.scan-selected ? T.acc : #ffffff;
+                            font-size: 14px;
+                            font-weight: i == State.scan-selected ? 600 : 400;
+                            vertical-alignment: center;
+                        }
+                        ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                State.select-scan(i);
+                            }
                         }
                     }
                 }

@@ -34,7 +34,7 @@ mod tests {
 
     use i_slint_backend_testing::ElementHandle;
     use slint::platform::{PointerEventButton, WindowEvent};
-    use slint::{ComponentHandle, LogicalPosition, LogicalSize};
+    use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, VecModel};
 
     use super::{MainWindow, State, choose_folder};
 
@@ -67,6 +67,43 @@ mod tests {
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
         click_start_scan(&window);
         assert_eq!(started.get(), 1);
+    }
+
+    #[test]
+    fn the_newest_scan_is_listed_above_older_scans() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let labels = [
+            "15 Nov 2026 · 10:00",
+            "14 Nov 2026 · 09:00",
+            "13 Nov 2026 · 08:00",
+        ];
+        let state = window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(
+            labels.map(SharedString::from).to_vec(),
+        )));
+        let selected = Rc::new(Cell::new(-1));
+        let chosen = selected.clone();
+        state.on_select_scan(move |index| chosen.set(index));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_scans_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let find = |label: &str| {
+            let found: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
+            assert_eq!(found.len(), 1, "{label}");
+            found.into_iter().next().unwrap()
+        };
+        let y = |label: &str| find(label).absolute_position().y;
+        assert!(y(labels[0]) < y("Older scans"));
+        assert!(y("Older scans") < y(labels[1]));
+        assert!(y(labels[1]) < y(labels[2]));
+
+        find(labels[2]).mock_single_click(PointerEventButton::Left);
+        assert_eq!(selected.get(), 2);
     }
 
     #[test]
