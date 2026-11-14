@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use image::{ImageFormat, Rgb, RgbImage};
+use jiff::tz::TimeZone;
 use lost_scores_app::history::{SavedScan, VERSION, save};
 use lost_scores_app::pipeline::PotentialResult;
 use lost_scores_app::rows::{Hits, LostRow, PotentialRow};
@@ -12,7 +13,8 @@ use lost_scores_core::maps::MapStatus;
 use lost_scores_gui::share::model::ShareOptions;
 use lost_scores_gui::share::rasters::Fetch;
 use lost_scores_gui::share::render::{
-    BADGE_FILE, Caches, LOST_FILE, POTENTIAL_FILE, render_with, use_offscreen_platform,
+    BADGE_FILE, Caches, LOST_FILE, POTENTIAL_FILE, Prepared, Rendered, render_images, render_with,
+    use_offscreen_platform,
 };
 
 const MADE_AT: i64 = 1_794_649_471;
@@ -187,4 +189,40 @@ fn render_all_writes_three_pngs_of_the_right_size() {
     assert_eq!(size(&written[0]), (1960, 2 * (150 + 64)));
     assert!(!empty.join(POTENTIAL_FILE).exists());
     assert!(!empty.join(BADGE_FILE).exists());
+
+    for rows in [0usize, 1, 4, 12] {
+        let shape = scan(
+            (0..rows as u32)
+                .map(|n| lost(n, MapStatus::Ranked, ""))
+                .collect(),
+            Some(PotentialResult {
+                current_pp: 1.0,
+                potential_pp: 2.0,
+                current_accuracy: 98.0,
+                potential_accuracy: 98.1,
+                global_rank: None,
+                lost_in_top: 0,
+                rows: (1..=rows).map(|place| weighted(place, false)).collect(),
+                online: Vec::new(),
+            }),
+        );
+        let wide = ShareOptions {
+            count: 12,
+            include_all: false,
+            show_lost_in_top: false,
+        };
+        let images = render_images(&shape, &wide, &Prepared::default(), &TimeZone::UTC).unwrap();
+        assert_eq!(images.len(), 3);
+        for image in &images {
+            for (x, y) in corners(image) {
+                let alpha = image.rgba[(y * image.width as usize + x) * 4 + 3];
+                assert_eq!(alpha, 0, "{} with {rows} rows, corner {x},{y}", image.file);
+            }
+        }
+    }
+}
+
+fn corners(image: &Rendered) -> [(usize, usize); 4] {
+    let (right, bottom) = (image.width as usize - 1, image.height as usize - 1);
+    [(0, 0), (right, 0), (0, bottom), (right, bottom)]
 }

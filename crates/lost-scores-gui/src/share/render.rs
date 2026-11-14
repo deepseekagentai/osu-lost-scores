@@ -20,7 +20,7 @@ use slint::{
 };
 
 use crate::avatar;
-use crate::share::art::Art;
+use crate::share::art::{self, Art};
 use crate::share::model::{
     ShareOptions, ShareRow, badge_lost_line, badge_when_line, lost_rows, mods_width,
     potential_rows, stats, subtitle,
@@ -206,6 +206,18 @@ fn items(rows: &[ShareRow], prepared: &Prepared, art: &Art) -> ModelRc<ShareItem
     ModelRc::new(VecModel::from(list))
 }
 
+fn physical(logical: f32) -> u32 {
+    (logical * SCALE).round() as u32
+}
+
+fn wide_backdrop(image_height: f32) -> Image {
+    Image::from_rgba8(art::backdrop_wide(physical(image_height)))
+}
+
+fn backdrop_height(image_height: f32) -> f32 {
+    physical(image_height).min(art::BACKDROP_WIDE_HEIGHT) as f32 / SCALE
+}
+
 fn avatar(buffer: &Option<Pixels>) -> Image {
     buffer.clone().map(Image::from_rgba8).unwrap_or_default()
 }
@@ -231,7 +243,8 @@ pub fn render_images(
 
     let rows = lost_rows(scan, options);
     let lost = ShareLost::new()?;
-    lost.set_backdrop(art.backdrop_wide.clone());
+    lost.set_backdrop(wide_backdrop(lost.get_image_height()));
+    lost.set_backdrop_height(backdrop_height(lost.get_image_height()));
     lost.set_avatar(avatar(&prepared.header_avatar));
     lost.set_art(share_art(&art));
     lost.set_mods_width(mods_width(&rows));
@@ -245,7 +258,8 @@ pub fn render_images(
         let rows = potential_rows(scan, options);
         let card = stats(potential);
         let top = SharePotential::new()?;
-        top.set_backdrop(art.backdrop_wide.clone());
+        top.set_backdrop(wide_backdrop(top.get_image_height()));
+        top.set_backdrop_height(backdrop_height(top.get_image_height()));
         top.set_avatar(avatar(&prepared.header_avatar));
         top.set_art(share_art(&art));
         top.set_mods_width(mods_width(&rows));

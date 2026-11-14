@@ -438,6 +438,7 @@ export component ShareLost inherits Window {
     default-font-family: "Fredoka";
     default-font-size: 14px;
     in property <image> backdrop;
+    in property <length> backdrop-height: 440px;
     in property <image> avatar;
     in property <ShareArt> art;
     in property <length> mods-width;
@@ -451,6 +452,7 @@ export component ShareLost inherits Window {
     background: transparent;
     ShareFrame {
         backdrop: root.backdrop;
+        backdrop-height: root.backdrop-height;
         ShareHeader {
             x: 24px;
             y: 22px;
@@ -483,6 +485,7 @@ export component SharePotential inherits Window {
     default-font-family: "Fredoka";
     default-font-size: 14px;
     in property <image> backdrop;
+    in property <length> backdrop-height: 440px;
     in property <image> avatar;
     in property <ShareArt> art;
     in property <length> mods-width;
@@ -502,6 +505,7 @@ export component SharePotential inherits Window {
     background: transparent;
     ShareFrame {
         backdrop: root.backdrop;
+        backdrop-height: root.backdrop-height;
         ShareHeader {
             x: 24px;
             y: 22px;

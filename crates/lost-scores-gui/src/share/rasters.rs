@@ -48,32 +48,53 @@ pub fn cover_strip(jpeg: &[u8]) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
         .to_rgba8();
     let cropped = crop_centre(&decoded, STRIP_WIDTH, STRIP_HEIGHT);
     let mut strip = imageops::resize(&cropped, STRIP_WIDTH, STRIP_HEIGHT, FilterType::Lanczos3);
-    for (x, y, pixel) in strip.enumerate_pixels_mut() {
+    for (x, _, pixel) in strip.enumerate_pixels_mut() {
         let fade = STRIP_OPACITY * (1.0 - x as f32 / STRIP_WIDTH as f32);
-        let dx = (STRIP_RADIUS - (x as f32 + 0.5)).max(0.0);
-        let dy = (STRIP_RADIUS - (y as f32 + 0.5))
-            .max(y as f32 + 0.5 - (STRIP_HEIGHT as f32 - STRIP_RADIUS))
-            .max(0.0);
-        let outside = (dx * dx + dy * dy).sqrt() - STRIP_RADIUS;
-        let coverage = if dx > 0.0 {
-            (0.5 - outside).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        pixel.0[3] = (255.0 * fade * coverage).round() as u8;
+        pixel.0[3] = (255.0 * fade).round() as u8;
     }
+    round_corners(&mut strip, STRIP_RADIUS, Corners::LEFT);
     Ok(into_buffer(&strip))
 }
 
-pub(crate) fn round_corners(image: &mut RgbaImage, radius: f32) {
-    let size = image.width() as f32;
+#[derive(Clone, Copy)]
+pub(crate) struct Corners {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl Corners {
+    pub const ALL: Corners = Corners {
+        left: true,
+        right: true,
+        top: true,
+        bottom: true,
+    };
+    pub const LEFT: Corners = Corners {
+        left: true,
+        right: false,
+        top: true,
+        bottom: true,
+    };
+    pub const BOTTOM: Corners = Corners {
+        left: true,
+        right: true,
+        top: false,
+        bottom: true,
+    };
+}
+
+pub(crate) fn round_corners(image: &mut RgbaImage, radius: f32, corners: Corners) {
+    let (width, height) = (image.width() as f32, image.height() as f32);
+    let reach = |near: bool, far: bool, at: f32, size: f32| {
+        let before = if near { radius - at } else { 0.0 };
+        let after = if far { at - (size - radius) } else { 0.0 };
+        before.max(after).max(0.0)
+    };
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let dx = (x as f32 + 0.5 - radius)
-            .min(0.0)
-            .min(size - radius - (x as f32 + 0.5));
-        let dy = (y as f32 + 0.5 - radius)
-            .min(0.0)
-            .min(size - radius - (y as f32 + 0.5));
+        let dx = reach(corners.left, corners.right, x as f32 + 0.5, width);
+        let dy = reach(corners.top, corners.bottom, y as f32 + 0.5, height);
         let outside = (dx * dx + dy * dy).sqrt() - radius;
         let coverage = (0.5 - outside).clamp(0.0, 1.0);
         pixel.0[3] = (f32::from(pixel.0[3]) * coverage).round() as u8;
@@ -91,7 +112,7 @@ pub fn rounded_square(
     let side = decoded.width().min(decoded.height());
     let square = crop_centre(&decoded, side, side);
     let mut scaled = imageops::resize(&square, size, size, FilterType::Lanczos3);
-    round_corners(&mut scaled, radius);
+    round_corners(&mut scaled, radius, Corners::ALL);
     Ok(into_buffer(&scaled))
 }
 

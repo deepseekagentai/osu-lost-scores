@@ -2,6 +2,8 @@ use image::RgbaImage;
 use lost_scores_core::grade::Grade;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+use crate::share::rasters::{Corners, round_corners};
+
 macro_rules! picture {
     ($path:literal) => {
         include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/share/", $path)).as_slice()
@@ -48,6 +50,21 @@ pub fn buffer(png: &[u8]) -> SharedPixelBuffer<Rgba8Pixel> {
     SharedPixelBuffer::clone_from_slice(decoded.as_raw(), decoded.width(), decoded.height())
 }
 
+pub const BACKDROP_WIDE_HEIGHT: u32 = 880;
+const FRAME_RADIUS: f32 = 36.0;
+
+pub fn backdrop_wide(height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let mut decoded: RgbaImage = image::load_from_memory(BACKDROP_WIDE)
+        .expect("the share pictures are valid PNG files")
+        .to_rgba8();
+    let rows = height.min(BACKDROP_WIDE_HEIGHT);
+    decoded = image::imageops::crop_imm(&decoded, 0, 0, decoded.width(), rows).to_image();
+    if height < BACKDROP_WIDE_HEIGHT {
+        round_corners(&mut decoded, FRAME_RADIUS, Corners::BOTTOM);
+    }
+    SharedPixelBuffer::clone_from_slice(decoded.as_raw(), decoded.width(), decoded.height())
+}
+
 pub struct Art {
     pub grades: Vec<(Grade, Image)>,
     pub mods: Vec<(&'static str, Image)>,
@@ -55,7 +72,6 @@ pub struct Art {
     pub lemon_large: Image,
     pub clock: Image,
     pub trend_down: Image,
-    pub backdrop_wide: Image,
     pub backdrop_badge: Image,
 }
 
@@ -75,7 +91,6 @@ impl Art {
             lemon_large: image(LEMON_LARGE),
             clock: image(CLOCK),
             trend_down: image(TREND_DOWN),
-            backdrop_wide: image(BACKDROP_WIDE),
             backdrop_badge: image(BACKDROP_BADGE),
         }
     }
