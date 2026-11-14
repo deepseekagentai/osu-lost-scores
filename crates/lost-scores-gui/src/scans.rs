@@ -1,17 +1,17 @@
 use std::path::Path;
 
-use lost_scores_app::history::ScanEntry;
+use lost_scores_app::history::{self, ScanEntry};
 
 const MEGABYTE: f64 = 1_048_576.0;
 
 pub fn size_text(bytes: u64) -> String {
     let megabytes = bytes as f64 / MEGABYTE;
-    if megabytes >= 1024.0 {
-        format!("{:.1} GB", megabytes / 1024.0)
-    } else if megabytes >= 10.0 {
+    if (megabytes * 10.0).round() < 100.0 {
+        format!("{megabytes:.1} MB")
+    } else if megabytes.round() < 1024.0 {
         format!("{megabytes:.0} MB")
     } else {
-        format!("{megabytes:.1} MB")
+        format!("{:.1} GB", megabytes / 1024.0)
     }
 }
 
@@ -21,13 +21,61 @@ pub fn shown_after_delete(entries: &[ScanEntry], shown: Option<&Path>) -> usize 
         .unwrap_or(0)
 }
 
+fn older_scans(count: usize) -> String {
+    let noun = if count == 1 { "scan" } else { "scans" };
+    format!("{count} older {noun}")
+}
+
+pub fn older_prompt(count: usize, bytes: u64) -> String {
+    format!(
+        "Move {} ({}) to the trash? The newest scan stays.",
+        older_scans(count),
+        size_text(bytes)
+    )
+}
+
+pub fn older_done(count: usize) -> String {
+    format!("Moved {} to the trash", older_scans(count))
+}
+
+pub fn trash_message(error: &trash::Error) -> String {
+    match error {
+        #[cfg(all(
+            unix,
+            not(target_os = "macos"),
+            not(target_os = "ios"),
+            not(target_os = "android")
+        ))]
+        trash::Error::FileSystem { path, source } => format!("{}: {source}", path.display()),
+        trash::Error::Os { description, .. } => description.clone(),
+        other => other.to_string(),
+    }
+}
+
+pub struct Reread {
+    pub entries: Vec<ScanEntry>,
+    pub index: usize,
+    pub shown_gone: bool,
+}
+
+pub fn reread(dir: &Path, shown: Option<&Path>) -> Reread {
+    let entries = history::list(dir);
+    let index = shown_after_delete(&entries, shown);
+    let shown_gone = shown.is_some_and(|shown| entries.iter().all(|entry| entry.folder != shown));
+    Reread {
+        entries,
+        index,
+        shown_gone,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use lost_scores_app::history::ScanEntry;
+    use lost_scores_app::history::{self, ScanEntry};
 
-    use super::{shown_after_delete, size_text};
+    use super::{older_done, older_prompt, reread, shown_after_delete, size_text, trash_message};
 
     #[test]
     fn sizes_read_in_megabytes() {
@@ -51,5 +99,84 @@ mod tests {
         assert_eq!(shown_after_delete(&left, Some(Path::new("/scans/a"))), 0);
         assert_eq!(shown_after_delete(&left, None), 0);
         assert_eq!(shown_after_delete(&[], Some(Path::new("/scans/a"))), 0);
+    }
+
+    #[test]
+    fn sizes_pick_the_unit_after_rounding() {
+        assert_eq!(size_text(10_434_000), "10 MB");
+        assert_eq!(size_text(10_485_760), "10 MB");
+        assert_eq!(size_text(1_073_300_000), "1.0 GB");
+        assert_eq!(size_text(1_073_741_824), "1.0 GB");
+        assert_eq!(size_text(0), "0.0 MB");
+    }
+
+    #[test]
+    fn one_older_scan_is_singular() {
+        assert_eq!(
+            older_prompt(1, 331_776),
+            "Move 1 older scan (0.3 MB) to the trash? The newest scan stays."
+        );
+        assert_eq!(
+            older_prompt(2, 650_000),
+            "Move 2 older scans (0.6 MB) to the trash? The newest scan stays."
+        );
+        assert_eq!(older_done(1), "Moved 1 older scan to the trash");
+        assert_eq!(older_done(3), "Moved 3 older scans to the trash");
+    }
+
+    #[test]
+    fn trash_errors_read_in_words() {
+        let os = trash::Error::Os {
+            code: 5,
+            description: "Access is denied.".into(),
+        };
+        assert_eq!(trash_message(&os), "Access is denied.");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+            let error = trash::Error::FileSystem {
+                path: PathBuf::from("/scans/2026-11-12_09-00-00Z"),
+                source: denied,
+            };
+            assert_eq!(
+                trash_message(&error),
+                "/scans/2026-11-12_09-00-00Z: permission denied"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_move_leaves_a_list_without_the_moved_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folders = Vec::new();
+        for name in [
+            "2026-11-14_09-00-00Z",
+            "2026-11-13_09-00-00Z",
+            "2026-11-12_09-00-00Z",
+        ] {
+            let folder = dir.path().join(name);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("scan.json"), b"{}").unwrap();
+            folders.push(folder);
+        }
+        let older = folders[1..].to_vec();
+        let result = history::remove(dir.path(), &older, |handed| {
+            std::fs::remove_dir_all(&handed[0]).unwrap();
+            Err(anyhow::anyhow!("a file is open in another program"))
+        });
+        assert!(result.is_err());
+        let read = reread(dir.path(), Some(&folders[1]));
+        let left: Vec<_> = read
+            .entries
+            .iter()
+            .map(|entry| entry.folder.clone())
+            .collect();
+        assert_eq!(left, vec![folders[0].clone(), folders[2].clone()]);
+        assert!(read.shown_gone);
+        assert_eq!(read.index, 0);
+        let kept = reread(dir.path(), Some(&folders[2]));
+        assert!(!kept.shown_gone);
+        assert_eq!(kept.index, 1);
+        assert!(!reread(dir.path(), None).shown_gone);
     }
 }

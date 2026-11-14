@@ -3,6 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 
+use crate::share::render::ShareImage;
+
 pub const CATBOX_API: &str = "https://catbox.moe/user/api.php";
 const LINK_PREFIX: &str = "https://files.catbox.moe/";
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -102,9 +104,37 @@ impl Consent {
     }
 }
 
+#[derive(Default)]
+pub struct Choices {
+    shown: Vec<ShareImage>,
+    pending: Option<ShareImage>,
+}
+
+impl Choices {
+    pub fn replace(&mut self, shown: Vec<ShareImage>) {
+        self.shown = shown;
+    }
+
+    pub fn get(&self, index: usize) -> Option<ShareImage> {
+        self.shown.get(index).cloned()
+    }
+
+    pub fn hold(&mut self, index: usize) -> bool {
+        self.pending = self.get(index);
+        self.pending.is_some()
+    }
+
+    pub fn release(&mut self) -> Option<ShareImage> {
+        self.pending.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Consent, multipart_body, parse_link};
+    use std::path::PathBuf;
+
+    use super::{Choices, Consent, multipart_body, parse_link};
+    use crate::share::render::ShareImage;
 
     const LINK: &str = "https://files.catbox.moe/abc123.png";
 
@@ -147,5 +177,27 @@ mod tests {
         assert!(!consent.must_ask());
         assert!(consent.remembered());
         assert!(!Consent::new(true).must_ask());
+    }
+
+    fn image(label: &'static str, path: &str) -> ShareImage {
+        ShareImage {
+            label,
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn the_sheet_keeps_the_chosen_image_when_the_list_changes() {
+        let mut choices = Choices::default();
+        choices.replace(vec![
+            image("Lost Scores", "/a/lost.png"),
+            image("Badge", "/a/badge.png"),
+        ]);
+        assert!(choices.hold(1));
+        choices.replace(vec![image("Lost Scores", "/b/lost.png")]);
+        assert_eq!(choices.get(1), None);
+        assert_eq!(choices.release(), Some(image("Badge", "/a/badge.png")));
+        assert_eq!(choices.release(), None);
+        assert!(!choices.hold(5));
     }
 }

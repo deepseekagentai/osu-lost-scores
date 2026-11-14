@@ -22,9 +22,9 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
-use crate::scans::{shown_after_delete, size_text};
+use crate::scans::{older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
-use crate::share::upload::{self, Consent};
+use crate::share::upload::{self, Choices, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot, mods_width};
@@ -66,9 +66,8 @@ struct Session {
     clipboard: RefCell<Option<arboard::Clipboard>>,
     copied: slint::Timer,
     consent: Cell<Consent>,
-    shared: RefCell<Vec<ShareImage>>,
+    choices: RefCell<Choices>,
     uploading: Cell<bool>,
-    pending_upload: Cell<Option<usize>>,
     pending_delete: RefCell<Option<Removal>>,
 }
 
@@ -121,9 +120,8 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
         clipboard: RefCell::new(None),
         copied: slint::Timer::default(),
         consent: Cell::new(Consent::new(false)),
-        shared: RefCell::new(Vec::new()),
+        choices: RefCell::new(Choices::default()),
         uploading: Cell::new(false),
-        pending_upload: Cell::new(None),
         pending_delete: RefCell::new(None),
         window: window.clone_strong(),
         weak: window.as_weak(),
@@ -481,7 +479,10 @@ impl Session {
         );
     }
 
-    fn ask_delete_older(&self) {
+    fn ask_delete_older(self: &Rc<Self>) {
+        if let Some(dir) = history::scans_dir() {
+            self.reload_scans(&dir);
+        }
         let folders: Vec<PathBuf> = self
             .entries
             .borrow()
@@ -494,21 +495,10 @@ impl Session {
         }
         let bytes: u64 = folders.iter().map(|folder| history::size(folder)).sum();
         let count = folders.len();
-        self.ask_delete(
-            folders,
-            format!(
-                "Move {count} older scans ({}) to the trash? The newest scan stays.",
-                size_text(bytes)
-            ),
-            format!("Moved {count} older scans to the trash"),
-        );
+        self.ask_delete(folders, older_prompt(count, bytes), older_done(count));
     }
 
     fn ask_delete(&self, folders: Vec<PathBuf>, message: String, done: String) {
-        if self.busy() {
-            self.log("Wait for the scan to finish before moving scans to the trash");
-            return;
-        }
         let state = self.window.global::<State>();
         state.set_scans_open(false);
         *self.pending_delete.borrow_mut() = Some(Removal { folders, done });
@@ -527,35 +517,38 @@ impl Session {
             return;
         };
         let Some(dir) = history::scans_dir() else {
-            self.log("Could not move the scans to the trash: cannot find the scan history");
+            self.fail_removal("cannot find the scan history");
             return;
         };
         let weak = self.weak.clone();
         thread::spawn(move || {
             let result = history::remove(&dir, &removal.folders, |folders| {
-                trash::delete_all(folders).map_err(anyhow::Error::from)
+                trash::delete_all(folders).map_err(|error| anyhow::anyhow!(trash_message(&error)))
             });
-            on_ui(&weak, move |app| match result {
-                Ok(()) => app.scans_removed(&dir, &removal.done),
-                Err(error) => app.log(&format!("Could not move the scans to the trash: {error:#}")),
+            on_ui(&weak, move |app| {
+                match result {
+                    Ok(()) => {
+                        app.log(&removal.done);
+                        app.toast("Moved to the trash");
+                    }
+                    Err(error) => app.fail_removal(&format!("{error:#}")),
+                }
+                app.reload_scans(&dir);
             });
         });
     }
 
-    fn scans_removed(self: &Rc<Self>, dir: &Path, done: &str) {
-        self.log(done);
-        *self.entries.borrow_mut() = history::list(dir);
+    fn fail_removal(&self, reason: &str) {
+        self.log(&format!("Could not move the scans to the trash: {reason}"));
+        self.toast("Could not move to the trash: see the log");
+    }
+
+    fn reload_scans(self: &Rc<Self>, dir: &Path) {
         let shown = self.folder.borrow().clone();
-        let index = shown_after_delete(&self.entries.borrow(), shown.as_deref());
-        let present = shown.as_ref().is_some_and(|shown| {
-            self.entries
-                .borrow()
-                .iter()
-                .any(|entry| &entry.folder == shown)
-        });
-        if present {
-            self.relist(index);
-        } else {
+        let read = reread(dir, shown.as_deref());
+        *self.entries.borrow_mut() = read.entries;
+        self.relist(read.index);
+        if read.shown_gone {
             self.select_scan(0);
         }
     }
@@ -572,7 +565,7 @@ impl Session {
             found.iter().map(|image| image.label.into()).collect();
         state.set_has_images(!found.is_empty());
         state.set_share_images(ModelRc::new(VecModel::from(labels)));
-        *self.shared.borrow_mut() = found;
+        self.choices.borrow_mut().replace(found);
     }
 
     fn open_share(&self) {
@@ -609,7 +602,12 @@ impl Session {
     }
 
     fn shared_image(&self, index: usize) -> Option<ShareImage> {
-        self.shared.borrow().get(index).cloned()
+        self.choices.borrow().get(index)
+    }
+
+    fn copy_failed(&self, error: &str) {
+        self.log(&format!("Could not copy the image: {error}"));
+        self.toast("Could not copy the image: see the log");
     }
 
     fn copy_image(self: &Rc<Self>, index: usize) {
@@ -632,10 +630,10 @@ impl Session {
                     });
                     match result {
                         Ok(()) => app.toast("Image copied"),
-                        Err(error) => app.log(&format!("Could not copy the image: {error}")),
+                        Err(error) => app.copy_failed(&error),
                     }
                 }
-                Err(error) => app.log(&format!("Could not copy the image: {error}")),
+                Err(error) => app.copy_failed(&error.to_string()),
             });
         });
     }
@@ -643,14 +641,16 @@ impl Session {
     fn ask_upload(self: &Rc<Self>, index: usize) {
         let state = self.window.global::<State>();
         state.set_share_open(false);
-        if self.uploading.get() || self.shared_image(index).is_none() {
+        if self.uploading.get() {
+            self.toast("An upload is already running");
             return;
         }
         if self.consent.get().must_ask() {
-            self.pending_upload.set(Some(index));
-            state.set_upload_confirm_open(true);
-        } else {
-            self.upload(index);
+            if self.choices.borrow_mut().hold(index) {
+                state.set_upload_confirm_open(true);
+            }
+        } else if let Some(image) = self.shared_image(index) {
+            self.upload(image);
         }
     }
 
@@ -662,45 +662,57 @@ impl Session {
         if remember {
             self.change_settings(|settings| settings.catbox_confirmed = true);
         }
-        if let Some(index) = self.pending_upload.take() {
-            self.upload(index);
+        let held = self.choices.borrow_mut().release();
+        if let Some(image) = held {
+            self.upload(image);
         }
     }
 
     fn cancel_upload(&self) {
-        self.pending_upload.set(None);
+        self.choices.borrow_mut().release();
         self.window.global::<State>().set_upload_confirm_open(false);
     }
 
-    fn upload(self: &Rc<Self>, index: usize) {
-        let Some(image) = self.shared_image(index) else {
-            return;
-        };
+    fn upload(self: &Rc<Self>, image: ShareImage) {
         self.uploading.set(true);
         self.log(&format!("Uploading {} to catbox...", image.label));
+        self.toast("Uploading...");
         let weak = self.weak.clone();
         thread::spawn(move || {
             let result = upload::upload(&upload::agent(), &image.path);
             on_ui(&weak, move |app| {
                 app.uploading.set(false);
-                match result {
-                    Ok(link) => {
-                        let copied = app.put_on_clipboard(|clipboard| {
-                            clipboard
-                                .set_text(link.clone())
-                                .map_err(|error| error.to_string())
-                        });
-                        match copied {
-                            Ok(()) => app.log(&format!("Link copied: {link}")),
-                            Err(error) => app.log(&format!(
-                                "Uploaded, but the link could not be copied: {error}. Link: {link}"
-                            )),
-                        }
-                    }
-                    Err(error) => app.log(&format!("Could not upload the image: {error:#}")),
-                }
+                app.uploaded(result);
             });
         });
+    }
+
+    fn uploaded(&self, result: Result<String>) {
+        let link = match result {
+            Ok(link) => link,
+            Err(error) => {
+                self.log(&format!("Could not upload the image: {error:#}"));
+                self.toast("Could not upload: see the log");
+                return;
+            }
+        };
+        let copied = self.put_on_clipboard(|clipboard| {
+            clipboard
+                .set_text(link.clone())
+                .map_err(|error| error.to_string())
+        });
+        match copied {
+            Ok(()) => {
+                self.log(&format!("Link copied: {link}"));
+                self.toast("Link copied");
+            }
+            Err(error) => {
+                self.log(&format!(
+                    "Uploaded, but the link could not be copied: {error}. Link: {link}"
+                ));
+                self.toast("Uploaded: the link is in the log");
+            }
+        }
     }
 
     fn include_in_place(&self, value: bool) {
