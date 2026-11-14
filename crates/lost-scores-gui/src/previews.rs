@@ -48,7 +48,7 @@ pub fn plan(images: &[ShareImage], room: f32, scale: f32) -> Vec<Wanted> {
 }
 
 pub const MAX_HEIGHT: u32 = 16_000;
-pub const CARD_HEAD: f32 = 40.0;
+pub const CARD_HEAD: f32 = 12.0;
 pub const CARD_FOOT: f32 = 18.0;
 
 pub fn picture_tops(heights: &[f32]) -> Vec<f32> {
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn each_picture_starts_after_the_card_of_the_one_before() {
-        assert_eq!(picture_tops(&[100.0, 200.0, 50.0]), [0.0, 158.0, 416.0]);
+        assert_eq!(picture_tops(&[100.0, 200.0, 50.0]), [0.0, 130.0, 360.0]);
         assert!(picture_tops(&[]).is_empty());
     }
 

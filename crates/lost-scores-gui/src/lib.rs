@@ -501,23 +501,77 @@ mod tests {
     }
 
     #[test]
-    fn each_picture_has_only_a_catbox_button() {
-        let window = images_window(650.0, &["Lost Scores", "Potential Top", "Badge"]);
+    fn one_catbox_button_sits_next_to_the_switch_and_none_on_the_pictures() {
+        let window = images_window(650.0, &["Badge", "Lost Scores", "Potential Top"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        let labelled =
+            |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
+        assert_eq!(labelled("catbox"), 1);
+        assert_eq!(labelled("Open"), 0);
+        let catbox = ElementHandle::find_by_accessible_label(&window, "catbox")
+            .next()
+            .unwrap();
+        let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
+            .next()
+            .unwrap();
+        let middle =
+            |element: &ElementHandle| element.absolute_position().y + element.size().height / 2.0;
+        assert!((middle(&catbox) - middle(&switch)).abs() < 2.0);
+        assert!(catbox.absolute_position().x + catbox.size().width <= switch.absolute_position().x);
+        state.set_images_shown(false);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        assert_eq!(labelled("catbox"), 0);
+    }
+
+    #[test]
+    fn the_catbox_menu_lists_the_pictures_and_uploads_the_chosen_one() {
+        let window = images_window(650.0, &["Badge", "Lost Scores", "Potential Top"]);
         let state = window.global::<State>();
         state.set_images_shown(true);
         let uploads = Rc::new(std::cell::RefCell::new(Vec::new()));
         let seen = uploads.clone();
         state.on_upload_image(move |index| seen.borrow_mut().push(index));
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
-
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
         let labelled =
             |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
-        assert_eq!(labelled("Open"), 0);
-        assert_eq!(labelled("Copy"), 0);
-        assert_eq!(labelled("catbox"), 3);
-        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "catbox").collect();
-        buttons[2].mock_single_click(PointerEventButton::Left);
+        let click = |label: &str| {
+            ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap()
+                .mock_single_click(PointerEventButton::Left);
+        };
+        assert_eq!(labelled("Potential Top"), 0);
+        click("catbox");
+        for label in ["Badge", "Lost Scores", "Potential Top"] {
+            assert_eq!(labelled(label), 1, "{label}");
+        }
+        click("Potential Top");
+        assert_eq!(labelled("Badge"), 0);
         assert_eq!(*uploads.borrow(), [2]);
+    }
+
+    #[test]
+    fn escape_closes_the_catbox_menu_before_anything_else() {
+        let window = images_window(650.0, &["Badge"]);
+        let state = window.global::<State>();
+        state.set_images_shown(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
+        ElementHandle::find_by_accessible_label(&window, "catbox")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Badge").count(),
+            1
+        );
+        press(&window, Key::Escape);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Badge").count(),
+            0
+        );
+        assert!(state.get_show_results());
     }
 
     fn picture(window: &MainWindow, label: &str) -> ElementHandle {
@@ -601,7 +655,7 @@ mod tests {
         assert_eq!(labelled("Lost Scores"), 0);
         assert_eq!(labelled("Badge"), 0);
         assert_eq!(labelled("Open"), 0);
-        assert_eq!(labelled("catbox"), 2);
+        assert_eq!(labelled("catbox"), 1);
     }
 
     #[test]
@@ -625,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn every_picture_is_centred_and_its_buttons_follow_its_right_edge() {
+    fn every_picture_is_centred() {
         let window = images_window(650.0, &[]);
         let state = window.global::<State>();
         let make = |label: &str, width: f32| Preview {
@@ -659,18 +713,6 @@ mod tests {
         let centre = card.absolute_position().x + card.size().width / 2.0;
         assert!((badge.absolute_position().x + 150.0 - centre).abs() < 1.0);
         assert!((wide.absolute_position().x + 250.0 - centre).abs() < 1.0);
-        let mut catboxes: Vec<_> =
-            ElementHandle::find_by_element_type_name(&window, "CatboxButton")
-                .map(|button| {
-                    (
-                        button.absolute_position().y,
-                        button.absolute_position().x + button.size().width,
-                    )
-                })
-                .collect();
-        catboxes.sort_by(|a, b| a.0.total_cmp(&b.0));
-        assert!((catboxes[0].1 - (badge.absolute_position().x + 300.0)).abs() < 1.0);
-        assert!((catboxes[1].1 - (wide.absolute_position().x + 500.0)).abs() < 1.0);
     }
 
     #[test]

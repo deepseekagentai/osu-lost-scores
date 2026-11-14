@@ -2220,7 +2220,7 @@ mod tests {
         let expected = drawn_previews(&window, 1.25);
         let handles = i_slint_backend_testing::ElementHandle::find_by_element_type_name;
         let tops: Vec<f32> = handles(&window, "PreviewCard")
-            .map(|card| card.absolute_position().y + 40.0)
+            .map(|card| card.absolute_position().y + crate::previews::CARD_HEAD)
             .collect();
         assert!(!tops.is_empty());
         let images: Vec<_> = handles(&window, "Image").collect();

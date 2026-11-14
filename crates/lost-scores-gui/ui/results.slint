@@ -614,45 +614,49 @@ component OpenFolder inherits VerticalLayout {
     }
 }
 
-component CatboxButton inherits Rectangle {
-    in property <int> index;
-    width: row.preferred-width + 26px;
-    height: 32px;
-    border-radius: 10px;
-    background: T.btn;
-    border-width: 2px;
-    border-color: ta.has-hover ? T.acc : transparent;
-    animate border-color { duration: 150ms; }
-    row := HorizontalLayout {
-        x: 13px;
-        width: parent.width - 26px;
-        spacing: 8px;
-        alignment: center;
-        VerticalLayout {
+component CatboxButton inherits VerticalLayout {
+    alignment: center;
+    button := Rectangle {
+        width: row.preferred-width + 26px;
+        height: 40px;
+        border-radius: 10px;
+        background: T.btn;
+        border-width: 2px;
+        border-color: ta.has-hover || State.catbox-menu-open ? T.acc : transparent;
+        animate border-color { duration: 150ms; }
+        row := HorizontalLayout {
+            x: 13px;
+            width: parent.width - 26px;
+            spacing: 8px;
             alignment: center;
-            Image {
-                source: @image-url("../assets/i-cloud-up.svg");
-                width: 20px;
-                height: 16px;
-                image-fit: contain;
-                colorize: #ffffff;
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    source: @image-url("../assets/i-cloud-up.svg");
+                    width: 20px;
+                    height: 16px;
+                    image-fit: contain;
+                    colorize: #ffffff;
+                }
+            }
+            Text {
+                text: "catbox";
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
             }
         }
-        Text {
-            text: "catbox";
-            color: #ffffff;
-            font-size: 13px;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-    }
-    ta := TipArea {
-        tip: "Upload to catbox.moe for a public link";
-        anchor: root.absolute-position;
-        anchor-height: root.height;
-        mouse-cursor: pointer;
-        clicked => {
-            State.upload-image(root.index);
+        ta := TipArea {
+            tip: "Upload a picture to catbox.moe for a public link";
+            anchor: button.absolute-position;
+            anchor-height: button.height;
+            mouse-cursor: pointer;
+            clicked => {
+                State.catbox-menu-x = button.absolute-position.x + button.width;
+                State.catbox-menu-y = button.absolute-position.y + button.height + 6px;
+                State.catbox-menu-open = !State.catbox-menu-open;
+            }
         }
     }
 }
@@ -662,15 +666,10 @@ component PreviewCard inherits Rectangle {
     in property <int> index;
     property <length> span: max(root.item.width, 160px);
     property <length> shift: max(0px, (root.width - root.span) / 2);
-    height: 40px + root.item.height + 18px;
-    CatboxButton {
-        x: root.shift + root.span - self.width;
-        y: 1px;
-        index: root.index;
-    }
+    height: 12px + root.item.height + 18px;
     if root.item.ready: Image {
         x: root.shift;
-        y: 40px;
+        y: 12px;
         source: root.item.image;
         width: root.item.width;
         height: root.item.height;
@@ -681,7 +680,7 @@ component PreviewCard inherits Rectangle {
     }
     if !root.item.ready: Text {
         x: 0px;
-        y: 40px;
+        y: 12px;
         text: "The " + root.item.label + " preview could not be made. Open the image to see it.";
         color: T.k;
         font-size: 14px;
@@ -689,7 +688,7 @@ component PreviewCard inherits Rectangle {
     }
     pic := TipArea {
         x: root.item.ready ? root.shift : 0px;
-        y: 40px;
+        y: 12px;
         width: root.item.ready ? root.item.width : root.width;
         height: root.item.ready ? root.item.height : 24px;
         tip: "Click to open, right-click to copy";
@@ -966,6 +965,9 @@ export component ResultsPanel inherits Rectangle {
             if !root.view-images: SearchButtons {
                 opacity: root.body-fade;
             }
+            if State.has-results && root.view-images && State.has-images: CatboxButton {
+                opacity: root.body-fade;
+            }
             if State.has-results: ModeSwitch { }
         }
         if root.narrow: VerticalLayout {
@@ -981,6 +983,9 @@ export component ResultsPanel inherits Rectangle {
                 if State.has-results: ScanSelector { }
                 if State.has-results: OpenFolder { }
                 Rectangle { horizontal-stretch: 1; }
+                if State.has-results && root.switch-up && root.view-images && State.has-images: CatboxButton {
+                    opacity: root.body-fade;
+                }
                 if State.has-results && root.switch-up: ModeSwitch { }
             }
             if !(root.switch-up && root.view-images): HorizontalLayout {
@@ -993,6 +998,9 @@ export component ResultsPanel inherits Rectangle {
                     opacity: root.body-fade;
                 }
                 if root.view-images: Rectangle { horizontal-stretch: 1; }
+                if State.has-results && !root.switch-up && root.view-images && State.has-images: CatboxButton {
+                    opacity: root.body-fade;
+                }
                 if State.has-results && !root.switch-up: ModeSwitch { }
             }
         }
@@ -1170,6 +1178,35 @@ export component ResultsPanel inherits Rectangle {
     if State.scans-open: TouchArea {
         clicked => {
             State.scans-open = false;
+        }
+    }
+    if State.catbox-menu-open: TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                State.catbox-menu-open = false;
+            }
+        }
+    }
+    if State.catbox-menu-open: Rectangle {
+        x: max(8px, min(State.catbox-menu-x - root.absolute-position.x - self.width, root.width - self.width - 8px));
+        y: max(8px, min(State.catbox-menu-y - root.absolute-position.y, root.height - self.height - 8px));
+        width: 176px;
+        height: 12px + State.previews.length * 34px + max(0, State.previews.length - 1) * 2px + 2px;
+        border-radius: 10px;
+        background: T.card;
+        border-width: 2px;
+        border-color: T.togb;
+        TouchArea { }
+        VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+            for item[i] in State.previews: MenuRow {
+                text: item.label;
+                clicked => {
+                    State.catbox-menu-open = false;
+                    State.upload-image(i);
+                }
+            }
         }
     }
     if State.picture-menu-index >= 0: TouchArea {
