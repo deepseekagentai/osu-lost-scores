@@ -47,8 +47,31 @@ pub fn trash_message(error: &trash::Error) -> String {
             not(target_os = "android")
         ))]
         trash::Error::FileSystem { path, source } => format!("{}: {source}", path.display()),
-        trash::Error::Os { description, .. } => description.clone(),
-        other => other.to_string(),
+        trash::Error::Os { code, description } if description.trim().is_empty() => {
+            format!("the system refused with error {code}")
+        }
+        trash::Error::Os { description, .. } => description.trim().to_owned(),
+        trash::Error::Unknown { description } if description.trim().is_empty() => {
+            "the trash failed for an unknown reason".to_owned()
+        }
+        trash::Error::Unknown { description } => description.trim().to_owned(),
+        trash::Error::TargetedRoot => "the root folder cannot be moved to the trash".to_owned(),
+        trash::Error::CouldNotAccess { target } => format!("cannot access {target}"),
+        trash::Error::CanonicalizePath { original } => {
+            format!("cannot resolve the path {}", original.display())
+        }
+        trash::Error::ConvertOsString { original } => {
+            format!(
+                "cannot read the name {} as text",
+                original.to_string_lossy()
+            )
+        }
+        trash::Error::RestoreCollision { path, .. } => {
+            format!("{} already exists", path.display())
+        }
+        trash::Error::RestoreTwins { path, .. } => {
+            format!("several items belong at {}", path.display())
+        }
     }
 }
 
@@ -131,6 +154,51 @@ mod tests {
             description: "Access is denied.".into(),
         };
         assert_eq!(trash_message(&os), "Access is denied.");
+        let silent = trash::Error::Os {
+            code: 32,
+            description: " ".into(),
+        };
+        assert_eq!(trash_message(&silent), "the system refused with error 32");
+        let said = trash::Error::Unknown {
+            description: "no trash folder on this drive\n".into(),
+        };
+        assert_eq!(trash_message(&said), "no trash folder on this drive");
+        let unsaid = trash::Error::Unknown {
+            description: String::new(),
+        };
+        assert_eq!(
+            trash_message(&unsaid),
+            "the trash failed for an unknown reason"
+        );
+        assert_eq!(
+            trash_message(&trash::Error::TargetedRoot),
+            "the root folder cannot be moved to the trash"
+        );
+        let blocked = trash::Error::CouldNotAccess {
+            target: "/scans/2026-11-12_09-00-00Z".into(),
+        };
+        assert_eq!(
+            trash_message(&blocked),
+            "cannot access /scans/2026-11-12_09-00-00Z"
+        );
+        let lost = trash::Error::CanonicalizePath {
+            original: PathBuf::from("/scans/gone"),
+        };
+        assert_eq!(trash_message(&lost), "cannot resolve the path /scans/gone");
+        let named = trash::Error::ConvertOsString {
+            original: std::ffi::OsString::from("scan"),
+        };
+        assert_eq!(trash_message(&named), "cannot read the name scan as text");
+        let collision = trash::Error::RestoreCollision {
+            path: PathBuf::from("/scans/x"),
+            remaining_items: Vec::new(),
+        };
+        assert_eq!(trash_message(&collision), "/scans/x already exists");
+        let twins = trash::Error::RestoreTwins {
+            path: PathBuf::from("/scans/x"),
+            items: Vec::new(),
+        };
+        assert_eq!(trash_message(&twins), "several items belong at /scans/x");
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
