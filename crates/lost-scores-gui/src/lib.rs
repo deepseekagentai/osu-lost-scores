@@ -353,6 +353,14 @@ mod tests {
         state.on_cancel_upload(record("cancel-upload"));
         state.on_close_about(record("close-about"));
         state.on_back(record("back"));
+        let searches = calls.clone();
+        state.on_search_changed(move |text| {
+            searches.borrow_mut().push(if text.is_empty() {
+                "search-cleared"
+            } else {
+                "search-edited"
+            })
+        });
         let uploads = calls.clone();
         state.on_confirm_upload(move |_| uploads.borrow_mut().push("confirm-upload"));
         (window, calls)
@@ -398,6 +406,42 @@ mod tests {
         assert!(calls.borrow().is_empty());
         press(&window, Key::Escape);
         assert_eq!(*calls.borrow(), ["back"]);
+    }
+
+    #[test]
+    fn escape_clears_the_search_text_before_the_overlay_goes_back() {
+        let (window, calls) = keyboard_window();
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_search_text("camellia".into());
+        state.set_search_index(3);
+        settle();
+
+        press(&window, Key::Escape);
+        assert_eq!(state.get_search_text(), "");
+        assert!(state.get_show_results());
+        assert_eq!(*calls.borrow(), ["search-cleared"]);
+
+        press(&window, Key::Escape);
+        assert_eq!(*calls.borrow(), ["search-cleared", "back"]);
+    }
+
+    #[test]
+    fn escape_in_the_search_field_clears_it_too() {
+        let (window, calls) = keyboard_window();
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_search_text("camellia".into());
+        settle();
+        ElementHandle::find_by_element_type_name(&window, "TextInput")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        press(&window, Key::Escape);
+        assert_eq!(state.get_search_text(), "");
+        assert_eq!(*calls.borrow(), ["search-cleared"]);
     }
 
     #[test]

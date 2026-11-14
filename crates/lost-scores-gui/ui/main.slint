@@ -76,6 +76,9 @@ export component MainWindow inherits Window {
                     if (!State.keys-busy) {
                         State.cancel-keys();
                     }
+                } else if ((State.show-results || root.two-columns) && State.search-text != "") {
+                    State.search-text = "";
+                    State.search-changed("");
                 } else if (State.show-results && !root.two-columns) {
                     State.back();
                 } else {
