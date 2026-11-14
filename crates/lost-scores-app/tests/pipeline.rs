@@ -2,9 +2,8 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
-use common::{Replay, isolate_environment, write};
+use common::{Isolated, Replay, isolate_environment, write};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
     Api, Event, Source, Step, find, load_catalog, lost, potential, read, refresh_statuses,
@@ -112,17 +111,26 @@ fn online_score(beatmap_id: u32, pp: f64) -> Score {
     }
 }
 
-fn osu_folder() -> &'static Path {
-    static FOLDER: OnceLock<TempDir> = OnceLock::new();
-    FOLDER
-        .get_or_init(|| {
-            isolate_environment();
-            let dir = tempfile::tempdir().unwrap();
-            fill_osu_folder(dir.path());
-            setup::resolve_osu_dir(Some(dir.path())).unwrap();
-            dir
-        })
-        .path()
+struct OsuFolder {
+    dir: TempDir,
+    _environment: Isolated,
+}
+
+impl OsuFolder {
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+fn osu_folder() -> OsuFolder {
+    let environment = isolate_environment();
+    let dir = tempfile::tempdir().unwrap();
+    fill_osu_folder(dir.path());
+    setup::resolve_osu_dir(Some(dir.path())).unwrap();
+    OsuFolder {
+        dir,
+        _environment: environment,
+    }
 }
 
 fn fill_osu_folder(root: &Path) {
@@ -173,7 +181,8 @@ fn log_lines(events: &[Event]) -> Vec<&str> {
 
 #[test]
 fn read_reports_the_lines_the_cli_printed() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let mut fake = Fake::default();
     let mut events = Vec::new();
     let read = read(
@@ -195,7 +204,8 @@ fn read_reports_the_lines_the_cli_printed() {
 
 #[test]
 fn read_without_the_api_still_reports_the_player() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let mut events = Vec::new();
     let read = read(
         &source(dir, None),
@@ -211,7 +221,8 @@ fn read_without_the_api_still_reports_the_player() {
 
 #[test]
 fn load_catalog_reports_progress_for_each_request() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let work = tempfile::tempdir().unwrap();
     let maps = work.path().join("maps.json");
     let mut fake = Fake::default();
@@ -260,7 +271,8 @@ fn load_catalog_reports_progress_for_each_request() {
 
 #[test]
 fn load_catalog_without_the_api_says_how_to_get_statuses() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let work = tempfile::tempdir().unwrap();
     let maps = work.path().join("maps.json");
     let mut timings = Timings::new();
@@ -293,7 +305,8 @@ fn load_catalog_without_the_api_says_how_to_get_statuses() {
 
 #[test]
 fn potential_merges_the_fake_online_top() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let work = tempfile::tempdir().unwrap();
     let maps = work.path().join("maps.json");
     let mut fake = Fake {
@@ -349,7 +362,8 @@ fn potential_merges_the_fake_online_top() {
 
 #[test]
 fn refresh_is_a_separate_step() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let work = tempfile::tempdir().unwrap();
     let maps = work.path().join("maps.json");
     let mut stale = MapCatalog::default();
@@ -415,7 +429,7 @@ fn refresh_is_a_separate_step() {
 
 #[test]
 fn a_failed_status_refresh_warns_and_carries_on() {
-    osu_folder();
+    let _osu = osu_folder();
     let work = tempfile::tempdir().unwrap();
     let maps = work.path().join("maps.json");
     let mut catalog = MapCatalog::default();
@@ -455,7 +469,7 @@ fn a_failed_status_refresh_warns_and_carries_on() {
 
 #[test]
 fn check_leaves_the_catalog_file_alone_when_nothing_changed() {
-    osu_folder();
+    let _osu = osu_folder();
     let cache = setup::osu_cache_dir().unwrap();
     write(&cache, &format!("{SAMPLE_MD5}.osu"), SAMPLE);
     let root = tempfile::tempdir().unwrap();
@@ -505,7 +519,8 @@ fn check_leaves_the_catalog_file_alone_when_nothing_changed() {
 
 #[test]
 fn check_without_the_api_gives_a_message_the_window_can_show_too() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let mut source = source(dir, None);
     source.check_missing = true;
     let mut events = Vec::new();
@@ -527,7 +542,8 @@ fn check_without_the_api_gives_a_message_the_window_can_show_too() {
 
 #[test]
 fn potential_refuses_a_player_the_api_gave_no_statistics_for() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let mut fake = Fake {
         bare_player: true,
         ..Fake::default()
@@ -558,7 +574,8 @@ fn potential_refuses_a_player_the_api_gave_no_statistics_for() {
 
 #[test]
 fn read_maps_scan_progress_to_the_songs_replays_and_pp_steps() {
-    let dir = osu_folder();
+    let osu = osu_folder();
+    let dir = osu.path();
     let mut events = Vec::new();
     read(
         &source(dir, None),

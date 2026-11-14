@@ -1306,7 +1306,7 @@ mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
-    use std::sync::{Once, OnceLock};
+    use std::sync::Mutex;
 
     use lost_scores_app::setup;
     use osu_api::Credentials;
@@ -1318,11 +1318,14 @@ mod tests {
     use crate::worker::Message;
     use crate::{MainWindow, State};
 
-    fn isolate_environment() {
-        static HOME: OnceLock<TempDir> = OnceLock::new();
-        static SET: Once = Once::new();
-        SET.call_once(|| {
-            let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
+    static HOME: Mutex<(usize, Option<TempDir>)> = Mutex::new((0, None));
+
+    struct Home;
+
+    fn isolate_environment() -> Home {
+        let mut state = HOME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.0 == 0 {
+            let home = tempfile::tempdir().unwrap();
             for (name, folder) in [
                 ("XDG_CONFIG_HOME", "config"),
                 ("XDG_DATA_HOME", "data"),
@@ -1330,7 +1333,31 @@ mod tests {
             ] {
                 unsafe { std::env::set_var(name, home.path().join(folder)) };
             }
-        });
+            state.1 = Some(home);
+        }
+        state.0 += 1;
+        Home
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let mut state = HOME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.0 -= 1;
+            if state.0 == 0 {
+                state.1 = None;
+            }
+        }
+    }
+
+    struct Fixture {
+        dir: TempDir,
+        _home: Home,
+    }
+
+    impl Fixture {
+        fn path(&self) -> &Path {
+            self.dir.path()
+        }
     }
 
     fn osu_folder(root: &Path) -> String {
@@ -1340,8 +1367,8 @@ mod tests {
         osu.display().to_string()
     }
 
-    fn session(width: f32) -> (MainWindow, std::rc::Rc<Session>, TempDir) {
-        isolate_environment();
+    fn session(width: f32) -> (MainWindow, std::rc::Rc<Session>, Fixture) {
+        let home = isolate_environment();
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
         window.show().unwrap();
@@ -1358,6 +1385,10 @@ mod tests {
         state.set_connected(true);
         state.set_user_name("Synthetic".into());
         state.set_osu_dir(osu_folder(root.path()).into());
+        let root = Fixture {
+            dir: root,
+            _home: home,
+        };
         (window, session, root)
     }
 

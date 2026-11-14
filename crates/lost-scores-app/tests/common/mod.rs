@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::sync::{Once, OnceLock};
+use std::sync::Mutex;
 
 use tempfile::TempDir;
 
@@ -48,11 +48,14 @@ pub fn write(root: &Path, relative: &str, data: &[u8]) {
     fs::write(path, data).unwrap();
 }
 
-pub fn isolate_environment() {
-    static HOME: OnceLock<TempDir> = OnceLock::new();
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
+static HOME: Mutex<(usize, Option<TempDir>)> = Mutex::new((0, None));
+
+pub struct Isolated;
+
+pub fn isolate_environment() -> Isolated {
+    let mut state = HOME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.0 == 0 {
+        let home = tempfile::tempdir().unwrap();
         for (name, folder) in [
             ("XDG_CONFIG_HOME", "config"),
             ("XDG_DATA_HOME", "data"),
@@ -60,5 +63,24 @@ pub fn isolate_environment() {
         ] {
             unsafe { std::env::set_var(name, home.path().join(folder)) };
         }
-    });
+        state.1 = Some(home);
+    }
+    state.0 += 1;
+    Isolated
+}
+
+impl Drop for Isolated {
+    fn drop(&mut self) {
+        let mut state = HOME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.0 -= 1;
+        if state.0 == 0 {
+            state.1 = None;
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn isolated_home() -> std::path::PathBuf {
+    let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+    Path::new(&config).parent().unwrap().to_path_buf()
 }

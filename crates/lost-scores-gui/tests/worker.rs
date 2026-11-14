@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, Once, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::Result;
 use lost_scores_app::history::{self, SavedScan};
@@ -17,19 +17,16 @@ use lost_scores_gui::worker::{Job, Message, Outcome, Sink, create_images, render
 use osu_api::{ApiError, Score};
 use tempfile::TempDir;
 
-fn isolate_environment() {
-    static HOME: OnceLock<TempDir> = OnceLock::new();
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
-        for (name, folder) in [
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_DATA_HOME", "data"),
-            ("XDG_CACHE_HOME", "cache"),
-        ] {
-            unsafe { std::env::set_var(name, home.path().join(folder)) };
-        }
-    });
+fn isolate_environment() -> TempDir {
+    let home = tempfile::tempdir().unwrap();
+    for (name, folder) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+    ] {
+        unsafe { std::env::set_var(name, home.path().join(folder)) };
+    }
+    home
 }
 
 struct Fake {
@@ -112,13 +109,21 @@ impl Sink for Recorder {
     }
 }
 
-fn serial() -> MutexGuard<'static, ()> {
+struct Serial {
+    _home: TempDir,
+    _lock: MutexGuard<'static, ()>,
+}
+
+fn serial() -> Serial {
     static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Serial {
+        _home: isolate_environment(),
+        _lock: lock,
+    }
 }
 
 fn job(root: &Path) -> Job {
-    isolate_environment();
     let osu = root.join("osu");
     fs::create_dir_all(osu.join("Data/r")).unwrap();
     fs::create_dir_all(osu.join("Songs")).unwrap();
@@ -458,4 +463,16 @@ fn a_cover_that_is_not_a_picture_is_reported_as_unusable() {
         lines.contains(&"1 of 1 covers could not be used".to_owned()),
         "{lines:?}"
     );
+}
+
+#[test]
+fn the_isolated_home_is_removed_when_the_test_ends() {
+    let home = {
+        let _serial = serial();
+        let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+        let home = Path::new(&config).parent().unwrap().to_path_buf();
+        assert!(home.is_dir());
+        home
+    };
+    assert!(!home.exists(), "{}", home.display());
 }
