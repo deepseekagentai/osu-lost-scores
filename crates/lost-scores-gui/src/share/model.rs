@@ -47,6 +47,7 @@ pub struct Stats {
     pub accuracy_from: String,
     pub accuracy_to: String,
     pub accuracy_delta: String,
+    pub accuracy_rises: bool,
     pub lost_in_top: String,
 }
 
@@ -158,6 +159,7 @@ pub fn stats(potential: &PotentialResult) -> Stats {
             "({:+.2}%)",
             potential.potential_accuracy - potential.current_accuracy
         ),
+        accuracy_rises: potential.potential_accuracy >= potential.current_accuracy,
         lost_in_top: potential.lost_in_top.to_string(),
     }
 }
@@ -441,6 +443,17 @@ mod tests {
         let rows = lost_rows(&scan, &options(10, false, false));
         assert!(rows.iter().all(|row| row.mods.is_empty()));
         assert_eq!(mods_width(&rows), 0.0);
+    }
+
+    #[test]
+    fn the_accuracy_colour_follows_the_direction() {
+        let mut result = potential(Vec::new(), None);
+        result.current_accuracy = 98.1;
+        result.potential_accuracy = 98.07;
+        assert!(!stats(&result).accuracy_rises);
+        result.potential_accuracy = 98.3;
+        assert!(stats(&result).accuracy_rises);
+        assert_eq!(stats(&result).accuracy_delta, "(+0.20%)");
     }
 
     #[test]

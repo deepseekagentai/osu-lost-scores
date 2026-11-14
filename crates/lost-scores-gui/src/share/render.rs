@@ -295,6 +295,7 @@ pub fn render_images(
         top.set_accuracy_from(card.accuracy_from.as_str().into());
         top.set_accuracy_to(card.accuracy_to.as_str().into());
         top.set_accuracy_delta(card.accuracy_delta.as_str().into());
+        top.set_accuracy_rises(card.accuracy_rises);
         top.set_lost_in_top(card.lost_in_top.as_str().into());
         images.push(draw(&top, 980.0, top.get_image_height(), POTENTIAL_FILE)?);
 
@@ -309,6 +310,7 @@ pub fn render_images(
         badge.set_accuracy_from(card.accuracy_from.as_str().into());
         badge.set_accuracy_to(card.accuracy_to.as_str().into());
         badge.set_accuracy_delta(card.accuracy_delta.as_str().into());
+        badge.set_accuracy_rises(card.accuracy_rises);
         badge.set_lost(badge_lost_line(scan, options).into());
         badge.set_rank_date(badge_when_line(scan, zone).into());
         images.push(draw(&badge, 520.0, badge.get_image_height(), BADGE_FILE)?);

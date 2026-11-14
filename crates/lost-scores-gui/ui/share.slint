@@ -498,6 +498,7 @@ export component SharePotential inherits Window {
     in property <string> accuracy-from;
     in property <string> accuracy-to;
     in property <string> accuracy-delta;
+    in property <bool> accuracy-rises;
     in property <string> lost-in-top;
     out property <length> image-height: 222px + max(root.rows.length, 1) * 64px;
     width: 980px;
@@ -545,7 +546,7 @@ export component SharePotential inherits Window {
                         from: root.accuracy-from;
                         to: root.accuracy-to;
                         delta: root.accuracy-delta;
-                        to-color: T.down;
+                        to-color: root.accuracy-rises ? T.up : T.down;
                     }
                 }
                 VerticalLayout {
@@ -588,6 +589,7 @@ export component ShareBadge inherits Window {
     in property <string> accuracy-from;
     in property <string> accuracy-to;
     in property <string> accuracy-delta;
+    in property <bool> accuracy-rises;
     in property <string> lost;
     in property <string> rank-date;
     out property <length> image-height: 140px;
@@ -673,13 +675,13 @@ export component ShareBadge inherits Window {
                 }
                 Text {
                     text: root.accuracy-to;
-                    color: T.down;
+                    color: root.accuracy-rises ? T.up : T.down;
                     font-size: 15px;
                     font-weight: 600;
                 }
                 Text {
                     text: root.accuracy-delta;
-                    color: T.down;
+                    color: root.accuracy-rises ? T.up : T.down;
                     font-size: 13px;
                     vertical-alignment: bottom;
                 }
