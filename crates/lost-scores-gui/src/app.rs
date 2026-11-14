@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -74,7 +75,7 @@ struct Session {
     opener: RefCell<Opener>,
 }
 
-type Opener = Box<dyn Fn(&Path) -> std::io::Result<()>>;
+type Opener = Arc<dyn Fn(&OsStr) -> std::io::Result<()> + Send + Sync>;
 
 struct Removal {
     folders: Vec<PathBuf>,
@@ -127,7 +128,7 @@ impl Session {
             uploading: Cell::new(false),
             pending_delete: RefCell::new(None),
             opens_results: Cell::new(false),
-            opener: RefCell::new(Box::new(|path| open::that(path))),
+            opener: RefCell::new(Arc::new(|target| open::that(target))),
             window: window.clone_strong(),
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
@@ -262,11 +263,13 @@ impl Session {
         state.on_cancel_keys(move || session.window.global::<State>().set_keys_open(false));
         let session = self.clone();
         state.on_save_keys(move || session.save_keys());
-        state.on_open_account_settings(|| {
-            let _ = open::that(ACCOUNT_SETTINGS);
-        });
         let session = self.clone();
-        state.on_ask_logout(move || session.window.global::<State>().set_confirm_open(true));
+        state.on_open_account_settings(move || session.launch("the page", ACCOUNT_SETTINGS.into()));
+        let session = self.clone();
+        state.on_ask_logout(move || {
+            session.close_popups();
+            session.window.global::<State>().set_confirm_open(true);
+        });
         let session = self.clone();
         state.on_cancel_logout(move || session.window.global::<State>().set_confirm_open(false));
         let session = self.clone();
@@ -303,9 +306,10 @@ impl Session {
         state.on_select_scan(move |index| session.select_scan(index as usize));
         let session = self.clone();
         state.on_open_scan_folder(move || session.open_scan_folder());
-        state.on_open_beatmap(|id| {
+        let session = self.clone();
+        state.on_open_beatmap(move |id| {
             if id > 0 {
-                let _ = open::that(format!("{BEATMAP_PAGE}{id}"));
+                session.launch("the page", format!("{BEATMAP_PAGE}{id}").into());
             }
         });
         let session = self.clone();
@@ -333,15 +337,18 @@ impl Session {
     }
 
     fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
-        state.on_open_developer_site(|| {
-            let _ = open::that(DEVELOPER_SITE);
-        });
         let session = self.clone();
-        state.on_open_about(move || session.window.global::<State>().set_about_open(true));
+        state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
+        let session = self.clone();
+        state.on_open_about(move || {
+            session.close_popups();
+            session.window.global::<State>().set_about_open(true);
+        });
         let session = self.clone();
         state.on_close_about(move || session.window.global::<State>().set_about_open(false));
         let session = self.clone();
         state.on_ask_clear_cache(move || {
+            session.close_popups();
             session
                 .window
                 .global::<State>()
@@ -393,7 +400,7 @@ impl Session {
                         let message = update_message(env!("CARGO_PKG_VERSION"), release.as_ref());
                         app.log(&message.text);
                         if let Some(url) = message.open {
-                            let _ = open::that(url);
+                            app.launch("the page", url.into());
                         }
                     }
                     Err(error) => app.log(&format!("Could not check for updates: {error:#}")),
@@ -631,10 +638,23 @@ impl Session {
         let Some(image) = self.shared_image(index) else {
             return;
         };
-        if let Err(error) = (self.opener.borrow())(&image.path) {
-            self.log(&format!("Could not open the image: {error}"));
-            self.toast("Could not open the image: see the log");
-        }
+        self.launch("the image", image.path.into_os_string());
+    }
+
+    fn launch(&self, what: &'static str, target: OsString) {
+        let opener = self.opener.borrow().clone();
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            if let Err(error) = opener(&target) {
+                let reason = error.to_string();
+                on_ui(&weak, move |app| app.open_failed(what, &reason));
+            }
+        });
+    }
+
+    fn open_failed(&self, what: &str, reason: &str) {
+        self.log(&format!("Could not open {what}: {reason}"));
+        self.toast(&format!("Could not open {what}: see the log"));
     }
 
     fn copy_failed(&self, error: &str) {
@@ -860,8 +880,9 @@ impl Session {
     }
 
     fn open_scan_folder(&self) {
-        if let Some(folder) = self.folder.borrow().as_ref() {
-            let _ = open::that(folder);
+        let folder = self.folder.borrow().clone();
+        if let Some(folder) = folder {
+            self.launch("the folder", folder.into_os_string());
         }
     }
 
@@ -872,6 +893,12 @@ impl Session {
             time: time.into(),
             text: text.into(),
         });
+    }
+
+    fn close_popups(&self) {
+        let state = self.window.global::<State>();
+        state.set_share_open(false);
+        state.set_scans_open(false);
     }
 
     fn open_keys(&self) {
@@ -885,6 +912,7 @@ impl Session {
         state.set_keys_id(credentials.as_ref().map_or("", |c| &c.client_id).into());
         state.set_keys_secret(credentials.as_ref().map_or("", |c| &c.client_secret).into());
         self.clear_key_errors(&state);
+        self.close_popups();
         state.set_keys_open(true);
     }
 
@@ -1307,9 +1335,7 @@ fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, Key
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
-    use std::rc::Rc;
     use std::sync::Mutex;
 
     use lost_scores_app::setup;
@@ -1507,28 +1533,80 @@ mod tests {
     }
 
     #[test]
-    fn open_hands_the_image_path_to_the_opener() {
+    fn open_hands_the_image_path_to_the_opener_off_the_ui_thread() {
         let (_window, session, root) = session(650.0);
         let paths = shared(&session, root.path());
-        let opened = Rc::new(RefCell::new(Vec::new()));
-        let record = opened.clone();
-        *session.opener.borrow_mut() = Box::new(move |path| {
-            record.borrow_mut().push(path.to_path_buf());
+        let (sent, received) = std::sync::mpsc::channel();
+        let ui = std::thread::current().id();
+        *session.opener.borrow_mut() = std::sync::Arc::new(move |target| {
+            sent.send((target.to_owned(), std::thread::current().id()))
+                .unwrap();
             Ok(())
         });
         session.open_image(1);
         session.open_image(0);
         session.open_image(9);
-        assert_eq!(*opened.borrow(), [paths[1].clone(), paths[0].clone()]);
+        let timeout = std::time::Duration::from_secs(5);
+        let mut seen = vec![received.recv_timeout(timeout).unwrap()];
+        seen.push(received.recv_timeout(timeout).unwrap());
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(seen.iter().all(|(_, thread)| *thread != ui));
+        let mut expected = vec![paths[0].clone(), paths[1].clone()];
+        expected.sort();
+        let targets: Vec<_> = seen.into_iter().map(|(target, _)| target).collect();
+        assert_eq!(targets, expected);
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_slow_opener_does_not_hold_the_window() {
+        let (_window, session, root) = session(650.0);
+        shared(&session, root.path());
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        *session.opener.borrow_mut() = std::sync::Arc::new(move |_| {
+            let _ = wait
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10));
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+        session.open_image(0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn a_sheet_that_opens_closes_the_popups_under_it() {
+        let (window, session, _root) = session(1600.0);
+        let state = window.global::<State>();
+        session.bind_extras(&state);
+        let asks: [fn(&State); 4] = [
+            |state| state.invoke_ask_logout(),
+            |state| state.invoke_ask_clear_cache(),
+            |state| state.invoke_open_about(),
+            |state| state.invoke_open_keys(),
+        ];
+        for (index, ask) in asks.into_iter().enumerate() {
+            state.set_share_open(true);
+            state.set_scans_open(true);
+            ask(&state);
+            assert!(!state.get_share_open(), "ask {index}");
+            assert!(!state.get_scans_open(), "ask {index}");
+        }
+        assert!(state.get_confirm_open() && state.get_cache_confirm_open());
+        assert!(state.get_about_open() && state.get_keys_open());
     }
 
     #[test]
     fn a_failed_open_is_logged_and_toasted() {
-        let (window, session, root) = session(650.0);
-        shared(&session, root.path());
-        *session.opener.borrow_mut() =
-            Box::new(|_| Err(std::io::Error::other("no viewer installed")));
-        session.open_image(0);
+        let (window, session, _root) = session(650.0);
+        session.open_failed("the image", "no viewer installed");
         let state = window.global::<State>();
         assert!(state.get_copied());
         assert_eq!(
