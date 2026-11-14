@@ -48,267 +48,325 @@ export component MainWindow inherits Window {
     default-font-family: "Fredoka";
     default-font-size: 14px;
 
-    Image {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: 440px;
-        image-fit: cover;
-        source: @image-url("../assets/tri_top.svg");
+    property <int> layers: (State.share-open ? 1 : 0) + (State.scans-open ? 1 : 0) + (State.keys-open ? 1 : 0) + (State.confirm-open ? 1 : 0) + (State.upload-confirm-open ? 1 : 0) + (State.delete-confirm-open ? 1 : 0) + (State.cache-confirm-open ? 1 : 0) + (State.about-open ? 1 : 0) + (State.show-results && !root.two-columns ? 1 : 0);
+    changed layers => {
+        keys.focus();
     }
-    Rectangle {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: 440px;
-        background: @linear-gradient(180deg, #1d1c2200 10%, T.bg 100%);
-    }
-    TouchArea {
-        clicked => {
-            State.outside-clicks += 1;
+    keys := FocusScope {
+        init => {
+            self.focus();
         }
-    }
-    HorizontalLayout {
-        if !root.two-columns: Rectangle { horizontal-stretch: 1; }
-        VerticalLayout {
-            min-width: 650px;
-            max-width: root.two-columns ? 650px : 720px;
-            horizontal-stretch: root.two-columns ? 0 : 1;
-            padding-left: 50px;
-            padding-right: 50px;
-            padding-top: 22px;
-            padding-bottom: 16px;
-            spacing: 0px;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                if (State.share-open) {
+                    State.share-open = false;
+                } else if (State.scans-open) {
+                    State.scans-open = false;
+                } else if (State.about-open) {
+                    State.close-about();
+                } else if (State.cache-confirm-open) {
+                    State.cancel-clear-cache();
+                } else if (State.delete-confirm-open) {
+                    State.cancel-delete();
+                } else if (State.upload-confirm-open) {
+                    State.cancel-upload();
+                } else if (State.confirm-open) {
+                    State.cancel-logout();
+                } else if (State.keys-open) {
+                    if (!State.keys-busy) {
+                        State.cancel-keys();
+                    }
+                } else if (State.show-results && !root.two-columns) {
+                    State.back();
+                } else {
+                    return reject;
+                }
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                if (State.upload-confirm-open) {
+                    return accept;
+                } else if (State.about-open) {
+                    State.close-about();
+                } else if (State.cache-confirm-open) {
+                    State.confirm-clear-cache();
+                } else if (State.delete-confirm-open) {
+                    State.confirm-delete();
+                } else if (State.confirm-open) {
+                    State.confirm-logout();
+                } else if (State.keys-open) {
+                    if (!State.keys-busy) {
+                        State.save-keys();
+                    }
+                } else {
+                    return reject;
+                }
+                return accept;
+            }
+            return reject;
+        }
+        Image {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: 440px;
+            image-fit: cover;
+            source: @image-url("../assets/tri_top.svg");
+        }
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: 440px;
+            background: @linear-gradient(180deg, #1d1c2200 10%, T.bg 100%);
+        }
+        TouchArea {
+            clicked => {
+                State.outside-clicks += 1;
+            }
+        }
+        HorizontalLayout {
+            if !root.two-columns: Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                min-width: 650px;
+                max-width: root.two-columns ? 650px : 720px;
+                horizontal-stretch: root.two-columns ? 0 : 1;
+                padding-left: 50px;
+                padding-right: 50px;
+                padding-top: 22px;
+                padding-bottom: 16px;
+                spacing: 0px;
 
-            HorizontalLayout {
-                alignment: center;
-                spacing: 10px;
-                Text {
-                    text: "osu!";
-                    color: T.osu;
-                    font-size: 36px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-                Text {
-                    text: "Lost Scores Analyzer";
-                    color: #ffffff;
-                    font-size: 36px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-                VerticalLayout {
-                    alignment: center;
-                    Image {
-                        source: @image-url("../assets/lemon.svg");
-                        width: 40px;
-                        height: 40px;
-                    }
-                }
-            }
-            Rectangle { height: 20px; }
-            Text {
-                text: "osu! Game Directory";
-                color: T.lbl;
-                font-size: 17px;
-                font-weight: 600;
-            }
-            Rectangle { height: 8px; }
-            HoverBox {
-                height: 44px;
-                border-radius: 8px;
-                background: T.field;
-                cursor: State.busy ? MouseCursor.default : MouseCursor.pointer;
-                enabled: !State.busy;
-                clicked => {
-                    if (!State.busy) {
-                        State.pick-folder();
-                    }
-                }
                 HorizontalLayout {
-                    padding-left: 14px;
-                    padding-right: 6px;
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        if State.osu-dir == "": Text {
-                            width: parent.width;
-                            horizontal-alignment: left;
-                            overflow: elide;
-                            text: "Path to your osu! installation folder...";
-                            color: T.logts;
-                            font-size: 14px;
-                            font-italic: true;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            width: parent.width;
-                            horizontal-alignment: left;
-                            text: State.osu-dir;
-                            color: T.ftext;
-                            font-size: 14px;
-                            font-italic: true;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
+                    alignment: center;
+                    spacing: 10px;
+                    Text {
+                        text: "osu!";
+                        color: T.osu;
+                        font-size: 36px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Lost Scores Analyzer";
+                        color: #ffffff;
+                        font-size: 36px;
+                        font-weight: 600;
+                        vertical-alignment: center;
                     }
                     VerticalLayout {
                         alignment: center;
-                        GhostIconButton {
-                            icon: @image-url("../assets/i-folder.svg");
-                            tip: "Select osu! Game Directory";
-                            enabled: !State.busy;
-                            clicked => {
-                                State.pick-folder();
+                        Image {
+                            source: @image-url("../assets/lemon.svg");
+                            width: 40px;
+                            height: 40px;
+                        }
+                    }
+                }
+                Rectangle { height: 20px; }
+                Text {
+                    text: "osu! Game Directory";
+                    color: T.lbl;
+                    font-size: 17px;
+                    font-weight: 600;
+                }
+                Rectangle { height: 8px; }
+                HoverBox {
+                    height: 44px;
+                    border-radius: 8px;
+                    background: T.field;
+                    cursor: State.busy ? MouseCursor.default : MouseCursor.pointer;
+                    enabled: !State.busy;
+                    clicked => {
+                        if (!State.busy) {
+                            State.pick-folder();
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 6px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            if State.osu-dir == "": Text {
+                                width: parent.width;
+                                horizontal-alignment: left;
+                                overflow: elide;
+                                text: "Path to your osu! installation folder...";
+                                color: T.logts;
+                                font-size: 14px;
+                                font-italic: true;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                width: parent.width;
+                                horizontal-alignment: left;
+                                text: State.osu-dir;
+                                color: T.ftext;
+                                font-size: 14px;
+                                font-italic: true;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            GhostIconButton {
+                                icon: @image-url("../assets/i-folder.svg");
+                                tip: "Select osu! Game Directory";
+                                enabled: !State.busy;
+                                clicked => {
+                                    State.pick-folder();
+                                }
                             }
                         }
                     }
                 }
-            }
-            Rectangle { height: 18px; }
-            AccountCard { }
-            Rectangle { height: 22px; }
-            StartScan { }
-            Rectangle { height: 14px; }
-            ProgressBar { }
-            Rectangle { height: 10px; }
-            StatusLine { }
-            if !root.compact: Rectangle { height: 20px; }
-            if !root.compact: Text {
-                text: "Log";
-                color: T.lbl;
-                font-size: 17px;
-                font-weight: 600;
-            }
-            if !root.compact: Rectangle { height: 8px; }
-            if !root.compact: LogBox { }
-            if root.compact: Rectangle { vertical-stretch: 1; }
-            if !root.two-columns: Rectangle { height: 14px; }
-            if !root.two-columns: SecondaryButton {
-                text: "See Full Results";
-                enabled: State.has-results;
-                clicked => {
-                    State.see-full-results();
+                Rectangle { height: 18px; }
+                AccountCard { }
+                Rectangle { height: 22px; }
+                StartScan { }
+                Rectangle { height: 14px; }
+                ProgressBar { }
+                Rectangle { height: 10px; }
+                StatusLine { }
+                if !root.compact: Rectangle { height: 20px; }
+                if !root.compact: Text {
+                    text: "Log";
+                    color: T.lbl;
+                    font-size: 17px;
+                    font-weight: 600;
                 }
-            }
-            Rectangle { height: 10px; }
-            HorizontalLayout {
-                alignment: end;
-                spacing: 18px;
-                Link {
-                    text: "Developer Website";
+                if !root.compact: Rectangle { height: 8px; }
+                if !root.compact: LogBox { }
+                if root.compact: Rectangle { vertical-stretch: 1; }
+                if !root.two-columns: Rectangle { height: 14px; }
+                if !root.two-columns: SecondaryButton {
+                    text: "See Full Results";
+                    enabled: State.has-results;
                     clicked => {
-                        State.open-developer-site();
+                        State.see-full-results();
                     }
                 }
-                Link {
-                    text: "About";
-                    clicked => {
-                        State.open-about();
+                Rectangle { height: 10px; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 18px;
+                    Link {
+                        text: "Developer Website";
+                        clicked => {
+                            State.open-developer-site();
+                        }
+                    }
+                    Link {
+                        text: "About";
+                        clicked => {
+                            State.open-about();
+                        }
                     }
                 }
             }
+            if !root.two-columns: Rectangle { horizontal-stretch: 1; }
+            if root.two-columns: Rectangle {
+                width: 2px;
+                background: T.divider;
+            }
+            if root.two-columns: ResultsPanel {
+                horizontal-stretch: 1;
+            }
         }
-        if !root.two-columns: Rectangle { horizontal-stretch: 1; }
-        if root.two-columns: Rectangle {
-            width: 2px;
-            background: T.divider;
-        }
-        if root.two-columns: ResultsPanel {
-            horizontal-stretch: 1;
-        }
-    }
 
-    if root.overlay-t > 0 && !root.two-columns: Rectangle {
-        x: 0px;
-        y: (1 - root.overlay-t) * 16px;
-        width: root.width;
-        height: root.height;
-        opacity: root.overlay-t;
-        background: T.bg;
-        TouchArea { }
-        ResultsPanel {
-            width: parent.width;
-            height: parent.height;
-            show-back: true;
-        }
-    }
-    if State.keys-open: KeysSheet {
-        width: root.width;
-        height: root.height;
-    }
-    if State.confirm-open: ConfirmSheet {
-        width: root.width;
-        height: root.height;
-        message: "Are you sure you want to log out?";
-        ok-text: "Log out";
-        cancel => {
-            State.cancel-logout();
-        }
-        ok => {
-            State.confirm-logout();
-        }
-    }
-    if State.upload-confirm-open: UploadSheet {
-        width: root.width;
-        height: root.height;
-        cancel => {
-            State.cancel-upload();
-        }
-        ok(remember) => {
-            State.confirm-upload(remember);
-        }
-    }
-    if State.delete-confirm-open: ConfirmSheet {
-        width: root.width;
-        height: root.height;
-        message: State.delete-message;
-        ok-text: "Move to trash";
-        cancel => {
-            State.cancel-delete();
-        }
-        ok => {
-            State.confirm-delete();
-        }
-    }
-    if State.cache-confirm-open: ConfirmSheet {
-        width: root.width;
-        height: root.height;
-        message: "Remove downloaded avatars and covers? Scan history, the map catalog and your settings stay.";
-        ok-text: "Clear cache";
-        cancel => {
-            State.cancel-clear-cache();
-        }
-        ok => {
-            State.confirm-clear-cache();
-        }
-    }
-    if State.about-open: AboutSheet {
-        width: root.width;
-        height: root.height;
-    }
-    Timer {
-        running: Tip.text != "";
-        interval: 450ms;
-        triggered => {
-            if (Tip.beat == Tip.seen) {
-                Tip.text = "";
+        if root.overlay-t > 0 && !root.two-columns: Rectangle {
+            x: 0px;
+            y: (1 - root.overlay-t) * 16px;
+            width: root.width;
+            height: root.height;
+            opacity: root.overlay-t;
+            background: T.bg;
+            TouchArea { }
+            ResultsPanel {
+                width: parent.width;
+                height: parent.height;
+                show-back: true;
             }
-            Tip.seen = Tip.beat;
         }
-    }
-    if Tip.text != "": Rectangle {
-        x: max(8px, min(Tip.x, root.width - self.width - 8px));
-        y: min(Tip.y, root.height - self.height - 8px);
-        width: label.preferred-width + 20px;
-        height: label.preferred-height + 12px;
-        border-radius: 6px;
-        background: #0c0b10;
-        border-width: 1px;
-        border-color: T.togb;
-        label := Text {
-            text: Tip.text;
-            color: T.ftext;
-            font-size: 12.5px;
+        if State.keys-open: KeysSheet {
+            width: root.width;
+            height: root.height;
+        }
+        if State.confirm-open: ConfirmSheet {
+            width: root.width;
+            height: root.height;
+            message: "Are you sure you want to log out?";
+            ok-text: "Log out";
+            cancel => {
+                State.cancel-logout();
+            }
+            ok => {
+                State.confirm-logout();
+            }
+        }
+        if State.upload-confirm-open: UploadSheet {
+            width: root.width;
+            height: root.height;
+            cancel => {
+                State.cancel-upload();
+            }
+            ok(remember) => {
+                State.confirm-upload(remember);
+            }
+        }
+        if State.delete-confirm-open: ConfirmSheet {
+            width: root.width;
+            height: root.height;
+            message: State.delete-message;
+            ok-text: "Move to trash";
+            cancel => {
+                State.cancel-delete();
+            }
+            ok => {
+                State.confirm-delete();
+            }
+        }
+        if State.cache-confirm-open: ConfirmSheet {
+            width: root.width;
+            height: root.height;
+            message: "Remove downloaded avatars and covers? Scan history, the map catalog and your settings stay.";
+            ok-text: "Clear cache";
+            cancel => {
+                State.cancel-clear-cache();
+            }
+            ok => {
+                State.confirm-clear-cache();
+            }
+        }
+        if State.about-open: AboutSheet {
+            width: root.width;
+            height: root.height;
+        }
+        Timer {
+            running: Tip.text != "";
+            interval: 450ms;
+            triggered => {
+                if (Tip.beat == Tip.seen) {
+                    Tip.text = "";
+                }
+                Tip.seen = Tip.beat;
+            }
+        }
+        if Tip.text != "": Rectangle {
+            x: max(8px, min(Tip.x, root.width - self.width - 8px));
+            y: min(Tip.y, root.height - self.height - 8px);
+            width: label.preferred-width + 20px;
+            height: label.preferred-height + 12px;
+            border-radius: 6px;
+            background: #0c0b10;
+            border-width: 1px;
+            border-color: T.togb;
+            label := Text {
+                text: Tip.text;
+                color: T.ftext;
+                font-size: 12.5px;
+            }
         }
     }
 }
