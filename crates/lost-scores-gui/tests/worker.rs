@@ -265,15 +265,12 @@ fn a_renderer_that_succeeds_is_logged_with_its_warnings() {
     let _serial = serial();
     let root = tempfile::tempdir().unwrap();
     let mut job = job(root.path());
-    job.renderer = renderer_script(
-        root.path(),
-        "echo '2 of 9 covers could not be downloaded' >&2",
-    );
+    job.renderer = renderer_script(root.path(), "echo '2 of 9 covers could not be used' >&2");
     let sink = Recorder::open();
     run(&job, &mut Fake { known: true }, &sink);
     let lines = logs(&sink);
     let folder = history::list(&job.scans_dir)[0].folder.clone();
-    assert!(lines.contains(&"2 of 9 covers could not be downloaded".to_owned()));
+    assert!(lines.contains(&"2 of 9 covers could not be used".to_owned()));
     assert!(lines.contains(&format!("Images saved to {}", folder.display())));
 }
 
@@ -429,4 +426,36 @@ fn the_renderer_binary_does_not_panic_on_a_folder_that_is_not_utf8() {
         "{stderr}"
     );
     assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+struct NotAnImage;
+
+impl Fetch for NotAnImage {
+    fn get(&mut self, _url: &str) -> Result<Option<Vec<u8>>> {
+        Ok(Some(b"<html>not a picture</html>".to_vec()))
+    }
+}
+
+#[test]
+fn a_cover_that_is_not_a_picture_is_reported_as_unusable() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let mut lines = Vec::new();
+    let mut events = |event: Event| {
+        if let Event::Log(text) = event {
+            lines.push(text);
+        }
+    };
+    create_images(
+        &job,
+        &one_lost_play(),
+        root.path(),
+        &mut events,
+        &mut NotAnImage,
+    );
+    assert!(
+        lines.contains(&"1 of 1 covers could not be used".to_owned()),
+        "{lines:?}"
+    );
 }

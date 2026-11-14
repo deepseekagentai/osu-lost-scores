@@ -81,7 +81,7 @@ impl Prepared {
         let mut warnings = Vec::new();
         if self.covers_failed > 0 {
             warnings.push(format!(
-                "{} of {} covers could not be downloaded",
+                "{} of {} covers could not be used",
                 self.covers_failed, self.covers_total
             ));
         }
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(
             prepared.warnings(),
             [
-                "3 of 19 covers could not be downloaded",
+                "3 of 19 covers could not be used",
                 "The avatar could not be downloaded: network down"
             ]
         );

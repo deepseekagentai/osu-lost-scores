@@ -311,7 +311,7 @@ fn images(
         let fetched = rasters::covers(&sets, &dir, fetch, &mut progress);
         if fetched.failed > 0 {
             events(Event::Log(format!(
-                "{} of {} covers could not be downloaded",
+                "{} of {} covers could not be used",
                 fetched.failed,
                 sets.len()
             )));
