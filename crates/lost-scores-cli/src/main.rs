@@ -1,11 +1,6 @@
-mod detect;
 mod dump;
-mod keys;
-mod online;
 mod progress;
-mod report;
-mod setup;
-mod timings;
+mod table;
 
 use std::cmp::Reverse;
 use std::fs::File;
@@ -16,6 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use lost_scores_app::keys;
+use lost_scores_app::online::{Online, Player};
+use lost_scores_app::rows;
+use lost_scores_app::setup;
+use lost_scores_app::timings::Timings;
 use lost_scores_core::maps::{self, MapCatalog, Wanted};
 use lost_scores_core::missing::{fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
@@ -24,8 +24,6 @@ use osu_api::{Credentials, Score};
 use serde::Serialize;
 
 use crate::dump::Dump;
-use crate::online::{Online, Player};
-use crate::timings::Timings;
 
 #[derive(Parser)]
 #[command(
@@ -148,7 +146,7 @@ fn guide() -> String {
     for (name, path) in files {
         let path = path.map_or_else(
             || "no folder found".to_owned(),
-            |path| report::printable(&path.display().to_string()),
+            |path| rows::printable(&path.display().to_string()),
         );
         text.push_str(&format!("  {name:<11}{path}\n"));
     }
@@ -163,21 +161,21 @@ struct PotentialReport<'a> {
     potential_accuracy: f64,
     global_rank: Option<u32>,
     lost_in_top: usize,
-    top: &'a [report::PotentialRow],
+    top: &'a [rows::PotentialRow],
 }
 
 #[derive(Serialize)]
 struct LostReport<'a> {
     lost_total: usize,
     lost_ranked: usize,
-    lost: &'a [report::LostRow],
+    lost: &'a [rows::LostRow],
 }
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {}", report::printable(&format!("{err:#}")));
+            eprintln!("error: {}", rows::printable(&format!("{err:#}")));
             ExitCode::FAILURE
         }
     }
@@ -253,18 +251,15 @@ fn read(
             Err(error) => {
                 eprintln!(
                     "could not look the player up on the osu! API: {}",
-                    report::printable(&error.to_string())
+                    rows::printable(&error.to_string())
                 );
                 (vec![player.clone()], None)
             }
         },
         None => (vec![player.clone()], None),
     };
-    eprintln!(
-        "osu!: {}",
-        report::printable(&osu_dir.display().to_string())
-    );
-    eprintln!("player: {}", report::printable(&names.join(", ")));
+    eprintln!("osu!: {}", rows::printable(&osu_dir.display().to_string()));
+    eprintln!("player: {}", rows::printable(&names.join(", ")));
     let started = Instant::now();
     let mut scan = lost_scores_core::scan(&osu_dir, &songs_dir, &names)?;
     timings.add("songs index", scan.timings.songs);
@@ -318,7 +313,7 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
     let found = timings.time("lost scores", || lost::find(&scan.replays, &catalog));
     let ranked = found.iter().filter(|l| l.status.gives_pp()).count();
     let show_all = view.all || catalog.is_empty();
-    let mut rows = report::rows(&found, &catalog);
+    let mut rows = rows::rows(&found, &catalog);
     rows.retain(|row| show_all || row.status.gives_pp());
     if let SortBy::Date = view.sort {
         rows.sort_by_key(|row| Reverse(row.unix_time));
@@ -333,7 +328,7 @@ fn show_lost(source: &Source, view: &View, timings: &mut Timings) -> Result<()> 
             },
         );
     }
-    println!("{}", report::table(&rows, view.limit, show_all));
+    println!("{}", table::table(&rows, view.limit, show_all));
     if catalog.is_empty() {
         eprintln!("no map catalog yet: map statuses are unknown, so every map is shown");
     } else if view.all {
@@ -487,7 +482,7 @@ fn show_potential(
     let result = timings.time("potential top", || {
         potential::potential(&online, &lost_only, player.pp)
     });
-    let rows = report::potential_rows(&result, &scores, &found, &lost);
+    let rows = rows::potential_rows(&result, &scores, &found, &lost);
     if json {
         write_json(
             io::stdout().lock(),
@@ -502,12 +497,12 @@ fn show_potential(
             },
         )?;
     } else {
-        println!("{}", report::potential_table(&rows, limit));
+        println!("{}", table::potential_table(&rows, limit));
     }
     eprintln!(
         "{} → {}pp ({:+.1}), {:.2}% → {:.2}% ({:+.2}%), {} lost plays in the top 200",
-        report::thousands(player.pp),
-        report::thousands(result.pp),
+        rows::thousands(player.pp),
+        rows::thousands(result.pp),
         result.pp - player.pp,
         player.accuracy,
         result.accuracy,
@@ -568,7 +563,7 @@ fn login() -> Result<()> {
     keys::save(&path, &credentials)?;
     eprintln!(
         "keys checked and saved to {}",
-        report::printable(&path.display().to_string())
+        rows::printable(&path.display().to_string())
     );
     Ok(())
 }
@@ -578,7 +573,7 @@ fn logout() -> Result<()> {
     if keys::delete(&path)? {
         eprintln!(
             "keys deleted from {}",
-            report::printable(&path.display().to_string())
+            rows::printable(&path.display().to_string())
         );
     } else {
         eprintln!("no saved keys");

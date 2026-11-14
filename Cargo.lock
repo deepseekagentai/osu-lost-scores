@@ -398,12 +398,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lost-scores-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lost-scores-core",
+ "osu-api",
+ "osu-formats",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "lost-scores-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "indicatif",
+ "lost-scores-app",
  "lost-scores-core",
  "osu-api",
  "osu-formats",

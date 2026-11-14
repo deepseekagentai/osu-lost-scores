@@ -5,6 +5,12 @@ pub struct Timings {
     steps: Vec<(&'static str, Duration)>,
 }
 
+impl Default for Timings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Timings {
     pub fn new() -> Self {
         Self {
