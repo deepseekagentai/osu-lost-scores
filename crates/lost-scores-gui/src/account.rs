@@ -25,6 +25,7 @@ impl Field {
 pub enum KeysError {
     Missing(Field),
     Rejected,
+    Busy,
     Unreachable,
 }
 
@@ -33,6 +34,7 @@ impl fmt::Display for KeysError {
         match self {
             KeysError::Missing(field) => write!(formatter, "{} is required", field.label()),
             KeysError::Rejected => formatter.write_str("User not found or API keys are invalid"),
+            KeysError::Busy => formatter.write_str("The osu! API is busy, try again in a minute"),
             KeysError::Unreachable => formatter.write_str("Could not reach the osu! API"),
         }
     }
@@ -63,6 +65,7 @@ pub fn check_fields(
 
 pub fn keys_error(error: &ApiError) -> KeysError {
     match error {
+        ApiError::Status { status: 429, .. } => KeysError::Busy,
         ApiError::Status { status, .. } if *status < 500 => KeysError::Rejected,
         _ => KeysError::Unreachable,
     }
@@ -256,6 +259,11 @@ mod tests {
         assert_eq!(keys_error(&status(500)), KeysError::Unreachable);
         assert_eq!(keys_error(&status(401)), KeysError::Rejected);
         assert_eq!(keys_error(&status(404)), KeysError::Rejected);
+        assert_eq!(keys_error(&status(429)), KeysError::Busy);
+        assert_eq!(
+            KeysError::Busy.to_string(),
+            "The osu! API is busy, try again in a minute"
+        );
         assert_eq!(
             KeysError::Unreachable.to_string(),
             "Could not reach the osu! API"
