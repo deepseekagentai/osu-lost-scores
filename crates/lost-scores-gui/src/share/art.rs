@@ -52,6 +52,23 @@ pub fn buffer(png: &[u8]) -> SharedPixelBuffer<Rgba8Pixel> {
 
 pub const BACKDROP_WIDE_HEIGHT: u32 = 880;
 const FRAME_RADIUS: f32 = 36.0;
+const PAGE: [u8; 3] = [0x1d, 0x1c, 0x22];
+const FADE_START: f32 = 0.4;
+const FADE_CLEAR: u32 = 72;
+
+fn fade_into_page(image: &mut RgbaImage) {
+    let height = image.height() as f32;
+    let start = height * FADE_START;
+    let end = (height - FADE_CLEAR as f32).max(start + 1.0);
+    for (_, y, pixel) in image.enumerate_pixels_mut() {
+        let t = ((y as f32 - start) / (end - start)).clamp(0.0, 1.0);
+        let weight = t * t * (3.0 - 2.0 * t);
+        for (channel, page) in pixel.0.iter_mut().zip(PAGE) {
+            let blended = f32::from(*channel) + (f32::from(page) - f32::from(*channel)) * weight;
+            *channel = blended.round() as u8;
+        }
+    }
+}
 
 pub fn backdrop_wide(height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut decoded: RgbaImage = image::load_from_memory(BACKDROP_WIDE)
@@ -60,6 +77,7 @@ pub fn backdrop_wide(height: u32) -> SharedPixelBuffer<Rgba8Pixel> {
     let rows = height.min(BACKDROP_WIDE_HEIGHT);
     decoded = image::imageops::crop_imm(&decoded, 0, 0, decoded.width(), rows).to_image();
     if height < BACKDROP_WIDE_HEIGHT {
+        fade_into_page(&mut decoded);
         round_corners(&mut decoded, FRAME_RADIUS, Corners::BOTTOM);
     }
     SharedPixelBuffer::clone_from_slice(decoded.as_raw(), decoded.width(), decoded.height())

@@ -413,3 +413,60 @@ fn encoded(image: &RgbaImage) -> Vec<u8> {
         .unwrap();
     bytes
 }
+
+const PAGE: [u8; 3] = [0x1d, 0x1c, 0x22];
+
+fn lost_image_height(rows: u32) -> u32 {
+    (150 + 64 * rows.max(1)) * 2
+}
+
+#[test]
+fn the_backdrop_of_a_short_image_is_fully_faded_above_its_bottom_edge() {
+    for rows in [0, 1, 2, 4] {
+        let height = lost_image_height(rows);
+        let faded = buffer_image(&backdrop_wide(height));
+        assert_eq!(faded.height(), height, "{rows} rows");
+        for y in height - 8..height {
+            for x in 40..faded.width() - 40 {
+                let pixel = faded.get_pixel(x, y).0;
+                assert_eq!(
+                    pixel,
+                    [PAGE[0], PAGE[1], PAGE[2], 255],
+                    "{rows} rows at {x},{y}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_extra_fade_never_brightens_a_pixel() {
+    let original = asset("backdrop-wide.png");
+    for rows in [0, 1, 2, 4] {
+        let height = lost_image_height(rows);
+        let faded = buffer_image(&backdrop_wide(height));
+        let mut changed = 0;
+        for (x, y, pixel) in faded.enumerate_pixels() {
+            if pixel.0[3] != 255 {
+                continue;
+            }
+            let before = original.get_pixel(x, y).0;
+            for channel in 0..3 {
+                let now = (i32::from(pixel.0[channel]) - i32::from(PAGE[channel])).abs();
+                let was = (i32::from(before[channel]) - i32::from(PAGE[channel])).abs();
+                assert!(now <= was, "{rows} rows at {x},{y} channel {channel}");
+            }
+            changed += usize::from(pixel.0 != before);
+        }
+        assert!(changed > 0, "{rows} rows were not faded at all");
+    }
+}
+
+#[test]
+fn a_full_height_backdrop_is_left_as_drawn() {
+    let original = asset("backdrop-wide.png");
+    let full = buffer_image(&backdrop_wide(original.height()));
+    assert_eq!(full.as_raw(), original.as_raw());
+    let taller = buffer_image(&backdrop_wide(original.height() + 76));
+    assert_eq!(taller.as_raw(), original.as_raw());
+}
