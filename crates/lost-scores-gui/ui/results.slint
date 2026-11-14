@@ -469,6 +469,7 @@ component RowTrash inherits Rectangle {
         height: 28px;
         icon: @image-url("../assets/i-xmark.svg");
         tip: "Move to trash";
+        outlined: false;
         changed hovered => {
             root.over = self.hovered;
         }

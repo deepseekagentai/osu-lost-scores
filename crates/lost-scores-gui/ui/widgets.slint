@@ -37,6 +37,7 @@ export component IconButton inherits Rectangle {
     in property <image> icon;
     in property <string> tip;
     in property <bool> enabled: true;
+    in property <bool> outlined: true;
     out property <bool> hovered: ta.has-hover;
     callback clicked;
     width: 32px;
@@ -45,7 +46,7 @@ export component IconButton inherits Rectangle {
     background: T.btn;
     opacity: root.enabled ? 1 : 0.45;
     border-width: 2px;
-    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
+    border-color: root.outlined && root.enabled && ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     ta := TipArea {
         accessible-role: button;
