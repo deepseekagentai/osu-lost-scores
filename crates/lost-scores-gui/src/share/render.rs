@@ -408,23 +408,136 @@ pub fn render_all(folder: &Path, options: &ShareOptions, cached_covers: bool) ->
     render_with(folder, options, &caches, &mut http)
 }
 
-pub fn render_folder(folder: &Path, cached_covers: bool) -> Result<Output> {
-    let scan = history::load(folder)?;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub count: usize,
+    pub show_lost_in_top: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderArgs {
+    pub folder: PathBuf,
+    pub cached: bool,
+    pub choice: Option<Choice>,
+}
+
+impl RenderArgs {
+    pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut args = args.into_iter();
+        let mut folder = None;
+        let mut cached = false;
+        let mut count = None;
+        let mut show_lost_in_top = false;
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--cached" => cached = true,
+                "--show-lost-in-top" => show_lost_in_top = true,
+                "--count" => {
+                    let value = args.next().unwrap_or_default();
+                    count = Some(
+                        setup::parse_scores_to_show(&value)
+                            .map(usize::from)
+                            .ok_or_else(|| {
+                                format!("--count needs a number from 1 to 200, got '{value}'")
+                            })?,
+                    );
+                }
+                flag if flag.starts_with("--") => {
+                    return Err(format!("render-images does not know {flag}"));
+                }
+                _ => folder = Some(PathBuf::from(arg)),
+            }
+        }
+        let folder = folder
+            .ok_or_else(|| "render-images needs the scan folder as its argument".to_owned())?;
+        if show_lost_in_top && count.is_none() {
+            return Err("--show-lost-in-top needs --count".to_owned());
+        }
+        let choice = count.map(|count| Choice {
+            count,
+            show_lost_in_top,
+        });
+        Ok(Self {
+            folder,
+            cached,
+            choice,
+        })
+    }
+}
+
+pub fn render_folder(args: &RenderArgs) -> Result<Output> {
+    let scan = history::load(&args.folder)?;
     let settings = setup::config_file()
         .map(|path| setup::load_settings(&path))
         .unwrap_or_default();
+    let (count, show_lost_in_top) = match args.choice {
+        Some(choice) => (choice.count, choice.show_lost_in_top),
+        None => (
+            usize::from(settings.scores_to_show),
+            settings.show_lost_in_top_image,
+        ),
+    };
     let options = ShareOptions {
-        count: usize::from(settings.scores_to_show),
+        count,
         include_all: scan.include_all,
-        show_lost_in_top: settings.show_lost_in_top_image,
+        show_lost_in_top,
     };
     use_offscreen_platform()?;
-    render_all(folder, &options, cached_covers)
+    render_all(&args.folder, &options, args.cached)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BADGE_FILE, LOST_FILE, Prepared, images_in};
+    use std::path::PathBuf;
+
+    use super::{BADGE_FILE, Choice, LOST_FILE, Prepared, RenderArgs, images_in};
+
+    fn parse(args: &[&str]) -> Result<RenderArgs, String> {
+        RenderArgs::parse(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn render_images_reads_the_options_the_window_passes() {
+        let parsed = parse(&["--cached", "--count", "3", "--show-lost-in-top", "/scans/x"]);
+        assert_eq!(
+            parsed,
+            Ok(RenderArgs {
+                folder: PathBuf::from("/scans/x"),
+                cached: true,
+                choice: Some(Choice {
+                    count: 3,
+                    show_lost_in_top: true
+                }),
+            })
+        );
+        let parsed = parse(&["--count", "12", "/scans/x"]).unwrap();
+        assert!(!parsed.cached);
+        assert_eq!(
+            parsed.choice,
+            Some(Choice {
+                count: 12,
+                show_lost_in_top: false
+            })
+        );
+    }
+
+    #[test]
+    fn render_images_without_flags_keeps_the_saved_settings() {
+        let parsed = parse(&["--cached", "/scans/x"]).unwrap();
+        assert_eq!(parsed.choice, None);
+        assert_eq!(parsed.folder, PathBuf::from("/scans/x"));
+    }
+
+    #[test]
+    fn render_images_refuses_bad_arguments() {
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--cached"]).is_err());
+        assert!(parse(&["--count", "0", "/scans/x"]).is_err());
+        assert!(parse(&["--count", "201", "/scans/x"]).is_err());
+        assert!(parse(&["--count", "/scans/x"]).is_err());
+        assert!(parse(&["--show-lost-in-top", "/scans/x"]).is_err());
+        assert!(parse(&["--unknown", "/scans/x"]).is_err());
+    }
 
     #[test]
     fn the_folder_lists_the_images_it_has_in_a_fixed_order() {

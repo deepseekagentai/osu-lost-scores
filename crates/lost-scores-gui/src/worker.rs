@@ -249,9 +249,22 @@ fn refresh(
     }
 }
 
-pub fn render_command(renderer: &Path, folder: &Path) -> Command {
+pub fn render_command(
+    renderer: &Path,
+    folder: &Path,
+    count: usize,
+    show_lost_in_top: bool,
+) -> Command {
     let mut command = Command::new(renderer);
-    command.arg("render-images").arg("--cached").arg(folder);
+    command
+        .arg("render-images")
+        .arg("--cached")
+        .arg("--count")
+        .arg(count.to_string());
+    if show_lost_in_top {
+        command.arg("--show-lost-in-top");
+    }
+    command.arg(folder);
     command
 }
 
@@ -284,7 +297,7 @@ fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Eve
         done: 0,
         total: 1,
     });
-    match run_renderer(&job.renderer, folder) {
+    match run_renderer(job, folder) {
         Ok(warnings) => {
             for line in warnings {
                 events(Event::Log(line));
@@ -295,8 +308,9 @@ fn images(job: &Job, scan: &SavedScan, folder: &Path, events: &mut dyn FnMut(Eve
     }
 }
 
-fn run_renderer(renderer: &Path, folder: &Path) -> Result<Vec<String>> {
-    let output = render_command(renderer, folder)
+fn run_renderer(job: &Job, folder: &Path) -> Result<Vec<String>> {
+    let renderer = &job.renderer;
+    let output = render_command(renderer, folder, job.share_count, job.show_lost_in_top)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .output()

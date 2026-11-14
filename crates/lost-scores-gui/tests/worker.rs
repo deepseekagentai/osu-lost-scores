@@ -273,15 +273,34 @@ fn a_renderer_that_succeeds_is_logged_with_its_warnings() {
 }
 
 #[test]
-fn the_render_command_points_at_the_new_folder() {
+fn the_render_command_carries_the_image_options_of_the_window() {
     let command = render_command(
         Path::new("/opt/lost-scores-gui"),
         Path::new("/scans/2026-11-14_09-44-31Z"),
+        3,
+        true,
     );
     assert_eq!(command.get_program(), "/opt/lost-scores-gui");
     let args: Vec<_> = command.get_args().collect();
     assert_eq!(
         args,
-        ["render-images", "--cached", "/scans/2026-11-14_09-44-31Z"]
+        [
+            "render-images",
+            "--cached",
+            "--count",
+            "3",
+            "--show-lost-in-top",
+            "/scans/2026-11-14_09-44-31Z"
+        ]
+    );
+}
+
+#[test]
+fn the_render_command_leaves_out_the_top_flag_when_it_is_off() {
+    let command = render_command(Path::new("/r"), Path::new("/scans/x"), 10, false);
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(
+        args,
+        ["render-images", "--cached", "--count", "10", "/scans/x"]
     );
 }

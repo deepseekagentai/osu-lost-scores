@@ -69,6 +69,7 @@ struct Session {
     choices: RefCell<Choices>,
     uploading: Cell<bool>,
     pending_delete: RefCell<Option<Removal>>,
+    opens_results: Cell<bool>,
 }
 
 struct Removal {
@@ -103,42 +104,49 @@ pub fn run() -> Result<()> {
     run_with(|_| {})
 }
 
+impl Session {
+    fn create(window: &MainWindow) -> Rc<Self> {
+        let table = Rc::new(RefCell::new(Table::default()));
+        Rc::new(Session {
+            rows: Rc::new(RowsModel::new(table.clone())),
+            table,
+            tab: Cell::new(Tab::Lost),
+            query: RefCell::new(String::new()),
+            matches: RefCell::new(Vec::new()),
+            position: Cell::new(0),
+            entries: RefCell::new(Vec::new()),
+            folder: RefCell::new(None),
+            clipboard: RefCell::new(None),
+            copied: slint::Timer::default(),
+            consent: Cell::new(Consent::new(false)),
+            choices: RefCell::new(Choices::default()),
+            uploading: Cell::new(false),
+            pending_delete: RefCell::new(None),
+            opens_results: Cell::new(false),
+            window: window.clone_strong(),
+            weak: window.as_weak(),
+            log: Rc::new(VecModel::default()),
+            credentials: RefCell::new(None),
+            avatar: RefCell::new(None),
+            rendered: Cell::new(0),
+            scan: RefCell::new(ScanState::default()),
+            shown: Cell::new(0),
+            refreshing: Cell::new(false),
+            counts: Cell::new((0, 0)),
+            closed: Arc::new(AtomicBool::new(false)),
+            settings: RefCell::new(Settings::default()),
+            player: Cell::new(None),
+            epoch: Cell::new(0),
+            dialog: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
 pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
     let window = MainWindow::new()?;
     slint::set_xdg_app_id(APP_ID)?;
     prepare(&window);
-    let table = Rc::new(RefCell::new(Table::default()));
-    let session = Rc::new(Session {
-        rows: Rc::new(RowsModel::new(table.clone())),
-        table,
-        tab: Cell::new(Tab::Lost),
-        query: RefCell::new(String::new()),
-        matches: RefCell::new(Vec::new()),
-        position: Cell::new(0),
-        entries: RefCell::new(Vec::new()),
-        folder: RefCell::new(None),
-        clipboard: RefCell::new(None),
-        copied: slint::Timer::default(),
-        consent: Cell::new(Consent::new(false)),
-        choices: RefCell::new(Choices::default()),
-        uploading: Cell::new(false),
-        pending_delete: RefCell::new(None),
-        window: window.clone_strong(),
-        weak: window.as_weak(),
-        log: Rc::new(VecModel::default()),
-        credentials: RefCell::new(None),
-        avatar: RefCell::new(None),
-        rendered: Cell::new(0),
-        scan: RefCell::new(ScanState::default()),
-        shown: Cell::new(0),
-        refreshing: Cell::new(false),
-        counts: Cell::new((0, 0)),
-        closed: Arc::new(AtomicBool::new(false)),
-        settings: RefCell::new(Settings::default()),
-        player: Cell::new(None),
-        epoch: Cell::new(0),
-        dialog: Arc::new(AtomicBool::new(false)),
-    });
+    let session = Session::create(&window);
     let closed = session.closed.clone();
     window.window().on_close_requested(move || {
         closed.store(true, Ordering::Relaxed);
@@ -223,6 +231,23 @@ impl Session {
         }
     }
 
+    fn commit_scores(&self, text: &str) {
+        if let Some(count) = setup::parse_scores_to_show(text) {
+            self.window
+                .global::<State>()
+                .set_scores_to_show(i32::from(count));
+            self.change_settings(|settings| settings.scores_to_show = count);
+        }
+    }
+
+    fn commit_pending_scores(&self) {
+        let state = self.window.global::<State>();
+        let pending = state.get_scores_pending();
+        state.set_scores_pending("".into());
+        self.commit_scores(&pending);
+        state.set_outside_clicks(state.get_outside_clicks() + 1);
+    }
+
     fn bind(self: &Rc<Self>, state: &State<'_>) {
         let session = self.clone();
         state.on_pick_folder(move || session.pick_folder());
@@ -258,15 +283,7 @@ impl Session {
             session.change_settings(|settings| settings.show_lost_in_top_image = value);
         });
         let session = self.clone();
-        state.on_commit_scores(move |text| {
-            if let Some(count) = setup::parse_scores_to_show(&text) {
-                session
-                    .window
-                    .global::<State>()
-                    .set_scores_to_show(i32::from(count));
-                session.change_settings(|settings| settings.scores_to_show = count);
-            }
-        });
+        state.on_commit_scores(move |text| session.commit_scores(&text));
         let session = self.clone();
         state.on_start_scan(move || session.start_scan());
         let session = self.clone();
@@ -1095,48 +1112,10 @@ impl Session {
     }
 
     fn start_scan(self: &Rc<Self>) {
-        let state = self.window.global::<State>();
-        let credentials = self.credentials.borrow().clone();
-        let connected = credentials.is_some() && state.get_connected();
-        if !connected {
-            state.set_status(NEEDS_KEYS.into());
-            return;
-        }
-        if self.refreshing.get() || !self.scan.borrow().can_start(connected) {
-            return;
-        }
-        let Some(credentials) = credentials else {
+        let Some((job, credentials)) = self.prepare_scan() else {
             return;
         };
-        let osu_dir = state.get_osu_dir().to_string();
-        if let Err(message) = check_folders(&osu_dir) {
-            state.set_status(message.into());
-            return;
-        }
-        let Some(scans_dir) = history::scans_dir() else {
-            state.set_status("Operation failed".into());
-            self.log("Error: cannot find a folder for the scan history");
-            return;
-        };
-        let job = {
-            let settings = self.settings.borrow();
-            Job {
-                source: Source {
-                    osu_dir: Some(PathBuf::from(osu_dir)),
-                    player: Some(state.get_user_name().to_string()),
-                    songs_dir: None,
-                    check_missing: settings.check_missing,
-                    maps: None,
-                },
-                scans_dir,
-                include_all: settings.include_all,
-                renderer: std::env::current_exe().unwrap_or_default(),
-                share_count: usize::from(clamped_scores(settings.scores_to_show)),
-                show_lost_in_top: settings.show_lost_in_top_image,
-            }
-        };
-        self.scan.borrow_mut().start();
-        self.sync();
+        self.begin_scan();
         let sink = LoopSink {
             weak: self.weak.clone(),
             closed: self.closed.clone(),
@@ -1145,6 +1124,55 @@ impl Session {
             let mut api = Online::new(credentials);
             worker::run(&job, &mut api, &sink);
         });
+    }
+
+    fn begin_scan(&self) {
+        self.scan.borrow_mut().start();
+        let showing = self.window.global::<State>().get_show_results();
+        self.opens_results
+            .set(!self.window.get_two_columns() && !showing);
+        self.sync();
+    }
+
+    fn prepare_scan(&self) -> Option<(Job, Credentials)> {
+        self.commit_pending_scores();
+        let state = self.window.global::<State>();
+        let credentials = self.credentials.borrow().clone();
+        let connected = credentials.is_some() && state.get_connected();
+        if !connected {
+            state.set_status(NEEDS_KEYS.into());
+            return None;
+        }
+        if self.refreshing.get() || !self.scan.borrow().can_start(connected) {
+            return None;
+        }
+        let credentials = credentials?;
+        let osu_dir = state.get_osu_dir().to_string();
+        if let Err(message) = check_folders(&osu_dir) {
+            state.set_status(message.into());
+            return None;
+        }
+        let Some(scans_dir) = history::scans_dir() else {
+            state.set_status("Operation failed".into());
+            self.log("Error: cannot find a folder for the scan history");
+            return None;
+        };
+        let settings = self.settings.borrow();
+        let job = Job {
+            source: Source {
+                osu_dir: Some(PathBuf::from(osu_dir)),
+                player: Some(state.get_user_name().to_string()),
+                songs_dir: None,
+                check_missing: settings.check_missing,
+                maps: None,
+            },
+            scans_dir,
+            include_all: settings.include_all,
+            renderer: std::env::current_exe().unwrap_or_default(),
+            share_count: usize::from(clamped_scores(settings.scores_to_show)),
+            show_lost_in_top: settings.show_lost_in_top_image,
+        };
+        Some((job, credentials))
     }
 
     fn sync(&self) {
@@ -1188,6 +1216,7 @@ impl Session {
                 self.refresh_shared();
                 let (total, ranked) = self.counts.get();
                 self.scan.borrow_mut().finish(total, ranked);
+                self.open_results_if_narrow();
             }
             Message::Failed(error) => {
                 self.refreshing.set(false);
@@ -1195,6 +1224,13 @@ impl Session {
             }
         }
         self.sync();
+    }
+
+    fn open_results_if_narrow(&self) {
+        let narrow = !self.window.get_two_columns();
+        if self.opens_results.replace(false) && narrow {
+            self.window.global::<State>().set_show_results(true);
+        }
     }
 
     fn show_card(&self, potential: &PotentialResult) {
@@ -1272,4 +1308,125 @@ fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, Key
     }
     .map_err(|error| keys_error(&error))?;
     Ok(Profile::from_player(&player))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::{Once, OnceLock};
+
+    use lost_scores_app::setup;
+    use osu_api::Credentials;
+    use slint::{ComponentHandle, LogicalSize};
+    use tempfile::TempDir;
+
+    use super::Session;
+    use crate::worker::Message;
+    use crate::{MainWindow, State};
+
+    fn isolate_environment() {
+        static HOME: OnceLock<TempDir> = OnceLock::new();
+        static SET: Once = Once::new();
+        SET.call_once(|| {
+            let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
+            for (name, folder) in [
+                ("XDG_CONFIG_HOME", "config"),
+                ("XDG_DATA_HOME", "data"),
+                ("XDG_CACHE_HOME", "cache"),
+            ] {
+                unsafe { std::env::set_var(name, home.path().join(folder)) };
+            }
+        });
+    }
+
+    fn osu_folder(root: &Path) -> String {
+        let osu = root.join("osu");
+        std::fs::create_dir_all(osu.join("Data/r")).unwrap();
+        std::fs::create_dir_all(osu.join("Songs")).unwrap();
+        osu.display().to_string()
+    }
+
+    fn session(width: f32) -> (MainWindow, std::rc::Rc<Session>, TempDir) {
+        isolate_environment();
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(width, 800.0));
+        slint::platform::update_timers_and_animations();
+        let root = tempfile::tempdir().unwrap();
+        let session = Session::create(&window);
+        session.bind(&window.global::<State>());
+        *session.credentials.borrow_mut() = Some(Credentials {
+            client_id: "1".into(),
+            client_secret: "x".into(),
+        });
+        let state = window.global::<State>();
+        state.set_connected(true);
+        state.set_user_name("Synthetic".into());
+        state.set_osu_dir(osu_folder(root.path()).into());
+        (window, session, root)
+    }
+
+    #[test]
+    fn start_scan_applies_the_pending_scores_to_show() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        state.set_scores_pending("3".into());
+        let (job, _) = session.prepare_scan().unwrap();
+        assert_eq!(job.share_count, 3);
+        assert_eq!(session.settings.borrow().scores_to_show, 3);
+        assert_eq!(state.get_scores_to_show(), 3);
+        let saved = setup::load_settings(&setup::config_file().unwrap());
+        assert_eq!(saved.scores_to_show, 3);
+        assert_eq!(state.get_scores_pending(), "");
+    }
+
+    #[test]
+    fn start_scan_resets_a_pending_value_that_is_not_valid() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        session.settings.borrow_mut().scores_to_show = 7;
+        state.set_scores_pending("999".into());
+        let (job, _) = session.prepare_scan().unwrap();
+        assert_eq!(job.share_count, 7);
+        assert_eq!(state.get_scores_pending(), "");
+    }
+
+    fn begin(session: &Session) {
+        session.prepare_scan().unwrap();
+        session.begin_scan();
+    }
+
+    fn finish(session: &Session) {
+        session.handle(Message::Refreshed(None));
+    }
+
+    #[test]
+    fn a_scan_started_in_one_column_opens_the_results_when_it_ends() {
+        let (window, session, _root) = session(650.0);
+        assert!(!window.get_two_columns());
+        begin(&session);
+        assert!(!window.global::<State>().get_show_results());
+        finish(&session);
+        assert!(window.global::<State>().get_show_results());
+        assert!(!window.window().is_maximized());
+    }
+
+    #[test]
+    fn two_columns_do_not_open_the_results_view() {
+        let (window, session, _root) = session(1600.0);
+        assert!(window.get_two_columns());
+        begin(&session);
+        finish(&session);
+        assert!(!window.global::<State>().get_show_results());
+    }
+
+    #[test]
+    fn a_results_view_that_is_already_shown_stays_as_it_is() {
+        let (window, session, _root) = session(650.0);
+        window.global::<State>().set_show_results(true);
+        begin(&session);
+        finish(&session);
+        assert!(window.global::<State>().get_show_results());
+    }
 }

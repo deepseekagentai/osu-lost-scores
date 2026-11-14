@@ -245,7 +245,7 @@ export component ScoresBox inherits Rectangle {
     in property <int> outside;
     in-out property <bool> editing: false;
     callback commit(string);
-    property <string> draft: "";
+    in-out property <string> pending: "";
     property <bool> hovered: root.enabled && (box.has-hover || pen.has-hover);
 
     changed outside => {
@@ -255,7 +255,8 @@ export component ScoresBox inherits Rectangle {
     }
 
     public function confirm() {
-        root.commit(root.draft);
+        root.commit(root.pending);
+        root.pending = "";
         root.editing = false;
     }
 
@@ -305,12 +306,12 @@ export component ScoresBox inherits Rectangle {
                 }
             }
             init => {
-                root.draft = self.text;
+                root.pending = self.text;
                 self.focus();
                 self.select-all();
             }
             edited => {
-                root.draft = self.text;
+                root.pending = self.text;
             }
             accepted => {
                 root.confirm();

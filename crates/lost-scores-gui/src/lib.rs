@@ -173,6 +173,36 @@ mod tests {
     const SHARE_TIP: &str = "Share the images of this scan";
 
     #[test]
+    fn start_scan_sees_the_text_still_being_typed_in_scores_to_show() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let seen = Rc::new(std::cell::RefCell::new(String::from("unset")));
+        let record = seen.clone();
+        let weak = window.as_weak();
+        let state = window.global::<State>();
+        state.set_connected(true);
+        state.on_start_scan(move || {
+            let window = weak.upgrade().unwrap();
+            *record.borrow_mut() = window.global::<State>().get_scores_pending().to_string();
+        });
+
+        ElementHandle::find_by_element_type_name(&window, "ScoresBox")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        for event in [
+            WindowEvent::KeyPressed { text: "3".into() },
+            WindowEvent::KeyReleased { text: "3".into() },
+        ] {
+            window.window().dispatch_event(event);
+        }
+        click_start_scan(&window);
+        assert_eq!(*seen.borrow(), "3");
+    }
+
+    #[test]
     fn the_narrow_header_has_one_share_button() {
         let window = header_window(650.0);
         let count = ElementHandle::find_by_accessible_label(&window, SHARE_TIP).count();

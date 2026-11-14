@@ -1,19 +1,18 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::path::Path;
 use std::process::ExitCode;
 
-fn render_images(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let mut folder = args.next();
-    let cached = folder.as_deref() == Some("--cached");
-    if cached {
-        folder = args.next();
-    }
-    let Some(folder) = folder else {
-        eprintln!("render-images needs the scan folder as its argument");
-        return ExitCode::FAILURE;
+use lost_scores_gui::share::render::{RenderArgs, render_folder};
+
+fn render_images(args: impl Iterator<Item = String>) -> ExitCode {
+    let args = match RenderArgs::parse(args) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
     };
-    match lost_scores_gui::share::render::render_folder(Path::new(&folder), cached) {
+    match render_folder(&args) {
         Ok(output) => {
             for warning in output.warnings {
                 eprintln!("{warning}");

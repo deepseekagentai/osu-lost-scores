@@ -214,6 +214,7 @@ component Profile inherits HorizontalLayout {
             ScoresBox {
                 value: State.scores-to-show;
                 outside: State.outside-clicks;
+                pending <=> State.scores-pending;
                 enabled: !State.busy;
                 commit(text) => {
                     State.commit-scores(text);
