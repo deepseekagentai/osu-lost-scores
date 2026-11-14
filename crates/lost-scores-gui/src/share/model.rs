@@ -9,7 +9,7 @@ use lost_scores_core::maps::MapStatus;
 use crate::table::when_day;
 use crate::view::{lost_text, weighted_text};
 
-pub const MAX_IMAGE_ROWS: usize = 200;
+pub const MAX_IMAGE_ROWS: usize = 250;
 pub const MOD_ICON_WIDTH: f32 = 30.0;
 pub const MOD_ICON_GAP: f32 = 2.0;
 
@@ -339,17 +339,17 @@ mod tests {
 
     #[test]
     fn the_image_never_draws_more_than_the_row_cap() {
-        let rows = (0..300)
+        let rows = (0..400)
             .map(|n| lost(1000.0 - f64::from(n), MapStatus::Ranked, ""))
             .collect();
         let many = scan(rows, None);
         let shown = lost_rows(&many, &options(999, false, false));
         assert_eq!(shown.len(), MAX_IMAGE_ROWS);
-        assert_eq!(shown.len(), 200);
-        assert_eq!(shown[199].place, "#200");
+        assert_eq!(shown.len(), 250);
+        assert_eq!(shown[249].place, "#250");
 
-        let tall = (1..=250)
-            .map(|place| weighted(place, place == 230, ""))
+        let tall = (1..=300)
+            .map(|place| weighted(place, place == 280, ""))
             .collect();
         let top = scan(Vec::new(), Some(potential(tall, Some(1))));
         assert_eq!(

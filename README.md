@@ -33,7 +33,7 @@ After every scan the window saves three pictures into the scan's folder:
 - `potential_top.png`: your top 200 as it would be with the lost plays kept, with the pp and accuracy it would give;
 - `summary_badge.png`: a small card with the same numbers.
 
-"Scores to show" sets how many plays the two big pictures list, up to 200. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
+"Scores to show" sets how many plays the two big pictures list, up to 250. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
 
 The share button in the results view lists the pictures of the shown scan:
 
