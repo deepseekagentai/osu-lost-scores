@@ -1,3 +1,4 @@
+import atexit
 import os
 import re
 import shutil
@@ -23,7 +24,9 @@ MODS = {
     "NF": ("no-fail", "b3ff66", "3c591e"), "HT": ("half-time", "b3ff66", "3c591e"),
     "SO": ("spun-out", "66ccff", "1e4659"), "TD": ("touch-device", "ffcc22", "594605"),
 }
-TMP = tempfile.mkdtemp(dir="/dev/shm", prefix="osu-lsa_svg_")
+WORK = tempfile.TemporaryDirectory(prefix="osu-lsa_svg_")
+atexit.register(WORK.cleanup)
+TMP = WORK.name
 
 
 def render(svg, w, h, text=None):
@@ -102,7 +105,6 @@ scale = 980 / 650
 visible = 440 / scale
 backdrop(triangles(f"0 {(440 - visible) / 2:.4f} 650 {visible:.4f}", 1960, 880), 1960, 880, False).save(f"{S}/backdrop-wide.png")
 backdrop(triangles("65 0 520 440", 1040, 880), 1040, 280, True).save(f"{S}/backdrop-badge.png")
-shutil.rmtree(TMP)
 for root, _, files in sorted(os.walk(S)):
     for file in sorted(files):
         path = os.path.join(root, file)
