@@ -2680,7 +2680,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lost-scores-app"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "anyhow",
  "jiff",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "lost-scores-cli"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "anyhow",
  "clap",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "lost-scores-core"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "md-5",
  "osu-formats",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "lost-scores-gui"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "osu-api"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "serde",
  "serde_json",
@@ -3426,7 +3426,7 @@ dependencies = [
 
 [[package]]
 name = "osu-formats"
-version = "0.1.0"
+version = "0.7.27"
 dependencies = [
  "thiserror 2.0.21",
 ]
