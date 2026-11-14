@@ -96,4 +96,24 @@ mod tests {
         assert!(window.window().is_maximized());
         assert_eq!(window.window().size(), PhysicalSize::new(1400, 900));
     }
+
+    #[test]
+    fn maximizing_into_two_columns_drops_the_undo_so_back_does_not_shrink_it() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(700.0, 800.0));
+        bind(&window);
+        let state = window.global::<State>();
+
+        state.invoke_see_full_results();
+        window.window().set_size(LogicalSize::new(1600.0, 900.0));
+        slint::platform::update_timers_and_animations();
+        assert!(window.get_two_columns());
+        assert!(!state.get_show_results());
+
+        state.invoke_back();
+        assert!(window.window().is_maximized());
+        assert_eq!(window.window().size(), PhysicalSize::new(1600, 900));
+    }
 }

@@ -996,12 +996,14 @@ impl Session {
         let epoch = self.epoch.get();
         thread::spawn(move || {
             let result = validate(&credentials, &Account::Name(name));
-            on_ui(&weak, move |app| {
-                if app.epoch.get() == epoch {
-                    app.profile_fetched(result);
-                }
-            });
+            on_ui(&weak, move |app| app.profile_arrived(epoch, result));
         });
+    }
+
+    fn profile_arrived(self: &Rc<Self>, epoch: u64, result: Result<Profile, KeysError>) {
+        if self.epoch.get() == epoch {
+            self.profile_fetched(result);
+        }
     }
 
     fn profile_fetched(self: &Rc<Self>, result: Result<Profile, KeysError>) {
@@ -1026,16 +1028,18 @@ impl Session {
         thread::spawn(move || {
             let cache = cache::avatars_dir();
             let bytes = fetch(player_id, cache.as_deref()).ok();
-            on_ui(&weak, move |app| {
-                if let Some(bytes) = bytes
-                    && app.player.get() == Some(player_id)
-                {
-                    *app.avatar.borrow_mut() = Some(bytes);
-                    app.rendered.set(0);
-                    app.refresh_avatar();
-                }
-            });
+            on_ui(&weak, move |app| app.avatar_arrived(player_id, bytes));
         });
+    }
+
+    fn avatar_arrived(&self, player_id: u32, bytes: Option<Vec<u8>>) {
+        if let Some(bytes) = bytes
+            && self.player.get() == Some(player_id)
+        {
+            *self.avatar.borrow_mut() = Some(bytes);
+            self.rendered.set(0);
+            self.refresh_avatar();
+        }
     }
 
     fn refresh_avatar(&self) {
@@ -1314,6 +1318,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::Session;
+    use crate::account::KeysError;
     use crate::share::render::ShareImage;
     use crate::worker::Message;
     use crate::{MainWindow, State};
@@ -1390,6 +1395,48 @@ mod tests {
             _home: home,
         };
         (window, session, root)
+    }
+
+    fn png() -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(16, 16, image::Rgba([200, 120, 40, 255]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_profile_fetched_before_a_login_or_logout_is_dropped() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        let stale = session.epoch.get();
+        session.epoch.set(stale + 1);
+        session.profile_arrived(stale, Err(KeysError::Unreachable));
+        assert_eq!(state.get_perf_now(), "");
+        assert!(!state.get_stats_ready());
+        session.profile_arrived(stale + 1, Err(KeysError::Unreachable));
+        assert_eq!(state.get_perf_now(), "-");
+        assert!(state.get_stats_ready());
+    }
+
+    #[test]
+    fn an_avatar_for_another_player_is_dropped() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        session.player.set(Some(2));
+        session.avatar_arrived(1, Some(png()));
+        assert!(!state.get_has_avatar());
+        assert!(session.avatar.borrow().is_none());
+        session.avatar_arrived(2, Some(png()));
+        assert!(state.get_has_avatar());
+        *session.avatar.borrow_mut() = None;
+        session.player.set(None);
+        session.avatar_arrived(2, Some(png()));
+        assert!(session.avatar.borrow().is_none());
     }
 
     #[test]
