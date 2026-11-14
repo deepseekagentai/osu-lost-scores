@@ -113,6 +113,8 @@ export global State {
     in-out property <length> share-x;
     in-out property <[string]> share-images;
     in-out property <bool> upload-confirm-open;
+    in-out property <bool> delete-confirm-open;
+    in-out property <string> delete-message;
 
     callback pick-folder();
     callback start-scan();
@@ -133,6 +135,10 @@ export global State {
     callback search-step(int);
     callback select-scan(int);
     callback open-scan-folder();
+    callback delete-scan(int);
+    callback delete-older-scans();
+    callback confirm-delete();
+    callback cancel-delete();
     callback open-share();
     callback copy-image(int);
     callback upload-image(int);

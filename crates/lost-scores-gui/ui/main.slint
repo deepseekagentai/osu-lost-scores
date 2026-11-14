@@ -258,6 +258,18 @@ export component MainWindow inherits Window {
             State.confirm-upload(remember);
         }
     }
+    if State.delete-confirm-open: ConfirmSheet {
+        width: root.width;
+        height: root.height;
+        message: State.delete-message;
+        ok-text: "Move to trash";
+        cancel => {
+            State.cancel-delete();
+        }
+        ok => {
+            State.confirm-delete();
+        }
+    }
     if State.cache-confirm-open: ConfirmSheet {
         width: root.width;
         height: root.height;

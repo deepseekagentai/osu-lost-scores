@@ -642,7 +642,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{Column, Tab, Table, anchor_index, tone, when_day, when_short, wrap};
+    use super::{Column, Tab, Table, anchor_index, tone, when, when_day, when_short, wrap};
 
     const SEPTEMBER_2024: i64 = 1_725_406_740;
 
@@ -701,6 +701,18 @@ mod tests {
 
     fn pps(table: &Table) -> Vec<f64> {
         table.rows(Tab::Lost).iter().map(|item| item.pp).collect()
+    }
+
+    #[test]
+    fn scan_dates_read_day_month_year_and_time() {
+        assert_eq!(
+            when(SEPTEMBER_2024, &TimeZone::UTC),
+            "3 September 2024 · 23:39"
+        );
+        assert_eq!(
+            when(1_767_258_300, &TimeZone::UTC),
+            "1 January 2026 · 09:05"
+        );
     }
 
     #[test]

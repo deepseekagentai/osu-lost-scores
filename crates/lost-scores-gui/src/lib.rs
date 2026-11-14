@@ -5,6 +5,7 @@ pub mod layout;
 pub mod log;
 pub mod newest;
 pub mod scan;
+pub mod scans;
 pub mod share;
 pub mod table;
 pub mod update;
@@ -105,6 +106,46 @@ mod tests {
 
         find(labels[2]).mock_single_click(PointerEventButton::Left);
         assert_eq!(selected.get(), 2);
+    }
+
+    #[test]
+    fn only_older_scans_have_a_trash_button() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let labels = [
+            "15 November 2026 · 10:00",
+            "14 November 2026 · 09:00",
+            "13 November 2026 · 08:00",
+        ];
+        let state = window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(
+            labels.map(SharedString::from).to_vec(),
+        )));
+        let deleted = Rc::new(Cell::new(-1));
+        let older = Rc::new(Cell::new(0));
+        let (one, many) = (deleted.clone(), older.clone());
+        state.on_delete_scan(move |index| one.set(index));
+        state.on_delete_older_scans(move || many.set(many.get() + 1));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_scans_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let buttons: Vec<_> =
+            ElementHandle::find_by_accessible_label(&window, "Move to trash").collect();
+        assert_eq!(buttons.len(), 2);
+        buttons[1].mock_single_click(PointerEventButton::Left);
+        assert_eq!(deleted.get(), 2);
+        buttons[0].mock_single_click(PointerEventButton::Left);
+        assert_eq!(deleted.get(), 1);
+
+        ElementHandle::find_by_accessible_label(&window, "Delete older scans")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(older.get(), 1);
     }
 
     #[test]

@@ -457,6 +457,27 @@ component BackButton inherits Rectangle {
     }
 }
 
+component RowTrash inherits Rectangle {
+    in property <bool> lit;
+    in-out property <bool> over;
+    callback clicked;
+    width: 28px;
+    height: 28px;
+    opacity: root.lit || root.over ? 1 : 0;
+    IconButton {
+        width: 28px;
+        height: 28px;
+        icon: @image-url("../assets/i-trash.svg");
+        tip: "Move to trash";
+        changed hovered => {
+            root.over = self.hovered;
+        }
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 component ScanSelector inherits Rectangle {
     property <bool> many: State.scans.length > 1;
     width: row.preferred-width + 28px;
@@ -861,7 +882,7 @@ export component ResultsPanel inherits Rectangle {
         x: root.show-back ? 116px : 26px;
         y: 24px + 42px + 6px;
         width: 320px;
-        height: min(300px, 16px + State.scans.length * 34px + (State.scans.length > 1 ? 26px : 0px));
+        height: min(340px, 16px + State.scans.length * 34px + (State.scans.length > 1 ? 26px + 38px : 0px));
         border-radius: 10px;
         background: T.card;
         border-width: 2px;
@@ -879,10 +900,11 @@ export component ResultsPanel inherits Rectangle {
                         font-italic: true;
                         vertical-alignment: center;
                     }
-                    Rectangle {
+                    row := Rectangle {
                         height: 34px;
+                        property <bool> trash-over;
                         border-radius: 6px;
-                        background: ta.has-hover ? T.btn : transparent;
+                        background: ta.has-hover || row.trash-over ? T.btn : transparent;
                         Text {
                             x: 10px;
                             text: label;
@@ -897,6 +919,47 @@ export component ResultsPanel inherits Rectangle {
                                 State.select-scan(i);
                             }
                         }
+                        if i > 0: RowTrash {
+                            x: parent.width - self.width - 4px;
+                            y: 3px;
+                            lit: ta.has-hover;
+                            over <=> row.trash-over;
+                            clicked => {
+                                State.delete-scan(i);
+                            }
+                        }
+                    }
+                }
+            }
+            if State.scans.length > 1: Rectangle {
+                height: 38px;
+                border-radius: 6px;
+                background: older-ta.has-hover ? T.btn : transparent;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 8px;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../assets/i-trash.svg");
+                            width: 14px;
+                            height: 14px;
+                            image-fit: contain;
+                            colorize: T.ibicon;
+                        }
+                    }
+                    Text {
+                        text: "Delete older scans";
+                        color: #ffffff;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                }
+                older-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        State.delete-older-scans();
                     }
                 }
             }

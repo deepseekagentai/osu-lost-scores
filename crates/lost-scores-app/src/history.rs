@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use jiff::Timestamp;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
@@ -95,6 +95,43 @@ pub fn list(dir: &Path) -> Vec<ScanEntry> {
     scans
 }
 
+pub fn size(folder: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let meta = fs::symlink_metadata(entry.path()).ok()?;
+            Some(if meta.is_dir() {
+                size(&entry.path())
+            } else {
+                meta.len()
+            })
+        })
+        .sum()
+}
+
+pub fn remove(
+    dir: &Path,
+    folders: &[PathBuf],
+    to_trash: impl FnOnce(&[PathBuf]) -> Result<()>,
+) -> Result<()> {
+    for folder in folders {
+        let inside = folder.parent() == Some(dir)
+            && folder
+                .file_name()
+                .is_some_and(|name| name != ".." && name != ".");
+        if !inside || !folder.join(FILE).is_file() {
+            return Err(anyhow!(
+                "{} is not a saved scan in the history",
+                folder.display()
+            ));
+        }
+    }
+    to_trash(folders)
+}
+
 pub fn load(folder: &Path) -> Result<SavedScan> {
     let file = folder.join(FILE);
     let data = fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
@@ -106,7 +143,10 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{SavedScan, VERSION, list, load, replace, save};
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    use super::{SavedScan, VERSION, list, load, remove, replace, save, size};
     use crate::pipeline::PotentialResult;
     use crate::rows::{Hits, LostRow, OnlineRow, PotentialRow};
 
@@ -359,5 +399,88 @@ mod tests {
         let listed: Vec<i64> = list(dir.path()).iter().map(|e| e.made_at).collect();
         assert_eq!(listed, [1_700_000_000, 1_650_000_000, 1_600_000_000]);
         assert!(list(&dir.path().join("gone")).is_empty());
+    }
+
+    fn two_scans(dir: &std::path::Path) -> Vec<PathBuf> {
+        vec![
+            save(dir, &scan(1_700_000_000)).unwrap(),
+            save(dir, &scan(1_700_086_400)).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn remove_refuses_folders_outside_the_history() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("scans");
+        let inside = two_scans(&dir);
+        let outside = root.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("scan.json"), b"{}").unwrap();
+        let empty = dir.join("2023-11-16_00-00-00Z");
+        std::fs::create_dir(&empty).unwrap();
+        let nested = inside[0].join("deeper");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("scan.json"), b"{}").unwrap();
+        let called = Cell::new(false);
+        for bad in [outside, empty, nested, dir.join("..")] {
+            let folders = vec![inside[0].clone(), bad];
+            let result = remove(&dir, &folders, |_| {
+                called.set(true);
+                Ok(())
+            });
+            assert!(result.is_err());
+        }
+        assert!(!called.get());
+        assert!(inside.iter().all(|folder| folder.is_dir()));
+    }
+
+    #[test]
+    fn remove_hands_all_folders_to_the_trash_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let folders = two_scans(dir.path());
+        let calls = Cell::new(0);
+        let seen = std::cell::RefCell::new(Vec::new());
+        remove(dir.path(), &folders, |handed| {
+            calls.set(calls.get() + 1);
+            seen.borrow_mut().extend_from_slice(handed);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(*seen.borrow(), folders);
+    }
+
+    #[test]
+    fn a_failed_trash_keeps_the_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let folders = two_scans(dir.path());
+        let error = remove(dir.path(), &folders, |_| {
+            Err(anyhow::anyhow!("this drive has no trash"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "this drive has no trash");
+        assert!(
+            folders
+                .iter()
+                .all(|folder| folder.join("scan.json").is_file())
+        );
+        assert_eq!(list(dir.path()).len(), 2);
+    }
+
+    #[test]
+    fn a_scan_folder_counts_every_file_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = save(dir.path(), &scan(1_700_000_000)).unwrap();
+        let base = size(&folder);
+        assert_eq!(
+            base,
+            std::fs::metadata(folder.join("scan.json")).unwrap().len()
+        );
+        std::fs::write(folder.join("lost_scores.png"), vec![0; 1000]).unwrap();
+        let nested = folder.join("more");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("x"), vec![0; 24]).unwrap();
+        assert_eq!(size(&folder), base + 1024);
+        assert_eq!(size(&dir.path().join("missing")), 0);
     }
 }

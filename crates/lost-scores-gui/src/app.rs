@@ -22,6 +22,7 @@ use crate::avatar::{avatar_pixels, fetch, render_avatar};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::scan::{NEEDS_FOLDER, NEEDS_KEYS, Phase, ScanState, check_folders};
+use crate::scans::{shown_after_delete, size_text};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
@@ -68,6 +69,12 @@ struct Session {
     shared: RefCell<Vec<ShareImage>>,
     uploading: Cell<bool>,
     pending_upload: Cell<Option<usize>>,
+    pending_delete: RefCell<Option<Removal>>,
+}
+
+struct Removal {
+    folders: Vec<PathBuf>,
+    done: String,
 }
 
 struct LoopSink {
@@ -117,6 +124,7 @@ pub fn run_with(prepare: impl FnOnce(&MainWindow)) -> Result<()> {
         shared: RefCell::new(Vec::new()),
         uploading: Cell::new(false),
         pending_upload: Cell::new(None),
+        pending_delete: RefCell::new(None),
         window: window.clone_strong(),
         weak: window.as_weak(),
         log: Rc::new(VecModel::default()),
@@ -283,6 +291,14 @@ impl Session {
         let session = self.clone();
         state.on_copy_row(move |index| session.copy_row(index as usize));
         let session = self.clone();
+        state.on_delete_scan(move |index| session.ask_delete_scan(index as usize));
+        let session = self.clone();
+        state.on_delete_older_scans(move || session.ask_delete_older());
+        let session = self.clone();
+        state.on_confirm_delete(move || session.confirm_delete());
+        let session = self.clone();
+        state.on_cancel_delete(move || session.cancel_delete());
+        let session = self.clone();
         state.on_open_share(move || session.open_share());
         let session = self.clone();
         state.on_copy_image(move |index| session.copy_image(index as usize));
@@ -420,6 +436,18 @@ impl Session {
         let mut table = Table::from_scan(scan);
         table.set_include_all(self.window.global::<State>().get_include_all());
         *self.table.borrow_mut() = table;
+        *self.folder.borrow_mut() = folder;
+        let state = self.window.global::<State>();
+        self.relist(index);
+        state.set_scan_date(when(scan.made_at, &zone).into());
+        state.set_has_results(true);
+        self.refresh_shared();
+        self.show_tab(self.tab.get());
+    }
+
+    fn relist(&self, fallback: usize) {
+        let zone = TimeZone::system();
+        let folder = self.folder.borrow().clone();
         let index = folder
             .as_ref()
             .and_then(|folder| {
@@ -428,8 +456,7 @@ impl Session {
                     .iter()
                     .position(|entry| &entry.folder == folder)
             })
-            .unwrap_or(index);
-        *self.folder.borrow_mut() = folder;
+            .unwrap_or(fallback);
         let labels: Vec<slint::SharedString> = self
             .entries
             .borrow()
@@ -439,10 +466,98 @@ impl Session {
         let state = self.window.global::<State>();
         state.set_scans(ModelRc::new(VecModel::from(labels)));
         state.set_scan_selected(index as i32);
-        state.set_scan_date(when(scan.made_at, &zone).into());
-        state.set_has_results(true);
-        self.refresh_shared();
-        self.show_tab(self.tab.get());
+    }
+
+    fn ask_delete_scan(&self, index: usize) {
+        let entry = match self.entries.borrow().get(index) {
+            Some(entry) if index > 0 => entry.clone(),
+            _ => return,
+        };
+        let date = when(entry.made_at, &TimeZone::system());
+        self.ask_delete(
+            vec![entry.folder],
+            format!("Move the scan from {date} to the trash?"),
+            format!("Moved the scan from {date} to the trash"),
+        );
+    }
+
+    fn ask_delete_older(&self) {
+        let folders: Vec<PathBuf> = self
+            .entries
+            .borrow()
+            .iter()
+            .skip(1)
+            .map(|entry| entry.folder.clone())
+            .collect();
+        if folders.is_empty() {
+            return;
+        }
+        let bytes: u64 = folders.iter().map(|folder| history::size(folder)).sum();
+        let count = folders.len();
+        self.ask_delete(
+            folders,
+            format!(
+                "Move {count} older scans ({}) to the trash? The newest scan stays.",
+                size_text(bytes)
+            ),
+            format!("Moved {count} older scans to the trash"),
+        );
+    }
+
+    fn ask_delete(&self, folders: Vec<PathBuf>, message: String, done: String) {
+        if self.busy() {
+            self.log("Wait for the scan to finish before moving scans to the trash");
+            return;
+        }
+        let state = self.window.global::<State>();
+        state.set_scans_open(false);
+        *self.pending_delete.borrow_mut() = Some(Removal { folders, done });
+        state.set_delete_message(message.into());
+        state.set_delete_confirm_open(true);
+    }
+
+    fn cancel_delete(&self) {
+        *self.pending_delete.borrow_mut() = None;
+        self.window.global::<State>().set_delete_confirm_open(false);
+    }
+
+    fn confirm_delete(self: &Rc<Self>) {
+        self.window.global::<State>().set_delete_confirm_open(false);
+        let Some(removal) = self.pending_delete.borrow_mut().take() else {
+            return;
+        };
+        let Some(dir) = history::scans_dir() else {
+            self.log("Could not move the scans to the trash: cannot find the scan history");
+            return;
+        };
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let result = history::remove(&dir, &removal.folders, |folders| {
+                trash::delete_all(folders).map_err(anyhow::Error::from)
+            });
+            on_ui(&weak, move |app| match result {
+                Ok(()) => app.scans_removed(&dir, &removal.done),
+                Err(error) => app.log(&format!("Could not move the scans to the trash: {error:#}")),
+            });
+        });
+    }
+
+    fn scans_removed(self: &Rc<Self>, dir: &Path, done: &str) {
+        self.log(done);
+        *self.entries.borrow_mut() = history::list(dir);
+        let shown = self.folder.borrow().clone();
+        let index = shown_after_delete(&self.entries.borrow(), shown.as_deref());
+        let present = shown.as_ref().is_some_and(|shown| {
+            self.entries
+                .borrow()
+                .iter()
+                .any(|entry| &entry.folder == shown)
+        });
+        if present {
+            self.relist(index);
+        } else {
+            self.select_scan(0);
+        }
     }
 
     fn refresh_shared(&self) {
