@@ -36,7 +36,7 @@ impl Printer {
         }
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         if let Some((_, bar)) = self.bar.take() {
             bar.finish_and_clear();
         }
@@ -63,4 +63,24 @@ fn bar(label: &'static str) -> ProgressBar {
         .expect("the progress template is valid")
         .progress_chars("=> ");
     ProgressBar::new(0).with_style(style).with_message(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use lost_scores_app::pipeline::{Event, Step};
+
+    use super::Printer;
+
+    #[test]
+    fn a_finished_run_leaves_no_bar_behind() {
+        let mut printer = Printer::new();
+        printer.handle(Event::Progress {
+            step: Step::MissingMaps,
+            done: 3,
+            total: 10,
+        });
+        assert!(printer.bar.is_some());
+        crate::finish_run(&mut printer, "timings: none", true);
+        assert!(printer.bar.is_none());
+    }
 }

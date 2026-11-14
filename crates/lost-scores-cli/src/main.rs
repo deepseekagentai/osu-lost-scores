@@ -210,10 +210,19 @@ fn run(cli: Cli) -> Result<()> {
             Some(&cli.source),
         ),
     };
-    if source.is_some_and(|source| source.timings) {
-        eprintln!("{}", timings.report());
-    }
+    finish_run(
+        &mut printer,
+        &timings.report(),
+        source.is_some_and(|source| source.timings),
+    );
     result
+}
+
+fn finish_run(printer: &mut Printer, timings: &str, show_timings: bool) {
+    printer.clear();
+    if show_timings {
+        eprintln!("{timings}");
+    }
 }
 
 fn saved_keys() -> Option<Credentials> {
