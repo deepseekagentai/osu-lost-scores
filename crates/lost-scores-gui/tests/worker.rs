@@ -358,8 +358,10 @@ fn a_panicking_renderer_is_reported_by_its_message_line() {
     );
 }
 
+#[cfg(unix)]
 struct Panicking;
 
+#[cfg(unix)]
 impl Fetch for Panicking {
     fn get(&mut self, _url: &str) -> Result<Option<Vec<u8>>> {
         panic!("the cover server blew up");
@@ -438,6 +440,7 @@ fn a_panic_while_fetching_covers_is_logged_and_the_renderer_still_runs() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_renderer_binary_does_not_panic_on_a_folder_that_is_not_utf8() {
     use std::ffi::OsStr;
