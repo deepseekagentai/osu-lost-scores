@@ -168,9 +168,9 @@ component Profile inherits HorizontalLayout {
                     State.editing-name = !State.editing-name;
                 }
             }
-            if State.own-keys: IconButton {
+            IconButton {
                 icon: @image-url("../assets/i-door.svg");
-                tip: "Remove API keys";
+                tip: "Log out";
                 enabled: !State.busy;
                 clicked => {
                     State.ask-logout();

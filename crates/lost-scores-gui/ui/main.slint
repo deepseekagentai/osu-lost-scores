@@ -309,8 +309,8 @@ export component MainWindow inherits Window {
         if State.confirm-open: ConfirmSheet {
             width: root.width;
             height: root.height;
-            message: "Remove the saved API keys? Scans will go through the shared Lost Scores server.";
-            ok-text: "Remove keys";
+            message: "Are you sure you want to log out?";
+            ok-text: "Log out";
             cancel => {
                 State.cancel-logout();
             }

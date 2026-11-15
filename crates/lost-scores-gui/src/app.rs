@@ -1604,7 +1604,7 @@ impl Session {
         state.set_stats_ready(true);
     }
 
-    fn log_out(self: &Rc<Self>) {
+    fn log_out(&self) {
         let state = self.window.global::<State>();
         state.set_confirm_open(false);
         if let Some(path) = setup::credentials_file()
@@ -1614,18 +1614,16 @@ impl Session {
             return;
         }
         *self.credentials.borrow_mut() = None;
+        self.change_settings(|settings| settings.player = None);
         state.set_own_keys(false);
         self.epoch.set(self.epoch.get() + 1);
         self.player.set(None);
         self.show_guest();
+        state.set_editing_name(false);
         state.set_stats_ready(false);
-        self.log("Removed the saved API keys; scans go through the shared Lost Scores server");
-        let name = state.get_user_name().to_string();
-        if name.is_empty() {
-            state.set_connected(false);
-        } else {
-            self.fetch_profile(name);
-        }
+        state.set_connected(false);
+        state.set_user_name("".into());
+        self.log("Logged out");
     }
 }
 
@@ -1934,15 +1932,26 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_keys_keeps_the_player_for_the_shared_server() {
+    fn logging_out_with_keys_removes_them_and_returns_to_the_connect_card() {
         let (window, session, _root) = session(650.0);
         let state = window.global::<State>();
         state.set_own_keys(true);
+        session.settings.borrow_mut().player = Some("Synthetic".into());
         session.log_out();
         assert!(session.credentials.borrow().is_none());
         assert!(!state.get_own_keys());
-        assert!(state.get_connected());
-        assert_eq!(state.get_user_name(), "Synthetic");
+        assert!(!state.get_connected());
+        assert_eq!(state.get_user_name(), "");
+        assert_eq!(session.settings.borrow().player, None);
+    }
+
+    #[test]
+    fn logging_out_without_keys_returns_to_the_connect_card_too() {
+        let (window, session, _root) = keyless(650.0);
+        let state = window.global::<State>();
+        session.log_out();
+        assert!(!state.get_connected());
+        assert_eq!(state.get_user_name(), "");
     }
 
     #[test]
