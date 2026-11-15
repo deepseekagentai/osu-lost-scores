@@ -26,6 +26,7 @@ pub enum LoginError {
     Cancelled,
     Expired,
     Refused,
+    Busy,
     TimedOut,
     Api(ApiError),
     Io(io::Error),
@@ -37,6 +38,9 @@ impl fmt::Display for LoginError {
             LoginError::Cancelled => f.write_str("the login was cancelled on osu!"),
             LoginError::Expired => f.write_str("the login expired; try again"),
             LoginError::Refused => f.write_str("osu! did not confirm the login; try again"),
+            LoginError::Busy => {
+                f.write_str("the Lost Scores server is busy; try again in a minute")
+            }
             LoginError::TimedOut => {
                 f.write_str("the browser did not finish the login in time; try again")
             }
@@ -91,6 +95,7 @@ pub fn wait<T: Transport>(
             Answer::Error(error) => Err(match error.as_str() {
                 "access_denied" => LoginError::Cancelled,
                 "login_expired" => LoginError::Expired,
+                "busy" => LoginError::Busy,
                 _ => LoginError::Refused,
             }),
             Answer::Code(code) => match server.redeem(&code, &pending.verifier) {
@@ -112,6 +117,7 @@ pub fn wait<T: Transport>(
             Err(LoginError::Cancelled) => format!("{SITE_URL}/oauth/success?error=access_denied"),
             Err(LoginError::Expired) => format!("{SITE_URL}/oauth/success?error=login_expired"),
             Err(LoginError::Refused) => format!("{SITE_URL}/oauth/success?error=osu_refused"),
+            Err(LoginError::Busy) => format!("{SITE_URL}/oauth/success?error=busy"),
             Err(_) => format!("{SITE_URL}/oauth/success?error=login_failed"),
         };
         reply(stream, "302 Found", Some(&site));
@@ -331,6 +337,24 @@ mod tests {
         assert!(
             browser.join().unwrap()[0]
                 .contains(&format!("\r\nLocation: {SITE}?error=access_denied\r\n"))
+        );
+        assert!(fake.requests().is_empty());
+    }
+
+    #[test]
+    fn waiting_reports_a_busy_server() {
+        let fake = Fake::default();
+        let mut server = Server::new(fake.clone(), "https://api.test");
+        let pending = begin(&server).unwrap();
+        let browser = browse(port_of(&pending.url), &["/?error=busy"]);
+        let error = wait(&mut server, pending, Duration::from_secs(10)).unwrap_err();
+        assert!(matches!(error, LoginError::Busy));
+        assert_eq!(
+            error.to_string(),
+            "the Lost Scores server is busy; try again in a minute"
+        );
+        assert!(
+            browser.join().unwrap()[0].contains(&format!("\r\nLocation: {SITE}?error=busy\r\n"))
         );
         assert!(fake.requests().is_empty());
     }
