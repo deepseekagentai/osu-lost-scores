@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -19,7 +20,7 @@ use lost_scores_app::session::{self, Session};
 use lost_scores_app::setup;
 use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::timings::Timings;
-use osu_api::{Credentials, Http, Server};
+use osu_api::{Credentials, Http, Server, Transport};
 use serde::Serialize;
 
 use crate::dump::Dump;
@@ -471,19 +472,29 @@ fn show_potential(
 
 fn log_in() -> Result<()> {
     let path = setup::session_file().context("cannot find a folder for the settings")?;
-    let mut server = Server::new(Http::new(USER_AGENT), &shared::server_url());
+    let server = Server::new(Http::new(USER_AGENT), &shared::server_url());
+    let session = log_in_with(server, |url: &str| open::that_detached(url))?;
+    session::save(&path, &session)?;
+    eprintln!("logged in as {}", rows::printable(&session.username));
+    Ok(())
+}
+
+fn log_in_with<T: Transport>(
+    mut server: Server<T>,
+    open: impl FnOnce(&str) -> io::Result<()> + Send + 'static,
+) -> Result<Session> {
     let pending = login::begin(&server).context("cannot listen for the browser")?;
     eprintln!(
         "Log in with osu! in the browser. If it does not open, go to:\n  {}",
         pending.url
     );
-    if open::that(&pending.url).is_err() {
-        eprintln!("cannot open the browser; open the address above yourself");
-    }
-    let session = login::wait(&mut server, pending, login::LIMIT)?;
-    session::save(&path, &session)?;
-    eprintln!("logged in as {}", rows::printable(&session.username));
-    Ok(())
+    let url = pending.url.clone();
+    thread::spawn(move || {
+        if open(&url).is_err() {
+            eprintln!("cannot open the browser; open the address above yourself");
+        }
+    });
+    Ok(login::wait(&mut server, pending, login::LIMIT)?)
 }
 
 fn save_keys() -> Result<()> {
@@ -555,11 +566,17 @@ fn write_json(mut writer: impl Write, value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
     use clap::{CommandFactory, Parser};
     use lost_scores_app::session::Session;
-    use osu_api::Credentials;
+    use osu_api::{ApiError, Credentials, Response, Server, Transport};
 
-    use super::{Cli, Command, LOGIN_HINT, OFFLINE_HINT, client};
+    use super::{Cli, Command, LOGIN_HINT, OFFLINE_HINT, client, log_in_with};
     use crate::progress::Notes;
 
     #[test]
@@ -620,6 +637,55 @@ mod tests {
             assert!(api.is_none());
             assert_eq!(hint, OFFLINE_HINT);
         }
+    }
+
+    struct Redeeming;
+
+    impl Transport for Redeeming {
+        fn post_form(&mut self, url: &str, _: &[(&str, &str)]) -> Result<Response, ApiError> {
+            panic!("unexpected form to {url}")
+        }
+
+        fn get(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
+            panic!("unexpected GET {url}")
+        }
+
+        fn post_json(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
+            assert!(url.ends_with("/v1/auth/token"), "{url}");
+            Ok(Response {
+                status: 200,
+                retry_after: None,
+                body: br#"{"token":"t","osu_id":7,"username":"p"}"#.to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn the_login_waits_for_the_browser_even_while_the_opener_hangs() {
+        let (stop, hang) = mpsc::channel::<()>();
+        let opener = move |url: &str| {
+            let port: u16 = url.rsplit("port=").next().unwrap().parse().unwrap();
+            thread::spawn(move || {
+                let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+                write!(stream, "GET /?code=abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+                let mut reply = String::new();
+                let _ = stream.read_to_string(&mut reply);
+            });
+            let _ = hang.recv();
+            Ok(())
+        };
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            let result = log_in_with(Server::new(Redeeming, "https://api.test"), opener);
+            let _ = done.send(
+                result
+                    .map(|session| session.osu_id)
+                    .map_err(|error| error.to_string()),
+            );
+        });
+        let outcome = finished.recv_timeout(Duration::from_secs(10));
+        drop(stop);
+        assert_eq!(outcome, Ok(Ok(7)), "the login waited for the opener");
     }
 
     #[test]
