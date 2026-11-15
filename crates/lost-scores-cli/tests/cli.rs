@@ -36,12 +36,12 @@ fn save_keys(home: &Path) {
     .unwrap();
 }
 
-fn save_session(home: &Path) {
+fn save_session(home: &Path, server: &str) {
     let dir = home.join("config").join("lost-scores");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("session.json"),
-        r#"{"token":"t","osu_id":7,"username":"p"}"#,
+        format!(r#"{{"token":"t","osu_id":7,"username":"p","server":"{server}"}}"#),
     )
     .unwrap();
 }
@@ -110,7 +110,7 @@ fn without_keys_or_session_the_cli_says_to_log_in() {
 #[test]
 fn a_saved_session_picks_the_shared_server() {
     let home = tempfile::tempdir().unwrap();
-    save_session(home.path());
+    save_session(home.path(), "http://127.0.0.1:9");
     let output = potential(home.path(), &[]);
     let log = text(&output.stderr);
     assert!(!output.status.success());
@@ -118,10 +118,20 @@ fn a_saved_session_picks_the_shared_server() {
 }
 
 #[test]
+fn a_session_from_another_server_is_not_sent() {
+    let home = tempfile::tempdir().unwrap();
+    save_session(home.path(), "https://elsewhere.test");
+    let output = potential(home.path(), &[]);
+    let log = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(log.contains("run `lost-scores login` first"), "{log}");
+}
+
+#[test]
 fn logout_deletes_the_session_and_the_keys() {
     let home = tempfile::tempdir().unwrap();
     save_keys(home.path());
-    save_session(home.path());
+    save_session(home.path(), "http://127.0.0.1:9");
     let output = lost_scores(home.path(), &["logout"]);
     assert!(output.status.success(), "{}", text(&output.stderr));
     let dir = home.path().join("config").join("lost-scores");

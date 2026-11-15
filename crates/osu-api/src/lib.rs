@@ -359,6 +359,10 @@ impl<T: Transport> Server<T> {
         self
     }
 
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     pub fn login_url(&self, challenge: &str, port: u16) -> String {
         format!(
             "{}/v1/auth/start?challenge={}&port={port}",

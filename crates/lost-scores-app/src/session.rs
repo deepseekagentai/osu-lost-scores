@@ -12,10 +12,15 @@ pub struct Session {
     pub token: String,
     pub osu_id: u32,
     pub username: String,
+    pub server: String,
 }
 
 pub fn load(path: &Path) -> Option<Session> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+pub fn load_for(path: &Path, server: &str) -> Option<Session> {
+    load(path).filter(|session| session.server == server.trim_end_matches('/'))
 }
 
 pub fn save(path: &Path, session: &Session) -> Result<()> {
@@ -29,13 +34,14 @@ pub fn save(path: &Path, session: &Session) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, delete, load, save};
+    use super::{Session, delete, load, load_for, save};
 
     fn session() -> Session {
         Session {
             token: "tok".into(),
             osu_id: 7,
             username: "Some Name".into(),
+            server: "https://api.test".into(),
         }
     }
 
@@ -55,5 +61,14 @@ mod tests {
         assert!(delete(&path).unwrap());
         assert!(!delete(&path).unwrap());
         assert_eq!(load(&path), None);
+    }
+
+    #[test]
+    fn a_session_for_another_server_is_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        save(&path, &session()).unwrap();
+        assert_eq!(load_for(&path, "https://api.test/"), Some(session()));
+        assert_eq!(load_for(&path, "https://elsewhere.test"), None);
     }
 }

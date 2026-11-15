@@ -285,10 +285,11 @@ fn client(
     if let (Some(keys), None) = (&keys, server) {
         return (Some(Box::new(Online::new(keys.clone()))), OFFLINE_HINT);
     }
-    let Some(session) = session else {
+    let base = server.map_or_else(shared::server_url, str::to_owned);
+    let Some(session) = session.filter(|session| session.server == base.trim_end_matches('/'))
+    else {
         return (None, LOGIN_HINT);
     };
-    let base = server.map_or_else(shared::server_url, str::to_owned);
     let api = Shared::at(&base)
         .with_session(&session.token)
         .on_wait(move |seconds| notes.waiting(seconds));
@@ -530,7 +531,7 @@ fn logout() -> Result<()> {
     let keys_path = setup::credentials_file().context("cannot find a folder for the settings")?;
     let session_path = setup::session_file().context("cannot find a folder for the settings")?;
     if let Some(saved) = session::load(&session_path) {
-        let revoked = Server::new(Http::new(USER_AGENT), &shared::server_url())
+        let revoked = Server::new(Http::new(USER_AGENT), &saved.server)
             .with_session(&saved.token)
             .logout();
         if let Err(error) = revoked {
@@ -591,11 +592,14 @@ mod tests {
         }
     }
 
+    const SERVER: &str = "http://127.0.0.1:9";
+
     fn session() -> Session {
         Session {
             token: "t".into(),
             osu_id: 7,
             username: "p".into(),
+            server: SERVER.into(),
         }
     }
 
@@ -608,15 +612,26 @@ mod tests {
 
     #[test]
     fn a_saved_session_picks_the_shared_server() {
-        let (api, _) = client(None, Some(session()), false, None, Notes::default());
+        let (api, _) = client(None, Some(session()), false, Some(SERVER), Notes::default());
         assert!(api.unwrap().shared());
+    }
+
+    #[test]
+    fn a_session_from_another_server_is_not_used() {
+        let elsewhere = Session {
+            server: "https://elsewhere.test".into(),
+            ..session()
+        };
+        let (api, hint) = client(None, Some(elsewhere), false, Some(SERVER), Notes::default());
+        assert!(api.is_none());
+        assert_eq!(hint, LOGIN_HINT);
     }
 
     #[test]
     fn keys_still_win_over_a_session() {
         let (own, _) = client(Some(keys()), Some(session()), false, None, Notes::default());
         assert!(!own.unwrap().shared());
-        let server = Some("http://127.0.0.1:9");
+        let server = Some(SERVER);
         let (shared, _) = client(
             Some(keys()),
             Some(session()),
@@ -665,9 +680,21 @@ mod tests {
         let (stop, hang) = mpsc::channel::<()>();
         let opener = move |url: &str| {
             let port: u16 = url.rsplit("port=").next().unwrap().parse().unwrap();
+            let challenge = url
+                .split("challenge=")
+                .nth(1)
+                .unwrap()
+                .split('&')
+                .next()
+                .unwrap()
+                .to_owned();
             thread::spawn(move || {
                 let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-                write!(stream, "GET /?code=abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+                write!(
+                    stream,
+                    "GET /?code=abc&challenge={challenge} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+                )
+                .unwrap();
                 let mut reply = String::new();
                 let _ = stream.read_to_string(&mut reply);
             });

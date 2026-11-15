@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,9 +9,9 @@ use sha2::{Digest, Sha256};
 
 use crate::session::Session;
 
-pub const LIMIT: Duration = Duration::from_secs(5 * 60);
+pub const LIMIT: Duration = Duration::from_secs(10 * 60);
 const SITE_URL: &str = "https://lost.lemon4ik.kz";
-const HEAD_LIMIT: u64 = 8 * 1024;
+const HEAD_LIMIT: usize = 8 * 1024;
 const POLL: Duration = Duration::from_millis(50);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -71,6 +71,7 @@ pub fn wait<T: Transport>(
     limit: Duration,
 ) -> Result<Session, LoginError> {
     let deadline = Instant::now() + limit;
+    let challenge = challenge_of(&pending.verifier);
     pending
         .listener
         .set_nonblocking(true)
@@ -87,7 +88,8 @@ pub fn wait<T: Transport>(
             }
             Err(error) => return Err(LoginError::Io(error)),
         };
-        let Some(answer) = answer_of(&stream) else {
+        let until = (Instant::now() + BROWSER_TIMEOUT).min(deadline);
+        let Some(answer) = answer_of(&stream, until, &challenge) else {
             reply(stream, "404 Not Found", None);
             continue;
         };
@@ -103,6 +105,7 @@ pub fn wait<T: Transport>(
                     token: login.token,
                     osu_id: login.osu_id,
                     username: login.username,
+                    server: server.base().to_owned(),
                 }),
                 Ok(None) => Err(LoginError::Expired),
                 Err(error) => Err(LoginError::Api(error)),
@@ -130,18 +133,11 @@ enum Answer {
     Error(String),
 }
 
-fn answer_of(stream: &TcpStream) -> Option<Answer> {
+fn answer_of(stream: &TcpStream, until: Instant, challenge: &str) -> Option<Answer> {
     stream.set_nonblocking(false).ok()?;
-    stream.set_read_timeout(Some(BROWSER_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(BROWSER_TIMEOUT)).ok()?;
-    let mut reader = BufReader::new(stream.take(HEAD_LIMIT));
-    let mut first = String::new();
-    reader.read_line(&mut first).ok()?;
-    let mut line = String::new();
-    while reader.read_line(&mut line).ok()? > 2 {
-        line.clear();
-    }
-    let target = first.split_whitespace().nth(1)?;
+    let head = head_of(stream, until)?;
+    let target = head.split_whitespace().nth(1)?;
     let query = target.strip_prefix("/?")?;
     let value = |name: &str| {
         query
@@ -150,9 +146,29 @@ fn answer_of(stream: &TcpStream) -> Option<Answer> {
             .find(|(key, _)| *key == name)
             .map(|(_, value)| value.to_owned())
     };
+    if value("challenge").as_deref() != Some(challenge) {
+        return None;
+    }
     value("error")
         .map(Answer::Error)
         .or_else(|| value("code").map(Answer::Code))
+}
+
+fn head_of(mut stream: &TcpStream, until: Instant) -> Option<String> {
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+        let left = until
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())?;
+        stream.set_read_timeout(Some(left)).ok()?;
+        let read = stream.read(&mut chunk).ok()?;
+        if read == 0 || head.len() + read > HEAD_LIMIT {
+            return None;
+        }
+        head.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8(head).ok()
 }
 
 fn reply(mut stream: TcpStream, status: &str, location: Option<&str>) {
@@ -179,11 +195,11 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use osu_api::{ApiError, Response, Server, Transport};
 
-    use super::{LoginError, begin, challenge_of, wait};
+    use super::{LIMIT, LoginError, begin, challenge_of, wait};
     use crate::session::Session;
 
     #[derive(Clone, Default)]
@@ -301,7 +317,8 @@ mod tests {
         let mut server = Server::new(fake.clone(), "https://api.test");
         let pending = begin(&server).unwrap();
         let challenge = challenge_in(&pending.url);
-        let browser = browse(port_of(&pending.url), &["/?code=abc"]);
+        let answer = format!("/?code=abc&challenge={challenge}");
+        let browser = browse(port_of(&pending.url), &[&answer]);
         let session = wait(&mut server, pending, Duration::from_secs(10)).unwrap();
         assert_eq!(
             session,
@@ -309,6 +326,7 @@ mod tests {
                 token: "tok".into(),
                 osu_id: 7,
                 username: "Some Name".into(),
+                server: "https://api.test".into(),
             }
         );
         let replies = browser.join().unwrap();
@@ -330,7 +348,11 @@ mod tests {
         let fake = Fake::default();
         let mut server = Server::new(fake.clone(), "https://api.test");
         let pending = begin(&server).unwrap();
-        let browser = browse(port_of(&pending.url), &["/?error=access_denied"]);
+        let answer = format!(
+            "/?error=access_denied&challenge={}",
+            challenge_in(&pending.url)
+        );
+        let browser = browse(port_of(&pending.url), &[&answer]);
         let error = wait(&mut server, pending, Duration::from_secs(10)).unwrap_err();
         assert!(matches!(error, LoginError::Cancelled));
         assert_eq!(error.to_string(), "the login was cancelled on osu!");
@@ -346,7 +368,8 @@ mod tests {
         let fake = Fake::default();
         let mut server = Server::new(fake.clone(), "https://api.test");
         let pending = begin(&server).unwrap();
-        let browser = browse(port_of(&pending.url), &["/?error=busy"]);
+        let answer = format!("/?error=busy&challenge={}", challenge_in(&pending.url));
+        let browser = browse(port_of(&pending.url), &[&answer]);
         let error = wait(&mut server, pending, Duration::from_secs(10)).unwrap_err();
         assert!(matches!(error, LoginError::Busy));
         assert_eq!(
@@ -374,11 +397,69 @@ mod tests {
     }
 
     #[test]
+    fn the_app_waits_as_long_as_the_server_keeps_a_login() {
+        assert_eq!(LIMIT, Duration::from_secs(10 * 60));
+    }
+
+    #[test]
+    fn answers_without_the_login_challenge_are_ignored() {
+        let fake =
+            Fake::default().answer(200, r#"{"token":"tok","osu_id":7,"username":"Some Name"}"#);
+        let mut server = Server::new(fake.clone(), "https://api.test");
+        let pending = begin(&server).unwrap();
+        let right = format!("/?code=abc&challenge={}", challenge_in(&pending.url));
+        let browser = browse(
+            port_of(&pending.url),
+            &[
+                "/?error=access_denied",
+                "/?code=planted&challenge=0000",
+                &right,
+            ],
+        );
+        let session = wait(&mut server, pending, Duration::from_secs(10)).unwrap();
+        assert_eq!(session.osu_id, 7);
+        let replies = browser.join().unwrap();
+        assert!(
+            replies[0].starts_with("HTTP/1.1 404 Not Found\r\n"),
+            "{}",
+            replies[0]
+        );
+        assert!(
+            replies[1].starts_with("HTTP/1.1 404 Not Found\r\n"),
+            "{}",
+            replies[1]
+        );
+        assert!(
+            replies[2].starts_with("HTTP/1.1 302 Found\r\n"),
+            "{}",
+            replies[2]
+        );
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_silent_connection_does_not_keep_the_login_past_its_limit() {
+        let mut server = Server::new(Fake::default(), "https://api.test");
+        let pending = begin(&server).unwrap();
+        let silent = TcpStream::connect(("127.0.0.1", port_of(&pending.url))).unwrap();
+        let started = Instant::now();
+        let error = wait(&mut server, pending, Duration::from_millis(1200)).unwrap_err();
+        assert!(matches!(error, LoginError::TimedOut));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(silent);
+    }
+
+    #[test]
     fn a_code_the_server_refuses_ends_the_login() {
         let fake = Fake::default().answer(410, r#"{"error":"login_expired"}"#);
         let mut server = Server::new(fake, "https://api.test");
         let pending = begin(&server).unwrap();
-        let browser = browse(port_of(&pending.url), &["/?code=old"]);
+        let answer = format!("/?code=old&challenge={}", challenge_in(&pending.url));
+        let browser = browse(port_of(&pending.url), &[&answer]);
         let error = wait(&mut server, pending, Duration::from_secs(10)).unwrap_err();
         assert!(matches!(error, LoginError::Expired));
         assert!(
