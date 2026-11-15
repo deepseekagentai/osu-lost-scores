@@ -9,25 +9,28 @@ use std::time::Duration;
 
 use anyhow::Result;
 use jiff::tz::TimeZone;
-use lost_scores_app::online::{Online, Player};
+use lost_scores_app::login::{self as loopback, LoginError};
+use lost_scores_app::online::{Online, Player, USER_AGENT};
 use lost_scores_app::pipeline::{PotentialResult, Source};
 use lost_scores_app::rows::thousands;
+use lost_scores_app::session::{self as stored, Session as Login};
 use lost_scores_app::setup::Settings;
-use lost_scores_app::shared::Shared;
+use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::updates::latest_release;
 use lost_scores_app::{cache, history, keys, setup};
-use osu_api::{ApiError, Credentials, UserKey};
+use osu_api::{ApiError, Credentials, Http, Server, UserKey};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::account::{
     Account, Field, KeysError, Profile, check_fields, keys_error, lookup_failure, parse_account,
+    sentence,
 };
 use crate::avatar::{GUEST, avatar_pixels, fetch, render_avatar};
 use crate::clipboard::{Clipboard, Request};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
-use crate::scan::{NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
+use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
 use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
@@ -53,6 +56,8 @@ struct Session {
     weak: Weak<MainWindow>,
     log: Rc<VecModel<LogEntry>>,
     credentials: RefCell<Option<Credentials>>,
+    login: RefCell<Option<Login>>,
+    login_epoch: Cell<u64>,
     avatar: RefCell<Option<Vec<u8>>>,
     rendered: Cell<u32>,
     scan: RefCell<ScanState>,
@@ -93,6 +98,16 @@ struct Session {
 }
 
 type Opener = Arc<dyn Fn(&OsStr) -> std::io::Result<()> + Send + Sync>;
+
+enum Access {
+    Keys(Credentials),
+    Login(String),
+}
+
+enum Lookup {
+    Expired,
+    Failed(String),
+}
 
 struct Removal {
     folders: Vec<PathBuf>,
@@ -160,6 +175,8 @@ impl Session {
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
             credentials: RefCell::new(None),
+            login: RefCell::new(None),
+            login_epoch: Cell::new(0),
             avatar: RefCell::new(None),
             rendered: Cell::new(0),
             scan: RefCell::new(ScanState::default()),
@@ -210,6 +227,10 @@ fn stored_credentials() -> Option<Credentials> {
     keys::from_env().or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
 }
 
+fn stored_login() -> Option<Login> {
+    setup::session_file().and_then(|path| stored::load(&path))
+}
+
 fn load_settings() -> Settings {
     setup::config_file()
         .map(|path| setup::load_settings(&path))
@@ -240,19 +261,106 @@ impl Session {
         self.bind_extras(&state);
         self.load_newest();
         self.refresh_avatar();
-        *self.credentials.borrow_mut() = stored_credentials();
-        state.set_own_keys(self.credentials.borrow().is_some());
-        self.adopt_player();
+        self.restore(stored_login(), stored_credentials());
     }
 
-    fn adopt_player(self: &Rc<Self>) {
+    fn restore(self: &Rc<Self>, login: Option<Login>, credentials: Option<Credentials>) {
+        let keys = credentials.is_some();
+        *self.credentials.borrow_mut() = credentials;
+        self.window.global::<State>().set_own_keys(keys);
+        match login {
+            Some(login) if !keys => self.adopt_login(login),
+            _ => self.connect_with_keys(),
+        }
+    }
+
+    fn connect_with_keys(self: &Rc<Self>) {
+        if self.credentials.borrow().is_none() {
+            return;
+        }
         let Some(name) = self.saved_player().or_else(|| self.config_name()) else {
             return;
         };
         let state = self.window.global::<State>();
         state.set_connected(true);
         state.set_user_name(name.clone().into());
-        self.fetch_profile(name);
+        self.fetch_profile(Account::Name(name));
+    }
+
+    fn adopt_login(self: &Rc<Self>, login: Login) {
+        let state = self.window.global::<State>();
+        self.epoch.set(self.epoch.get() + 1);
+        self.show_guest();
+        state.set_logged_in(true);
+        state.set_connected(true);
+        state.set_editing_name(false);
+        state.set_stats_ready(false);
+        state.set_user_name(login.username.clone().into());
+        let account = Account::Id(login.osu_id);
+        *self.login.borrow_mut() = Some(login);
+        self.fetch_profile(account);
+    }
+
+    fn log_in(self: &Rc<Self>) {
+        let state = self.window.global::<State>();
+        let mut server = Server::new(Http::new(USER_AGENT), &shared::server_url());
+        let pending = match loopback::begin(&server) {
+            Ok(pending) => pending,
+            Err(error) => {
+                state.set_status(format!("Could not start the login: {error}").into());
+                return;
+            }
+        };
+        self.login_epoch.set(self.login_epoch.get() + 1);
+        let epoch = self.login_epoch.get();
+        state.set_logging_in(true);
+        state.set_status("Log in with osu! in the browser".into());
+        self.launch("the browser", pending.url.clone().into());
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let result = loopback::wait(&mut server, pending, loopback::LIMIT);
+            on_ui(&weak, move |app| app.login_finished(epoch, result));
+        });
+    }
+
+    fn login_finished(self: &Rc<Self>, epoch: u64, result: Result<Login, LoginError>) {
+        if self.login_epoch.get() != epoch {
+            return;
+        }
+        let state = self.window.global::<State>();
+        state.set_logging_in(false);
+        match result {
+            Ok(login) => {
+                if let Some(path) = setup::session_file()
+                    && let Err(error) = stored::save(&path, &login)
+                {
+                    state.set_status("Could not save the login: see the log".into());
+                    self.log(&format!("Could not save the login: {error:#}"));
+                    return;
+                }
+                state.set_status("".into());
+                self.log(&format!("Logged in as {}", login.username));
+                self.adopt_login(login);
+            }
+            Err(error) => {
+                let text = sentence(&error.to_string());
+                self.log(&format!("Login failed: {text}"));
+                state.set_status(text.into());
+            }
+        }
+    }
+
+    fn login_expired(&self) {
+        *self.login.borrow_mut() = None;
+        if let Some(path) = setup::session_file()
+            && let Err(error) = stored::delete(&path)
+        {
+            self.log(&format!("Could not delete the saved login: {error:#}"));
+        }
+        self.disconnect();
+        self.window
+            .global::<State>()
+            .set_status(LOGIN_EXPIRED.into());
     }
 
     fn saved_player(&self) -> Option<String> {
@@ -300,6 +408,8 @@ impl Session {
         state.on_pick_folder(move || session.pick_folder());
         let session = self.clone();
         state.on_open_keys(move || session.open_keys());
+        let session = self.clone();
+        state.on_log_in(move || session.log_in());
         let session = self.clone();
         state.on_change_player(move |text| session.change_player(&text));
         let session = self.clone();
@@ -1113,14 +1223,19 @@ impl Session {
         state.set_name_busy(true);
         state.set_status(format!("Looking up the player '{shown}'...").into());
         let credentials = self.credentials.borrow().clone();
+        let token = self
+            .login
+            .borrow()
+            .as_ref()
+            .map(|login| login.token.clone());
         let weak = self.weak.clone();
         thread::spawn(move || {
-            let result = look_up(credentials.as_ref(), &account);
+            let result = look_up(credentials.as_ref(), token.as_deref(), &account);
             on_ui(&weak, move |app| app.player_found(result));
         });
     }
 
-    fn player_found(self: &Rc<Self>, result: Result<Profile, String>) {
+    fn player_found(self: &Rc<Self>, result: Result<Profile, Lookup>) {
         let state = self.window.global::<State>();
         state.set_name_busy(false);
         state.set_editing_name(false);
@@ -1130,7 +1245,11 @@ impl Session {
                 self.adopt_profile(&profile);
                 self.log(&format!("Player: {}", profile.username));
             }
-            Err(error) => state.set_status(error.into()),
+            Err(Lookup::Failed(error)) => state.set_status(error.into()),
+            Err(Lookup::Expired) => {
+                self.log(LOGIN_EXPIRED);
+                self.login_expired();
+            }
         }
     }
 
@@ -1180,29 +1299,42 @@ impl Session {
         });
     }
 
-    fn fetch_profile(self: &Rc<Self>, name: String) {
+    fn fetch_profile(self: &Rc<Self>, account: Account) {
         let weak = self.weak.clone();
         let epoch = self.epoch.get();
         let credentials = self.credentials.borrow().clone();
+        let token = self
+            .login
+            .borrow()
+            .as_ref()
+            .map(|login| login.token.clone());
         thread::spawn(move || {
-            let result = look_up(credentials.as_ref(), &Account::Name(name));
+            let result = look_up(credentials.as_ref(), token.as_deref(), &account);
             on_ui(&weak, move |app| app.profile_arrived(epoch, result));
         });
     }
 
-    fn profile_arrived(self: &Rc<Self>, epoch: u64, result: Result<Profile, String>) {
+    fn profile_arrived(self: &Rc<Self>, epoch: u64, result: Result<Profile, Lookup>) {
         if self.epoch.get() == epoch {
             self.profile_fetched(result);
         }
     }
 
-    fn profile_fetched(self: &Rc<Self>, result: Result<Profile, String>) {
+    fn profile_fetched(self: &Rc<Self>, result: Result<Profile, Lookup>) {
         match result {
             Ok(profile) => {
+                let state = self.window.global::<State>();
+                if state.get_logged_in() {
+                    state.set_user_name(profile.username.clone().into());
+                }
                 self.show_profile(&profile);
                 self.fetch_avatar(profile.player_id);
             }
-            Err(error) => {
+            Err(Lookup::Expired) => {
+                self.log(LOGIN_EXPIRED);
+                self.login_expired();
+            }
+            Err(Lookup::Failed(error)) => {
                 let state = self.window.global::<State>();
                 state.set_perf_now("-".into());
                 state.set_acc_now("-".into());
@@ -1298,7 +1430,7 @@ impl Session {
                 state.set_osu_dir(path.into());
                 state.set_status("".into());
                 if !state.get_connected() {
-                    self.adopt_player();
+                    self.connect_with_keys();
                 }
             }
             Err(error) => state.set_status(error.to_string().into()),
@@ -1310,18 +1442,18 @@ impl Session {
     }
 
     fn start_scan(self: &Rc<Self>) {
-        let Some((job, credentials)) = self.prepare_scan() else {
+        let Some((job, access)) = self.prepare_scan() else {
             return;
         };
         self.begin_scan();
         let sink = self.sink();
         let queue = self.sink();
-        thread::spawn(move || match credentials {
-            Some(credentials) => {
+        thread::spawn(move || match access {
+            Access::Keys(credentials) => {
                 worker::run(&job, &mut Online::new(credentials), &sink);
             }
-            None => {
-                let mut api = Shared::new().on_wait(move |seconds| {
+            Access::Login(token) => {
+                let mut api = Shared::new().with_session(&token).on_wait(move |seconds| {
                     queue.send(Message::Queue(seconds));
                 });
                 worker::run(&job, &mut api, &sink);
@@ -1344,7 +1476,7 @@ impl Session {
         self.sync();
     }
 
-    fn prepare_scan(&self) -> Option<(Job, Option<Credentials>)> {
+    fn prepare_scan(&self) -> Option<(Job, Access)> {
         self.commit_pending_scores();
         let state = self.window.global::<State>();
         let connected = state.get_connected();
@@ -1355,7 +1487,17 @@ impl Session {
         if self.refreshing.get() || !self.scan.borrow().can_start(connected) {
             return None;
         }
-        let credentials = self.credentials.borrow().clone();
+        let access = match (
+            self.credentials.borrow().clone(),
+            self.login.borrow().as_ref(),
+        ) {
+            (Some(credentials), _) => Access::Keys(credentials),
+            (None, Some(login)) => Access::Login(login.token.clone()),
+            (None, None) => {
+                state.set_status(NEEDS_ACCOUNT.into());
+                return None;
+            }
+        };
         let osu_dir = state.get_osu_dir().to_string();
         if let Err(message) = check_folders(&osu_dir) {
             state.set_status(message.into());
@@ -1382,7 +1524,7 @@ impl Session {
             share_count: usize::from(clamped_scores(settings.scores_to_show)),
             show_lost_in_top: settings.show_lost_in_top_image,
         };
-        Some((job, credentials))
+        Some((job, access))
     }
 
     fn sync(&self) {
@@ -1435,6 +1577,11 @@ impl Session {
             Message::Failed(error) => {
                 self.refreshing.set(false);
                 self.scan.borrow_mut().fail(&error, clock_now());
+            }
+            Message::LoginExpired => {
+                self.refreshing.set(false);
+                self.scan.borrow_mut().expired(clock_now());
+                self.login_expired();
             }
         }
         self.sync();
@@ -1613,9 +1760,30 @@ impl Session {
             self.log(&format!("Could not delete the saved keys: {error:#}"));
             return;
         }
+        if let Some(path) = setup::session_file()
+            && let Err(error) = stored::delete(&path)
+        {
+            self.log(&format!("Could not delete the saved login: {error:#}"));
+            return;
+        }
+        let login = self.login.borrow_mut().take();
+        if let Some(login) = login {
+            thread::spawn(move || {
+                let _ = Server::new(Http::new(USER_AGENT), &shared::server_url())
+                    .with_session(&login.token)
+                    .logout();
+            });
+        }
+        self.disconnect();
+        self.log("Logged out");
+    }
+
+    fn disconnect(&self) {
+        let state = self.window.global::<State>();
         *self.credentials.borrow_mut() = None;
         self.change_settings(|settings| settings.player = None);
         state.set_own_keys(false);
+        state.set_logged_in(false);
         self.epoch.set(self.epoch.get() + 1);
         self.player.set(None);
         self.show_guest();
@@ -1623,7 +1791,6 @@ impl Session {
         state.set_stats_ready(false);
         state.set_connected(false);
         state.set_user_name("".into());
-        self.log("Logged out");
     }
 }
 
@@ -1663,15 +1830,23 @@ fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, Key
     Ok(Profile::from_player(&player))
 }
 
-fn look_up(credentials: Option<&Credentials>, account: &Account) -> Result<Profile, String> {
+fn look_up(
+    credentials: Option<&Credentials>,
+    token: Option<&str>,
+    account: &Account,
+) -> Result<Profile, Lookup> {
     let (key, value) = account_key(account);
-    let mut ask = |key: UserKey, value: &str| match credentials {
-        Some(credentials) => Online::new(credentials.clone()).account(key, value),
-        None => Shared::new().account(key, value),
+    let mut ask = |key: UserKey, value: &str| match (credentials, token) {
+        (Some(credentials), _) => Online::new(credentials.clone()).account(key, value),
+        (None, Some(token)) => Shared::new().with_session(token).account(key, value),
+        (None, None) => Err(ApiError::LoginRequired),
     };
     by_id_then_name(key, &value, &mut ask)
         .map(|player| Profile::from_player(&player))
-        .map_err(|error| lookup_failure(&value, &error))
+        .map_err(|error| match error {
+            ApiError::LoginRequired => Lookup::Expired,
+            error => Lookup::Failed(lookup_failure(&value, &error)),
+        })
 }
 
 fn by_id_then_name(
@@ -1697,17 +1872,26 @@ mod tests {
     use slint::{ComponentHandle, LogicalSize, Model};
     use tempfile::TempDir;
 
+    use lost_scores_app::login::LoginError;
     use lost_scores_app::online::Player;
+    use lost_scores_app::session::{self as stored, Session as Login};
 
-    use super::Session;
+    use super::{Access, Lookup, Session};
     use crate::account::Profile;
-    use crate::scan::NEEDS_ACCOUNT;
+    use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT};
     use crate::share::render::ShareImage;
     use crate::table::Tab;
     use crate::worker::{Finished, Message};
     use crate::{MainWindow, State};
 
     static HOME: Mutex<(usize, Option<TempDir>)> = Mutex::new((0, None));
+    static FILES: Mutex<()> = Mutex::new(());
+
+    fn files() -> std::sync::MutexGuard<'static, ()> {
+        FILES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct Home;
 
@@ -1800,10 +1984,16 @@ mod tests {
         let state = window.global::<State>();
         let stale = session.epoch.get();
         session.epoch.set(stale + 1);
-        session.profile_arrived(stale, Err("Could not reach the osu! API".into()));
+        session.profile_arrived(
+            stale,
+            Err(Lookup::Failed("Could not reach the osu! API".into())),
+        );
         assert_eq!(state.get_perf_now(), "");
         assert!(!state.get_stats_ready());
-        session.profile_arrived(stale + 1, Err("Could not reach the osu! API".into()));
+        session.profile_arrived(
+            stale + 1,
+            Err(Lookup::Failed("Could not reach the osu! API".into())),
+        );
         assert_eq!(state.get_perf_now(), "-");
         assert!(state.get_stats_ready());
     }
@@ -1811,8 +2001,34 @@ mod tests {
     fn keyless(width: f32) -> (MainWindow, std::rc::Rc<Session>, Fixture) {
         let (window, session, root) = session(width);
         *session.credentials.borrow_mut() = None;
-        window.global::<State>().set_own_keys(false);
+        *session.login.borrow_mut() = Some(login());
+        let state = window.global::<State>();
+        state.set_own_keys(false);
+        state.set_logged_in(true);
         (window, session, root)
+    }
+
+    fn nobody(width: f32) -> (MainWindow, std::rc::Rc<Session>, Fixture) {
+        let (window, session, root) = keyless(width);
+        *session.login.borrow_mut() = None;
+        let state = window.global::<State>();
+        state.set_logged_in(false);
+        state.set_connected(false);
+        state.set_user_name("".into());
+        (window, session, root)
+    }
+
+    fn login() -> Login {
+        Login {
+            token: "tok".into(),
+            osu_id: 9,
+            username: "Logged".into(),
+        }
+    }
+
+    fn write_config(state: &State<'_>) {
+        let osu = PathBuf::from(state.get_osu_dir().to_string());
+        std::fs::write(osu.join("osu!.Someone.cfg"), "Username = FromConfig\r\n").unwrap();
     }
 
     fn profile(name: &str, id: u32) -> Profile {
@@ -1829,11 +2045,20 @@ mod tests {
     }
 
     #[test]
-    fn a_scan_starts_without_keys_through_the_server() {
+    fn a_scan_with_a_session_goes_through_the_server() {
         let (_window, session, _root) = keyless(650.0);
-        let (job, keys) = session.prepare_scan().unwrap();
-        assert!(keys.is_none());
+        let (job, access) = session.prepare_scan().unwrap();
+        assert!(matches!(access, Access::Login(token) if token == "tok"));
         assert_eq!(job.source.player.as_deref(), Some("Synthetic"));
+        *session.login.borrow_mut() = None;
+        assert!(session.prepare_scan().is_none());
+    }
+
+    #[test]
+    fn a_scan_with_keys_asks_osu_itself() {
+        let (_window, session, _root) = session(650.0);
+        let (_, access) = session.prepare_scan().unwrap();
+        assert!(matches!(access, Access::Keys(_)));
     }
 
     #[test]
@@ -1846,16 +2071,117 @@ mod tests {
     }
 
     #[test]
-    fn the_player_comes_from_the_osu_config() {
+    fn a_saved_session_starts_logged_in_without_the_pen() {
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        session.restore(Some(login()), None);
+        assert!(state.get_connected());
+        assert!(state.get_logged_in());
+        assert!(!state.get_own_keys());
+        assert_eq!(state.get_user_name(), "Logged");
+        assert_eq!(
+            session.login.borrow().as_ref().map(|login| login.osu_id),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn without_session_or_keys_the_window_shows_connect_even_with_an_osu_config() {
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        write_config(&state);
+        session.restore(None, None);
+        assert!(!state.get_connected());
+        assert_eq!(state.get_user_name(), "");
+        session.open_keys();
+        assert_eq!(state.get_keys_user(), "FromConfig");
+    }
+
+    #[test]
+    fn with_keys_the_player_comes_from_the_osu_config_and_wins_over_a_session() {
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        write_config(&state);
+        let keys = Credentials {
+            client_id: "1".into(),
+            client_secret: "x".into(),
+        };
+        session.restore(Some(login()), Some(keys));
+        assert!(state.get_connected());
+        assert!(state.get_own_keys());
+        assert!(!state.get_logged_in());
+        assert_eq!(state.get_user_name(), "FromConfig");
+    }
+
+    #[test]
+    fn a_finished_login_saves_the_session_and_shows_the_profile() {
+        let _files = files();
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        state.set_logging_in(true);
+        session.login_epoch.set(2);
+        session.login_finished(1, Ok(login()));
+        assert!(!state.get_connected());
+        assert!(state.get_logging_in());
+        session.login_finished(2, Ok(login()));
+        assert!(!state.get_logging_in());
+        assert!(state.get_connected());
+        assert!(state.get_logged_in());
+        assert_eq!(state.get_user_name(), "Logged");
+        assert!(!state.get_stats_ready());
+        let path = setup::session_file().unwrap();
+        assert_eq!(stored::load(&path), Some(login()));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_failed_login_says_why_and_stays_on_connect() {
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        state.set_logging_in(true);
+        session.login_finished(session.login_epoch.get(), Err(LoginError::Cancelled));
+        assert!(!state.get_logging_in());
+        assert!(!state.get_connected());
+        assert_eq!(state.get_status(), "The login was cancelled on osu!");
+    }
+
+    #[test]
+    fn logging_out_deletes_the_session_and_returns_to_connect() {
+        let _files = files();
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        let path = setup::session_file().unwrap();
+        stored::save(&path, &login()).unwrap();
+        session.restore(Some(login()), None);
+        session.log_out();
+        assert!(!path.exists());
+        assert!(session.login.borrow().is_none());
+        assert!(!state.get_logged_in());
+        assert!(!state.get_connected());
+        assert_eq!(state.get_user_name(), "");
+    }
+
+    #[test]
+    fn an_expired_session_returns_to_connect_with_a_message() {
+        let _files = files();
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
-        state.set_connected(false);
-        state.set_user_name("".into());
-        let osu = PathBuf::from(state.get_osu_dir().to_string());
-        std::fs::write(osu.join("osu!.Someone.cfg"), "Username = FromConfig\r\n").unwrap();
-        session.adopt_player();
-        assert!(state.get_connected());
-        assert_eq!(state.get_user_name(), "FromConfig");
+        let path = setup::session_file().unwrap();
+        stored::save(&path, &login()).unwrap();
+        begin(&session);
+        session.handle(Message::LoginExpired);
+        assert!(!state.get_connected());
+        assert!(!state.get_logged_in());
+        assert!(session.login.borrow().is_none());
+        assert!(!path.exists());
+        assert_eq!(state.get_status(), LOGIN_EXPIRED);
+        stored::save(&path, &login()).unwrap();
+        session.restore(Some(login()), None);
+        state.set_status("".into());
+        session.profile_arrived(session.epoch.get(), Err(Lookup::Expired));
+        assert!(!state.get_connected());
+        assert!(!path.exists());
+        assert_eq!(state.get_status(), LOGIN_EXPIRED);
     }
 
     #[test]
@@ -1874,7 +2200,9 @@ mod tests {
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
         state.set_editing_name(true);
-        session.player_found(Err("The osu! API does not know the player Nobody".into()));
+        session.player_found(Err(Lookup::Failed(
+            "The osu! API does not know the player Nobody".into(),
+        )));
         assert!(!state.get_editing_name());
         assert_eq!(state.get_user_name(), "Synthetic");
         assert_eq!(
@@ -1933,6 +2261,7 @@ mod tests {
 
     #[test]
     fn logging_out_with_keys_removes_them_and_returns_to_the_connect_card() {
+        let _files = files();
         let (window, session, _root) = session(650.0);
         let state = window.global::<State>();
         state.set_own_keys(true);
@@ -1947,6 +2276,7 @@ mod tests {
 
     #[test]
     fn logging_out_without_keys_returns_to_the_connect_card_too() {
+        let _files = files();
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
         session.log_out();
@@ -1975,6 +2305,7 @@ mod tests {
 
     #[test]
     fn the_guest_avatar_stands_in_until_the_player_avatar_arrives() {
+        let _files = files();
         let (window, session, _root) = session(650.0);
         let state = window.global::<State>();
         session.refresh_avatar();

@@ -111,6 +111,9 @@ fn render_snapshots() {
     state.set_has_avatar(true);
 
     draw(&surface, &dir.join("1-main-disconnected.png"));
+    state.set_logging_in(true);
+    draw(&surface, &dir.join("1-main-logging-in.png"));
+    state.set_logging_in(false);
 
     state.set_keys_open(true);
     state.set_keys_user("".into());
@@ -164,11 +167,13 @@ fn render_snapshots() {
     draw(&surface, &dir.join("5-main-connected.png"));
 
     state.set_own_keys(false);
-    draw(&surface, &dir.join("5-main-shared-server.png"));
+    state.set_logged_in(true);
+    draw(&surface, &dir.join("5-main-logged-in.png"));
+    state.set_logged_in(false);
+    state.set_own_keys(true);
     state.set_editing_name(true);
     draw(&surface, &dir.join("5-main-editing-name.png"));
     state.set_editing_name(false);
-    state.set_own_keys(true);
 
     state.set_busy(true);
     state.set_progress(0.70);

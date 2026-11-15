@@ -7,6 +7,7 @@ use lost_scores_app::{detect, setup};
 use crate::log::stamp;
 
 pub const NEEDS_ACCOUNT: &str = "Log in or add your own API keys to start";
+pub const LOGIN_EXPIRED: &str = "Your login has expired, log in again";
 pub const NEEDS_FOLDER: &str =
     "Could not find your osu! folder: pick it with the button next to the path";
 
@@ -82,6 +83,11 @@ impl ScanState {
         self.progress = 0.0;
         self.status = "Operation failed".to_owned();
         self.log.push(stamp(clock, &format!("Error: {error}")));
+    }
+
+    pub fn expired(&mut self, clock: (u8, u8, u8)) {
+        self.fail(LOGIN_EXPIRED, clock);
+        self.status = LOGIN_EXPIRED.to_owned();
     }
 
     pub fn can_start(&self, connected: bool) -> bool {

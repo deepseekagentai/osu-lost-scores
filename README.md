@@ -26,7 +26,7 @@ You need osu!stable with your replays, and either your osu! account or the keys 
 
 ## Window
 
-The window runs the same scan as the command line. The player name comes from the osu! config; the pen next to the name lets you type another name, an ID or a profile link in its place, and a player that is not found leaves the name as it was. Without your own keys the scan goes through the Lost Scores server, and a wait in its queue counts down in the status line. "Use Custom API Keys" saves the keys of your own osu! OAuth application instead; they are checked before they are saved. The door next to the name logs out, which also deletes saved keys, so you can switch between your own keys and the server.
+The window runs the same scan as the command line. "Log in with osu!" opens osu!'s login in the browser; after it, the scan goes through the Lost Scores server under your account, and a wait in its queue counts down in the status line. When a login expires, the window says so and returns to the login. "Use Custom API Keys" saves the keys of your own osu! OAuth application instead; they are checked before they are saved. With your own keys the player name comes from the osu! config, and the pen next to the name lets you type another name, an ID or a profile link in its place; a player that is not found leaves the name as it was. The door next to the name logs out and deletes the saved login and keys, so you can switch between your account and your own keys.
 
 - The osu! folder is found the same way as in the command line and remembered; the folder button picks another one.
 - Start Scan shows the progress and a log. Every finished scan is kept in the scan history, and the results view opens any earlier scan.

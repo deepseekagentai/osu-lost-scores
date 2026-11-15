@@ -87,7 +87,7 @@ pub fn lookup_failure(player: &str, error: &ApiError) -> String {
     }
 }
 
-fn sentence(text: &str) -> String {
+pub fn sentence(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()

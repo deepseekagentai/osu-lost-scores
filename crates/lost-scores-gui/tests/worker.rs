@@ -66,6 +66,10 @@ impl Fake {
             ..Self::known()
         }
     }
+
+    fn expired() -> Self {
+        Self::failing(1)
+    }
 }
 
 impl MapSource for Fake {
@@ -92,6 +96,7 @@ impl Api for Fake {
     fn player(&mut self, name: &str) -> Result<Player, ApiError> {
         match self.failure {
             Some(0) => return Err(ApiError::Network("timeout: global".into())),
+            Some(1) => return Err(ApiError::LoginRequired),
             Some(status) => {
                 return Err(ApiError::Status {
                     status,
@@ -264,6 +269,21 @@ fn failure_text(api: &mut Fake) -> (String, Vec<String>) {
     };
     assert!(history::list(&job.scans_dir).is_empty());
     (text.clone(), lines)
+}
+
+#[test]
+fn an_expired_login_ends_the_scan_with_its_own_message() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let sink = Recorder::open();
+    let outcome = run(&job, &mut Fake::expired(), &sink);
+    assert!(matches!(outcome, Outcome::Failed));
+    assert!(matches!(
+        sink.messages.borrow().last(),
+        Some(Message::LoginExpired)
+    ));
+    assert!(history::list(&job.scans_dir).is_empty());
 }
 
 #[test]

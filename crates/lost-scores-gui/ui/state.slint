@@ -61,6 +61,8 @@ export global State {
 
     in-out property <bool> connected;
     in-out property <bool> own-keys;
+    in-out property <bool> logged-in;
+    in-out property <bool> logging-in;
     in-out property <string> user-name;
     in-out property <bool> editing-name;
     in-out property <bool> name-busy;
@@ -140,6 +142,7 @@ export global State {
     callback pick-folder();
     callback start-scan();
     callback open-keys();
+    callback log-in();
     callback change-player(string);
     callback cancel-keys();
     callback save-keys();

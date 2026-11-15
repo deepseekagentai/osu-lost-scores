@@ -16,6 +16,7 @@ use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
 use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::MapCatalog;
+use osu_api::ApiError;
 
 use crate::account::lookup_failure;
 use crate::share::rasters::{self, Fetch, HttpFetch};
@@ -46,6 +47,7 @@ pub enum Message {
     Finished(Box<Finished>),
     Refreshed(Option<Box<Finished>>),
     Failed(String),
+    LoginExpired,
 }
 
 pub trait Sink {
@@ -85,13 +87,23 @@ pub fn run(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Outcome {
     let attempt = panic::catch_unwind(AssertUnwindSafe(|| execute(job, api, sink)));
     match attempt {
         Ok(Ok(outcome)) => outcome,
-        Ok(Err(error)) => fail(sink, format!("{error:#}")),
-        Err(_) => fail(sink, "the scan stopped unexpectedly".to_owned()),
+        Ok(Err(error)) if expired(&error) => end(sink, Message::LoginExpired),
+        Ok(Err(error)) => end(sink, Message::Failed(format!("{error:#}"))),
+        Err(_) => end(
+            sink,
+            Message::Failed("the scan stopped unexpectedly".to_owned()),
+        ),
     }
 }
 
-fn fail(sink: &dyn Sink, text: String) -> Outcome {
-    if sink.send(Message::Failed(text)) {
+fn expired(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| matches!(cause.downcast_ref(), Some(ApiError::LoginRequired)))
+}
+
+fn end(sink: &dyn Sink, message: Message) -> Outcome {
+    if sink.send(message) {
         Outcome::Failed
     } else {
         Outcome::Closed
@@ -123,6 +135,10 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         &mut events,
     )
     .map_err(|error| match error.downcast::<PlayerLookup>() {
+        Ok(PlayerLookup {
+            error: ApiError::LoginRequired,
+            ..
+        }) => anyhow::Error::new(ApiError::LoginRequired),
         Ok(lookup) => anyhow!(lookup_failure(&lookup.player, &lookup.error)),
         Err(other) => other,
     })?;

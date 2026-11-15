@@ -109,9 +109,12 @@ component Connect inherits HorizontalLayout {
         }
         Rectangle { height: 4px; }
         PrimaryButton {
-            text: "Log in with osu!";
-            enabled: false;
-            tip: "Arrives with the Lost Scores server";
+            text: State.logging-in ? "Waiting for the browser..." : "Log in with osu!";
+            enabled: !State.busy;
+            tip: State.logging-in ? "Finish the login in the browser, or click to open it again" : "Log in with your osu! account in the browser";
+            clicked => {
+                State.log-in();
+            }
         }
         Text {
             text: "or";
@@ -160,7 +163,7 @@ component Profile inherits HorizontalLayout {
                 }
                 if State.editing-name: NameField { }
             }
-            IconButton {
+            if !State.logged-in: IconButton {
                 icon: @image-url("../assets/i-user-pen.svg");
                 tip: "Change player: name, ID or profile link";
                 enabled: !State.busy && !State.name-busy;
