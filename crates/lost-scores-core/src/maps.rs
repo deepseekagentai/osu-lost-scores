@@ -228,16 +228,21 @@ pub fn fill<S: MapSource + ?Sized>(
     ids.dedup();
     let size = source.batch_size();
     let group = source.lookup_size().max(1);
-    let batches = ids.len().div_ceil(size);
-    let without_id = wanted
-        .iter()
-        .filter(|item| item.beatmap_id.is_none())
-        .count();
-    progress(0, batches + without_id.div_ceil(group));
+    let total = wanted.len();
+    let mut per_id: HashMap<u32, usize> = HashMap::new();
+    for id in wanted.iter().filter_map(|item| item.beatmap_id) {
+        *per_id.entry(id).or_default() += 1;
+    }
+    let mut done = 0;
+    progress(done, total);
     let mut fetched = Vec::new();
-    for (done, chunk) in ids.chunks(size).enumerate() {
+    for chunk in ids.chunks(size) {
         fetched.extend(source.batch(chunk)?);
-        progress(done + 1, batches + without_id.div_ceil(group));
+        done += chunk
+            .iter()
+            .map(|id| per_id.get(id).copied().unwrap_or(0))
+            .sum::<usize>();
+        progress(done, total);
     }
     let by_checksum: HashMap<&str, &MapInfo> = fetched
         .iter()
@@ -263,11 +268,14 @@ pub fn fill<S: MapSource + ?Sized>(
             None => unmatched.push(item),
         }
     }
-    let total = batches + unmatched.len().div_ceil(group);
-    for (done, chunk) in unmatched.chunks(group).enumerate() {
+    for chunk in unmatched.chunks(group) {
         let md5s: Vec<String> = chunk.iter().map(|item| item.md5.clone()).collect();
         let answers = source.lookups(&md5s)?;
-        progress(batches + done + 1, total);
+        done += chunk
+            .iter()
+            .filter(|item| item.beatmap_id.is_none())
+            .count();
+        progress(done, total);
         for (item, found) in chunk.iter().zip(answers) {
             let known = item.beatmap_id.and_then(|id| known_ids.get(&id));
             let info = match (found, known) {
@@ -326,12 +334,13 @@ pub fn refresh<S: MapSource + ?Sized>(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<usize, S::Error> {
     let size = source.batch_size();
-    let batches = ids.len().div_ceil(size);
-    progress(0, batches);
+    let mut done = 0;
+    progress(done, ids.len());
     let mut fetched = Vec::new();
-    for (done, chunk) in ids.chunks(size).enumerate() {
+    for chunk in ids.chunks(size) {
         fetched.extend(source.batch(chunk)?);
-        progress(done + 1, batches);
+        done += chunk.len();
+        progress(done, ids.len());
     }
     let by_id: HashMap<u32, &MapInfo> = fetched
         .iter()
@@ -828,13 +837,13 @@ mod tests {
         })
         .unwrap();
         assert_eq!(source.groups, [vec!["a", "b"], vec!["c"]]);
-        assert_eq!(steps, [(0, 2), (1, 2), (2, 2)]);
+        assert_eq!(steps, [(0, 3), (2, 3), (3, 3)]);
         assert_eq!((report.by_md5, report.not_found), (1, 2));
         assert_eq!(catalog.get("b").unwrap().beatmap_id, Some(22));
     }
 
     #[test]
-    fn fill_reports_progress_after_every_request() {
+    fn fill_reports_progress_in_maps_after_every_request() {
         let mut source = FakeSource {
             batch: vec![FetchedMap {
                 checksum: Some("a".into()),
@@ -865,7 +874,7 @@ mod tests {
             |done, total| steps.push((done, total)),
         )
         .unwrap();
-        assert_eq!(steps, [(0, 2), (1, 2), (2, 3), (3, 3)]);
+        assert_eq!(steps, [(0, 3), (2, 3), (2, 3), (3, 3)]);
     }
 
     #[test]
@@ -883,6 +892,6 @@ mod tests {
         .unwrap();
         let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
         assert_eq!(sizes, [50, 1]);
-        assert_eq!(steps, [(0, 2), (1, 2), (2, 2)]);
+        assert_eq!(steps, [(0, 51), (50, 51), (51, 51)]);
     }
 }
