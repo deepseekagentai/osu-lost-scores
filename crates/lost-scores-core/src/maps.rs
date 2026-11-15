@@ -161,6 +161,14 @@ pub trait MapSource {
     fn batch_size(&self) -> usize {
         BATCH_SIZE
     }
+
+    fn lookup_size(&self) -> usize {
+        1
+    }
+
+    fn lookups(&mut self, md5s: &[String]) -> Result<Vec<Option<FetchedMap>>, Self::Error> {
+        md5s.iter().map(|md5| self.lookup(md5)).collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -219,6 +227,7 @@ pub fn fill<S: MapSource + ?Sized>(
     ids.sort_unstable();
     ids.dedup();
     let size = source.batch_size();
+    let group = source.lookup_size().max(1);
     let batches = ids.len().div_ceil(size);
     let without_id = wanted
         .iter()
@@ -227,7 +236,7 @@ pub fn fill<S: MapSource + ?Sized>(
     let mut fetched = Vec::new();
     for (done, chunk) in ids.chunks(size).enumerate() {
         fetched.extend(source.batch(chunk)?);
-        progress(done + 1, batches + without_id);
+        progress(done + 1, batches + without_id.div_ceil(group));
     }
     let by_checksum: HashMap<&str, &MapInfo> = fetched
         .iter()
@@ -237,62 +246,59 @@ pub fn fill<S: MapSource + ?Sized>(
         .iter()
         .filter_map(|map| Some((map.info.beatmap_id?, &map.info)))
         .collect();
-    let lookups = wanted
-        .iter()
-        .filter(|item| !by_checksum.contains_key(item.md5.as_str()))
-        .count();
-    let mut done = batches;
+    let mut unmatched = Vec::new();
     for item in wanted {
-        if let Some(info) = by_checksum.get(item.md5.as_str()) {
-            catalog.insert(
-                item.md5.clone(),
-                MapInfo {
-                    checked_at: Some(now),
-                    ..(*info).clone()
-                },
-            );
-            report.by_id += 1;
-            continue;
-        }
-        let found = source.lookup(&item.md5)?;
-        done += 1;
-        progress(done, batches + lookups);
-        if let Some(found) = found {
-            catalog.insert(
-                item.md5.clone(),
-                MapInfo {
-                    checked_at: Some(now),
-                    ..found.info
-                },
-            );
-            report.by_md5 += 1;
-            continue;
-        }
-        match item.beatmap_id.and_then(|id| known_ids.get(&id)) {
+        match by_checksum.get(item.md5.as_str()) {
             Some(info) => {
                 catalog.insert(
                     item.md5.clone(),
                     MapInfo {
-                        outdated: true,
                         checked_at: Some(now),
                         ..(*info).clone()
                     },
                 );
-                report.outdated += 1;
+                report.by_id += 1;
             }
-            None => {
-                catalog.insert(
-                    item.md5.clone(),
+            None => unmatched.push(item),
+        }
+    }
+    let total = batches + unmatched.len().div_ceil(group);
+    for (done, chunk) in unmatched.chunks(group).enumerate() {
+        let md5s: Vec<String> = chunk.iter().map(|item| item.md5.clone()).collect();
+        let answers = source.lookups(&md5s)?;
+        progress(batches + done + 1, total);
+        for (item, found) in chunk.iter().zip(answers) {
+            let known = item.beatmap_id.and_then(|id| known_ids.get(&id));
+            let info = match (found, known) {
+                (Some(found), _) => {
+                    report.by_md5 += 1;
+                    found.info
+                }
+                (None, Some(info)) => {
+                    report.outdated += 1;
+                    MapInfo {
+                        outdated: true,
+                        ..(*info).clone()
+                    }
+                }
+                (None, None) => {
+                    report.not_found += 1;
                     MapInfo {
                         beatmap_id: None,
                         status: MapStatus::Unknown,
                         ranked_at: None,
                         outdated: false,
-                        checked_at: Some(now),
-                    },
-                );
-                report.not_found += 1;
-            }
+                        checked_at: None,
+                    }
+                }
+            };
+            catalog.insert(
+                item.md5.clone(),
+                MapInfo {
+                    checked_at: Some(now),
+                    ..info
+                },
+            );
         }
     }
     Ok(report)
@@ -473,6 +479,8 @@ mod tests {
         batch_calls: Vec<Vec<u32>>,
         lookup_calls: Vec<String>,
         size: Option<usize>,
+        group: Option<usize>,
+        groups: Vec<Vec<String>>,
     }
 
     impl MapSource for FakeSource {
@@ -480,6 +488,15 @@ mod tests {
 
         fn batch_size(&self) -> usize {
             self.size.unwrap_or(BATCH_SIZE)
+        }
+
+        fn lookup_size(&self) -> usize {
+            self.group.unwrap_or(1)
+        }
+
+        fn lookups(&mut self, md5s: &[String]) -> Result<Vec<Option<FetchedMap>>, ()> {
+            self.groups.push(md5s.to_vec());
+            md5s.iter().map(|md5| self.lookup(md5)).collect()
         }
 
         fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ()> {
@@ -782,6 +799,36 @@ mod tests {
         .unwrap();
         let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
         assert_eq!(sizes, [3, 3, 1, 3, 3, 1]);
+    }
+
+    #[test]
+    fn fill_asks_md5s_in_groups_of_the_source_lookup_size() {
+        let found = FetchedMap {
+            checksum: Some("b".into()),
+            info: info(22, MapStatus::Ranked),
+        };
+        let mut source = FakeSource {
+            lookups: HashMap::from([("b".to_owned(), found)]),
+            group: Some(2),
+            ..FakeSource::default()
+        };
+        let wanted: Vec<Wanted> = ["a", "b", "c"]
+            .into_iter()
+            .map(|md5| Wanted {
+                md5: md5.into(),
+                beatmap_id: None,
+            })
+            .collect();
+        let mut catalog = MapCatalog::default();
+        let mut steps = Vec::new();
+        let report = fill(&mut catalog, &wanted, &mut source, NOW, |done, total| {
+            steps.push((done, total))
+        })
+        .unwrap();
+        assert_eq!(source.groups, [vec!["a", "b"], vec!["c"]]);
+        assert_eq!(steps, [(1, 2), (2, 2)]);
+        assert_eq!((report.by_md5, report.not_found), (1, 2));
+        assert_eq!(catalog.get("b").unwrap().beatmap_id, Some(22));
     }
 
     #[test]

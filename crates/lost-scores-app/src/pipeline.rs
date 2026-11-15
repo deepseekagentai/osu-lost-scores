@@ -331,7 +331,8 @@ fn update_catalog(
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     let with_id = wanted.iter().filter(|w| w.beatmap_id.is_some()).count();
-    let requests = with_id.div_ceil(api.batch_size()) + (wanted.len() - with_id);
+    let requests =
+        with_id.div_ceil(api.batch_size()) + (wanted.len() - with_id).div_ceil(api.lookup_size());
     events(Event::Log(if api.shared() {
         format!(
             "asking the Lost Scores server about {} maps, about {requests} requests; maps it has not seen yet wait in its shared queue",

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -161,15 +162,27 @@ impl<T: Transport> MapSource for Shared<T> {
     }
 
     fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
-        Ok(self
-            .resolve(&[], &[md5.to_owned()])?
-            .into_iter()
-            .find(|map| map.checksum.as_deref() == Some(md5))
-            .map(fetched))
+        Ok(self.lookups(&[md5.to_owned()])?.pop().flatten())
     }
 
     fn batch_size(&self) -> usize {
         MAX_IDS
+    }
+
+    fn lookup_size(&self) -> usize {
+        MAX_MD5S
+    }
+
+    fn lookups(&mut self, md5s: &[String]) -> Result<Vec<Option<FetchedMap>>, ApiError> {
+        let mut found: HashMap<String, Beatmap> = self
+            .resolve(&[], md5s)?
+            .into_iter()
+            .filter_map(|map| Some((map.checksum.clone()?, map)))
+            .collect();
+        Ok(md5s
+            .iter()
+            .map(|md5| found.remove(md5).map(fetched))
+            .collect())
     }
 }
 
@@ -405,6 +418,27 @@ mod tests {
         let (mut api, _, _) = shared(&fake);
         let found = api.lookup("0000000000000000000000000000000b").unwrap();
         assert_eq!(found.and_then(|map| map.info.beatmap_id), Some(11));
+    }
+
+    #[test]
+    fn md5s_are_asked_together() {
+        let fake = Fake::default().answer(200, &answer(&[11], &[], None));
+        let (mut api, _, _) = shared(&fake);
+        let md5s = [format!("{:032x}", 11), format!("{:032x}", 12)];
+        let found = api.lookups(&md5s).unwrap();
+        let ids: Vec<Option<u32>> = found
+            .iter()
+            .map(|map| map.as_ref().and_then(|map| map.info.beatmap_id))
+            .collect();
+        assert_eq!(ids, [Some(11), None]);
+        assert_eq!(
+            fake.requests(),
+            [format!(
+                r#"POST https://api.test/v1/maps {{"ids":[],"md5s":["{}","{}"]}}"#,
+                md5s[0], md5s[1]
+            )]
+        );
+        assert_eq!(api.lookup_size(), 200);
     }
 
     #[test]
