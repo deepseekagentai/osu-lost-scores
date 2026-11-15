@@ -17,7 +17,7 @@ use lost_scores_app::session::{self as stored, Session as Login};
 use lost_scores_app::setup::Settings;
 use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::updates::latest_release;
-use lost_scores_app::{cache, history, keys, setup};
+use lost_scores_app::{cache, history, keys, setup, submission};
 use osu_api::{ApiError, Credentials, Http, Server, UserKey};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -32,6 +32,7 @@ use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
 use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_message};
+use crate::send::{self, Call, Courier, Reply};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
@@ -87,6 +88,10 @@ struct Session {
     opens_results: Cell<bool>,
     opener: RefCell<Opener>,
     revoker: RefCell<Revoker>,
+    courier: RefCell<Courier>,
+    sent_epoch: Cell<u64>,
+    offered: RefCell<Option<PathBuf>>,
+    publish_next: Cell<bool>,
     images_view: Cell<bool>,
     picked_images: Cell<bool>,
     picture_tops: RefCell<Vec<f32>>,
@@ -171,6 +176,10 @@ impl Session {
                         .logout();
                 });
             })),
+            courier: RefCell::new(send::over_http()),
+            sent_epoch: Cell::new(0),
+            offered: RefCell::new(None),
+            publish_next: Cell::new(false),
             images_view: Cell::new(true),
             picked_images: Cell::new(true),
             picture_tops: RefCell::new(Vec::new()),
@@ -307,6 +316,8 @@ impl Session {
         state.set_user_name(login.username.clone().into());
         let account = Account::Id(login.osu_id);
         *self.login.borrow_mut() = Some(login);
+        self.show_sent();
+        self.refresh_sent();
         self.fetch_profile(account);
     }
 
@@ -506,6 +517,27 @@ impl Session {
         state.on_confirm_upload(move |remember| session.confirm_upload(remember));
         let session = self.clone();
         state.on_cancel_upload(move || session.cancel_upload());
+        let session = self.clone();
+        state.on_submit_scan(move || session.submit_scan());
+        let session = self.clone();
+        state.on_publish_scan(move || session.send_about(Call::Publish));
+        let session = self.clone();
+        state.on_unpublish_scan(move || session.send_about(Call::Unpublish));
+        let session = self.clone();
+        state.on_ask_unsend(move || session.ask_unsend());
+        let session = self.clone();
+        state.on_confirm_unsend(move || session.confirm_unsend());
+        let session = self.clone();
+        state.on_publish_offer(move || session.publish_offer());
+        let session = self.clone();
+        state.on_dismiss_offer(move || session.dismiss_offer());
+        let session = self.clone();
+        state.on_cancel_unsend(move || {
+            session
+                .window
+                .global::<State>()
+                .set_unsend_confirm_open(false);
+        });
     }
 
     fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
@@ -648,6 +680,8 @@ impl Session {
         if images {
             self.show_images();
         }
+        self.show_sent();
+        self.refresh_sent();
     }
 
     fn relist(&self, fallback: usize) {
@@ -773,13 +807,224 @@ impl Session {
         self.refresh_previews();
     }
 
+    fn sending_login(&self) -> Option<Login> {
+        if self.credentials.borrow().is_some() {
+            return None;
+        }
+        self.login.borrow().clone()
+    }
+
+    fn shown_sent(&self) -> Option<history::Sent> {
+        let login = self.sending_login()?;
+        history::submission(self.folder.borrow().as_deref()?, &login.server)
+    }
+
+    fn show_sent(&self) {
+        let sent = self.shown_sent();
+        let state = self.window.global::<State>();
+        state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
+        state.set_sent_public(sent.as_ref().is_some_and(send::published));
+        state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
+        let offered = self.offered.borrow().clone();
+        state.set_offer_shown(
+            sent.is_none()
+                && self.sending_login().is_some()
+                && offered.is_some()
+                && offered == *self.folder.borrow(),
+        );
+    }
+
+    fn offer(&self, folder: &Path, scan: &history::SavedScan) {
+        let text = scan.potential.as_ref().and_then(send::offer);
+        *self.offered.borrow_mut() = text.as_ref().map(|_| folder.to_path_buf());
+        self.window
+            .global::<State>()
+            .set_offer_text(text.unwrap_or_default().into());
+        self.show_sent();
+    }
+
+    fn dismiss_offer(&self) {
+        *self.offered.borrow_mut() = None;
+        self.show_sent();
+    }
+
+    fn publish_offer(&self) {
+        self.publish_next.set(true);
+        self.submit_scan();
+        if self.window.global::<State>().get_sending() {
+            self.dismiss_offer();
+        } else {
+            self.publish_next.set(false);
+        }
+    }
+
+    fn submit_scan(&self) {
+        if self.shown_sent().is_none() {
+            self.send(|folder| Ok(Call::Submit(submission::body(&history::load(folder)?)?)));
+        }
+    }
+
+    fn send_about(&self, call: fn(String) -> Call) {
+        if let Some(sent) = self.shown_sent() {
+            self.send(move |_| Ok(call(sent.id)));
+        }
+    }
+
+    fn ask_unsend(&self) {
+        if self.shown_sent().is_some() {
+            self.close_popups();
+            self.window.global::<State>().set_unsend_confirm_open(true);
+        }
+    }
+
+    fn confirm_unsend(&self) {
+        self.window.global::<State>().set_unsend_confirm_open(false);
+        self.send_about(Call::Delete);
+    }
+
+    fn send(&self, call: impl FnOnce(&Path) -> Result<Call> + Send + 'static) {
+        let state = self.window.global::<State>();
+        let folder = self.folder.borrow().clone();
+        let (Some(login), Some(folder)) = (self.sending_login(), folder) else {
+            return;
+        };
+        if self.busy() || state.get_sending() {
+            return;
+        }
+        state.set_sending(true);
+        self.sent_epoch.set(self.sent_epoch.get() + 1);
+        let courier = self.courier.borrow().clone();
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let result = call(&folder).and_then(|call| Ok(courier(&login, call)?));
+            on_ui(&weak, move |app| app.answered(&folder, result));
+        });
+    }
+
+    fn answered(&self, folder: &Path, result: Result<Reply>) {
+        self.window.global::<State>().set_sending(false);
+        let publish_next =
+            self.publish_next.replace(false) && self.folder.borrow().as_deref() == Some(folder);
+        let Some(login) = self.sending_login() else {
+            return;
+        };
+        let before = history::submission(folder, &login.server);
+        match result {
+            Ok(Reply::Sent(answer)) => {
+                let sent = history::Sent::new(&answer, &login.server);
+                let done = send::done(before.as_ref(), &sent);
+                match history::remember(folder, &sent) {
+                    Ok(()) if publish_next && !send::published(&sent) => {
+                        self.log(&format!("{done}: {}", sent.id));
+                        self.send_about(Call::Publish);
+                    }
+                    Ok(()) => {
+                        self.log(&format!("{done}: {}", sent.id));
+                        self.toast(done);
+                    }
+                    Err(error) => {
+                        self.send_failed(&format!("Could not keep the answer: {error:#}"))
+                    }
+                }
+            }
+            Ok(Reply::Deleted) => {
+                self.forget_sent(folder);
+                self.log("Deleted the scan from the Lost Scores server");
+                self.toast("Deleted from the server");
+            }
+            Ok(Reply::Listed(_)) => {}
+            Err(error) => match error.downcast_ref::<ApiError>() {
+                Some(ApiError::LoginRequired) => {
+                    self.login_expired();
+                    self.toast(LOGIN_EXPIRED);
+                }
+                Some(ApiError::NotOnServer) => {
+                    self.forget_sent(folder);
+                    self.send_failed(&sentence(&error.to_string()));
+                }
+                _ => self.send_failed(&sentence(&format!("{error:#}"))),
+            },
+        }
+        if self.folder.borrow().as_deref() == Some(folder) {
+            self.show_sent();
+        }
+    }
+
+    fn refresh_sent(&self) {
+        let folder = self.folder.borrow().clone();
+        let (Some(login), Some(folder)) = (self.sending_login(), folder) else {
+            return;
+        };
+        if history::submission(&folder, &login.server).is_none() {
+            return;
+        }
+        let epoch = self.sent_epoch.get();
+        let courier = self.courier.borrow().clone();
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let result = courier(&login, Call::List).map_err(anyhow::Error::from);
+            on_ui(&weak, move |app| app.listed(&folder, epoch, result));
+        });
+    }
+
+    fn listed(&self, folder: &Path, epoch: u64, result: Result<Reply>) {
+        if self.sent_epoch.get() != epoch {
+            return;
+        }
+        let Some(login) = self.sending_login() else {
+            return;
+        };
+        let Some(sent) = history::submission(folder, &login.server) else {
+            return;
+        };
+        match result {
+            Ok(Reply::Listed(listed)) => match send::reconcile(&sent, &listed) {
+                Some(fresh) if fresh == sent => {}
+                Some(fresh) => {
+                    if let Err(error) = history::remember(folder, &fresh) {
+                        self.log(&format!("Could not keep the scan's state: {error:#}"));
+                    }
+                }
+                None => {
+                    self.forget_sent(folder);
+                    self.log("The sent scan is no longer on the Lost Scores server");
+                }
+            },
+            Ok(_) => {}
+            Err(error) if matches!(error.downcast_ref(), Some(ApiError::LoginRequired)) => {
+                self.login_expired();
+                return;
+            }
+            Err(error) => self.log(&format!("Could not check the sent scan: {error:#}")),
+        }
+        if self.folder.borrow().as_deref() == Some(folder) {
+            self.show_sent();
+        }
+    }
+
+    fn forget_sent(&self, folder: &Path) {
+        if let Err(error) = history::forget(folder) {
+            self.log(&format!("Could not forget the sent scan: {error:#}"));
+        }
+    }
+
+    fn send_failed(&self, text: &str) {
+        self.log(&format!("Sending failed: {text}"));
+        self.window.global::<State>().set_status(text.into());
+        self.toast_for(text, CATBOX_FAILED_FOR);
+    }
+
     fn toast(&self, text: &str) {
+        self.toast_for(text, COPIED_FOR);
+    }
+
+    fn toast_for(&self, text: &str, hold: Duration) {
         let state = self.window.global::<State>();
         state.set_copied_text(text.into());
         state.set_copied(true);
         let weak = self.weak.clone();
         self.copied
-            .start(slint::TimerMode::SingleShot, COPIED_FOR, move || {
+            .start(slint::TimerMode::SingleShot, hold, move || {
                 if let Some(window) = weak.upgrade() {
                     window.global::<State>().set_copied(false);
                 }
@@ -1144,7 +1389,9 @@ impl Session {
     }
 
     fn close_popups(&self) {
-        self.window.global::<State>().set_scans_open(false);
+        let state = self.window.global::<State>();
+        state.set_scans_open(false);
+        state.set_send_menu_open(false);
     }
 
     fn open_keys(&self) {
@@ -1569,6 +1816,7 @@ impl Session {
                 self.show_results(&done.scan);
                 self.images_view.set(true);
                 self.register(&done.folder, &done.scan);
+                self.offer(&done.folder, &done.scan);
             }
             Message::Refreshed(updated) => {
                 self.refreshing.set(false);
@@ -1577,6 +1825,7 @@ impl Session {
                         .set((done.scan.lost_total, done.scan.lost_ranked));
                     self.show_results(&done.scan);
                     self.register(&done.folder, &done.scan);
+                    self.offer(&done.folder, &done.scan);
                 }
                 self.refresh_shared();
                 self.show_images();
@@ -1804,6 +2053,7 @@ impl Session {
         state.set_stats_ready(false);
         state.set_connected(false);
         state.set_user_name("".into());
+        self.show_sent();
     }
 }
 
@@ -1880,18 +2130,21 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
+    use lost_scores_app::history::{self, Sent};
     use lost_scores_app::setup;
-    use osu_api::{ApiError, Credentials, UserKey};
+    use osu_api::{ApiError, Credentials, Submission, SubmissionInfo, UserKey};
     use slint::{ComponentHandle, LogicalSize, Model};
     use tempfile::TempDir;
 
     use lost_scores_app::login::LoginError;
     use lost_scores_app::online::Player;
+    use lost_scores_app::pipeline::PotentialResult;
     use lost_scores_app::session::{self as stored, Session as Login};
 
     use super::{Access, Lookup, Session};
     use crate::account::Profile;
     use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT};
+    use crate::send::{Call, Reply};
     use crate::share::render::ShareImage;
     use crate::table::Tab;
     use crate::worker::{Finished, Message};
@@ -3105,5 +3358,294 @@ mod tests {
         begin(&session);
         finish(&session);
         assert!(window.global::<State>().get_show_results());
+    }
+
+    fn record_calls(session: &Session) -> std::sync::mpsc::Receiver<String> {
+        let (sent, received) = std::sync::mpsc::channel();
+        let sent = Mutex::new(sent);
+        *session.courier.borrow_mut() = std::sync::Arc::new(move |login: &Login, call: Call| {
+            let call = match call {
+                Call::Submit(body) => {
+                    let body = String::from_utf8_lossy(&body);
+                    let shown = body.contains(r#""made_at":1794649471"#);
+                    format!(
+                        "submit {}",
+                        if shown {
+                            "the shown scan"
+                        } else {
+                            "another body"
+                        }
+                    )
+                }
+                Call::Publish(id) => format!("publish {id}"),
+                Call::Unpublish(id) => format!("unpublish {id}"),
+                Call::Delete(id) => format!("delete {id}"),
+                Call::List => "list".to_owned(),
+            };
+            sent.lock()
+                .unwrap()
+                .send(format!("{} {call}", login.token))
+                .unwrap();
+            Err(ApiError::Network("not in tests".into()))
+        });
+        received
+    }
+
+    fn calls(received: &std::sync::mpsc::Receiver<String>, count: usize) -> Vec<String> {
+        let timeout = std::time::Duration::from_secs(5);
+        let mut seen: Vec<String> = (0..count)
+            .map(|_| received.recv_timeout(timeout).unwrap())
+            .collect();
+        seen.sort();
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+        seen
+    }
+
+    fn answer(visibility: &str, status: &str) -> Submission {
+        Submission {
+            id: "abc".into(),
+            visibility: visibility.into(),
+            status: status.into(),
+        }
+    }
+
+    fn shown_scan(session: &Session, root: &Path, sent: Option<Submission>) -> PathBuf {
+        let scan = saved_scan();
+        let folder = history::save(root, &scan).unwrap();
+        if let Some(sent) = sent {
+            history::remember(&folder, &Sent::new(&sent, &login().server)).unwrap();
+        }
+        session.show_scan(0, Some(folder.clone()), &scan);
+        folder
+    }
+
+    #[test]
+    fn submitting_keeps_the_id_next_to_the_scan_and_shows_private() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), None);
+        assert!(state.get_can_send());
+        assert_eq!(state.get_sent_state(), "");
+        state.invoke_submit_scan();
+        assert!(state.get_sending());
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert!(!state.get_sending());
+        assert_eq!(
+            history::submission(&folder, &login().server),
+            Some(Sent::new(&answer("private", "unverified"), &login().server))
+        );
+        assert_eq!(state.get_sent_state(), "Private");
+        assert!(!state.get_sent_public());
+    }
+
+    #[test]
+    fn publishing_then_unpublishing_flips_the_state() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), Some(answer("private", "unverified")));
+        assert_eq!(state.get_sent_state(), "Private");
+        state.invoke_publish_scan();
+        assert_eq!(calls(&received, 2), ["tok list", "tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        assert_eq!(state.get_sent_state(), "Published, unverified");
+        assert!(state.get_sent_public());
+        state.invoke_unpublish_scan();
+        assert_eq!(calls(&received, 1), ["tok unpublish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "verified"))));
+        assert_eq!(state.get_sent_state(), "Private");
+        assert!(!state.get_sent_public());
+        assert_eq!(
+            history::submission(&folder, &login().server)
+                .unwrap()
+                .status,
+            "verified"
+        );
+    }
+
+    #[test]
+    fn deleting_asks_first_and_forgets_the_id() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), Some(answer("public", "unverified")));
+        state.invoke_ask_unsend();
+        assert!(state.get_unsend_confirm_open());
+        assert_eq!(calls(&received, 1), ["tok list"]);
+        state.invoke_confirm_unsend();
+        assert!(!state.get_unsend_confirm_open());
+        assert_eq!(calls(&received, 1), ["tok delete abc"]);
+        session.answered(&folder, Ok(Reply::Deleted));
+        assert_eq!(history::submission(&folder, &login().server), None);
+        assert_eq!(state.get_sent_state(), "");
+        state.invoke_ask_unsend();
+        state.invoke_cancel_unsend();
+        assert!(!state.get_unsend_confirm_open());
+    }
+
+    #[test]
+    fn with_own_keys_sending_is_off() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        state.set_own_keys(true);
+        let received = record_calls(&session);
+        shown_scan(&session, root.path(), None);
+        assert!(!state.get_can_send());
+        state.invoke_submit_scan();
+        assert!(!state.get_sending());
+        assert_eq!(calls(&received, 0), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_too_soon_answer_says_when() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), None);
+        state.invoke_submit_scan();
+        calls(&received, 1);
+        session.answered(&folder, Err(ApiError::TooSoon { retry_after: 1790 }.into()));
+        let said = "You can send one new scan an hour; try again in 30 min";
+        assert!(state.get_copied());
+        assert_eq!(state.get_copied_text(), said);
+        assert_eq!(state.get_status(), said);
+        assert!(!state.get_sending());
+        assert_eq!(history::submission(&folder, &login().server), None);
+    }
+
+    #[test]
+    fn an_expired_login_while_sending_returns_to_the_connect_card() {
+        let _files = files();
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), None);
+        state.invoke_submit_scan();
+        calls(&received, 1);
+        session.answered(&folder, Err(ApiError::LoginRequired.into()));
+        assert!(!state.get_connected());
+        assert_eq!(state.get_status(), LOGIN_EXPIRED);
+        assert!(!state.get_can_send());
+    }
+
+    #[test]
+    fn the_own_list_updates_the_shown_state_and_drops_a_deleted_scan() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), Some(answer("private", "unverified")));
+        calls(&received, 1);
+        let epoch = session.sent_epoch.get();
+        let listed = SubmissionInfo {
+            id: "abc".into(),
+            made_at: 1_794_649_471,
+            visibility: "public".into(),
+            status: "verified".into(),
+            lost_pp: Some(1.5),
+        };
+        session.listed(&folder, epoch, Ok(Reply::Listed(vec![listed])));
+        assert_eq!(state.get_sent_state(), "Published, verified");
+        session.listed(&folder, epoch + 1, Ok(Reply::Listed(Vec::new())));
+        assert_eq!(state.get_sent_state(), "Published, verified");
+        session.listed(&folder, epoch, Ok(Reply::Listed(Vec::new())));
+        assert_eq!(state.get_sent_state(), "");
+        assert_eq!(history::submission(&folder, &login().server), None);
+    }
+
+    #[test]
+    fn a_scan_gone_from_the_server_can_be_sent_again() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), Some(answer("private", "unverified")));
+        state.invoke_publish_scan();
+        calls(&received, 2);
+        session.answered(&folder, Err(ApiError::NotOnServer.into()));
+        assert_eq!(state.get_sent_state(), "");
+        assert_eq!(history::submission(&folder, &login().server), None);
+        assert_eq!(
+            state.get_copied_text(),
+            "This scan is no longer on the Lost Scores server"
+        );
+    }
+
+    fn finished_scan(session: &Session, root: &Path, lost: f64) -> PathBuf {
+        let mut scan = saved_scan();
+        scan.potential = Some(PotentialResult {
+            current_pp: 8_557.4,
+            potential_pp: 8_557.4 + lost,
+            current_accuracy: 98.38,
+            potential_accuracy: 97.95,
+            global_rank: Some(14_856),
+            lost_in_top: 3,
+            rows: Vec::new(),
+            online: Vec::new(),
+        });
+        let folder = history::save(root, &scan).unwrap();
+        session.handle(Message::Finished(Box::new(Finished {
+            scan,
+            folder: folder.clone(),
+        })));
+        session.handle(Message::Refreshed(None));
+        folder
+    }
+
+    #[test]
+    fn a_fresh_scan_offers_the_hall_of_fame_until_answered() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let _received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        assert!(state.get_offer_shown());
+        assert_eq!(
+            state.get_offer_text(),
+            "ScoreV1 cost you 111 pp: 8,557 \u{2192} 8,668 pp. Show it next to other players?"
+        );
+        state.invoke_dismiss_offer();
+        assert!(!state.get_offer_shown());
+        session.show_scan(0, Some(folder), &saved_scan());
+        assert!(!state.get_offer_shown());
+    }
+
+    #[test]
+    fn publishing_from_the_offer_sends_then_publishes() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        state.invoke_publish_offer();
+        assert!(!state.get_offer_shown());
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        assert_eq!(state.get_sent_state(), "Published, unverified");
+        assert!(!state.get_offer_shown());
+    }
+
+    #[test]
+    fn with_own_keys_no_offer_is_made() {
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        begin(&session);
+        finished_scan(&session, root.path(), 110.8);
+        assert!(!state.get_offer_shown());
+    }
+
+    #[test]
+    fn a_scan_that_lost_no_pp_offers_nothing() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        begin(&session);
+        finished_scan(&session, root.path(), 0.2);
+        assert!(!state.get_offer_shown());
     }
 }

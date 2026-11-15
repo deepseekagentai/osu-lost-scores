@@ -593,6 +593,40 @@ fn render_results_snapshots() {
         (650.0, 660.0),
         &dir.join("26-keys-sheet-short.png"),
     );
+
+    state.set_keys_open(false);
+    state.set_show_results(true);
+    state.set_logged_in(true);
+    state.set_own_keys(false);
+    state.set_offer_text(
+        "ScoreV1 cost you 111 pp: 8,557 \u{2192} 8,668 pp. Show it next to other players?".into(),
+    );
+    state.set_offer_shown(true);
+    state.set_images_shown(true);
+    state.set_has_images(true);
+    draw(&surface, &dir.join("27-results-offer.png"));
+    draw_sized(&surface, TWO_COLUMNS, &dir.join("28-two-columns-offer.png"));
+    state.set_offer_shown(false);
+    state.set_images_shown(false);
+    state.set_show_results(true);
+    draw(&surface, &dir.join("29-results-submit.png"));
+    state.set_sent_state("Private".into());
+    draw(&surface, &dir.join("30-results-private.png"));
+    state.set_sent_state("Published, unverified".into());
+    state.set_sent_public(true);
+    draw(&surface, &dir.join("31-results-published.png"));
+    click(&window, 500.0, 45.0);
+    draw(&surface, &dir.join("32-results-send-menu.png"));
+    state.set_send_menu_open(false);
+    draw_sized(&surface, WIDE, &dir.join("33-results-published-wide.png"));
+    state.set_unsend_confirm_open(true);
+    draw(&surface, &dir.join("34-unsend-confirm.png"));
+    state.set_unsend_confirm_open(false);
+    state.set_sent_state("".into());
+    state.set_sent_public(false);
+    state.set_logged_in(false);
+    state.set_own_keys(true);
+    draw(&surface, &dir.join("35-results-own-keys.png"));
 }
 
 fn mods_scan() -> SavedScan {
@@ -922,4 +956,18 @@ fn render_fade_snapshots() {
             .save(dir.join(name))
             .unwrap();
     }
+}
+
+fn click(window: &MainWindow, x: f32, y: f32) {
+    let position = slint::LogicalPosition::new(x, y);
+    let button = slint::platform::PointerEventButton::Left;
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerPressed { position, button });
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased { position, button });
 }

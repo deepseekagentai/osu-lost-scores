@@ -8,6 +8,7 @@ pub mod newest;
 pub mod previews;
 pub mod scan;
 pub mod scans;
+pub mod send;
 pub mod share;
 pub mod table;
 pub mod update;

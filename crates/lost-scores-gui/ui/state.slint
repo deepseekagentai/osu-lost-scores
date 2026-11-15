@@ -138,6 +138,17 @@ export global State {
     in-out property <bool> upload-confirm-open;
     in-out property <bool> delete-confirm-open;
     in-out property <string> delete-message;
+    in-out property <string> sent-state;
+    in-out property <bool> sent-public;
+    in-out property <bool> sent-verified;
+    in-out property <bool> sending;
+    in-out property <bool> unsend-confirm-open;
+    in-out property <bool> send-menu-open;
+    in-out property <length> send-menu-x;
+    in-out property <length> send-menu-y;
+    in-out property <bool> offer-shown;
+    in-out property <string> offer-text;
+    out property <bool> can-send: self.logged-in && !self.own-keys;
 
     callback pick-folder();
     callback start-scan();
@@ -174,6 +185,14 @@ export global State {
     callback upload-all();
     callback confirm-upload(bool);
     callback cancel-upload();
+    callback submit-scan();
+    callback publish-scan();
+    callback unpublish-scan();
+    callback ask-unsend();
+    callback confirm-unsend();
+    callback cancel-unsend();
+    callback publish-offer();
+    callback dismiss-offer();
     callback open-beatmap(int);
     callback copy-row(int);
     callback ask-clear-cache();
