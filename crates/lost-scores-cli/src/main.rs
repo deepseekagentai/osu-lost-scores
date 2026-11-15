@@ -665,6 +665,10 @@ mod tests {
             panic!("unexpected GET {url}")
         }
 
+        fn delete(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
+            panic!("unexpected DELETE {url}")
+        }
+
         fn post_json(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
             assert!(url.ends_with("/api/v1/auth/token"), "{url}");
             Ok(Response {

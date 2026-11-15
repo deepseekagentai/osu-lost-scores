@@ -9,6 +9,7 @@ const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const API_URL: &str = "https://osu.ppy.sh/api/v2";
 const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
+const HOUR: u64 = 3600;
 pub const SERVER_URL: &str = "https://lost.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub trait Transport {
     fn post_form(&mut self, url: &str, form: &[(&str, &str)]) -> Result<Response, ApiError>;
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
     fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError>;
+    fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +66,17 @@ pub enum ApiError {
     BusyToday,
     #[error("your osu! login has expired; log in again")]
     LoginRequired,
+    #[error(
+        "you can send one new scan an hour; try again in {} min",
+        .retry_after.div_ceil(60)
+    )]
+    TooSoon { retry_after: u64 },
+    #[error("this scan belongs to another player")]
+    NotYourScan,
+    #[error("this scan has no Potential Top to publish")]
+    NoPotentialTop,
+    #[error("this scan is no longer on the Lost Scores server")]
+    NotOnServer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -325,13 +338,29 @@ pub struct Login {
     pub username: String,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct Submission {
+    pub id: String,
+    pub visibility: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct SubmissionInfo {
+    pub id: String,
+    pub made_at: i64,
+    pub visibility: String,
+    pub status: String,
+    pub lost_pp: Option<f64>,
+}
+
 #[derive(Serialize)]
 struct Redeem<'a> {
     code: &'a str,
     verifier: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ServerError {
     #[serde(default)]
     error: Option<String>,
@@ -398,6 +427,47 @@ impl<T: Transport> Server<T> {
             200..=299 => Ok(()),
             status => Err(ApiError::Status { status, url }),
         }
+    }
+
+    pub fn submit(&mut self, body: &[u8]) -> Result<Submission, ApiError> {
+        let url = format!("{}/api/v1/submissions", self.base);
+        let response = self
+            .transport
+            .post_json(&url, body, &self.session)
+            .map_err(unreached)?;
+        parse(&url, &owned(&url, response)?)
+    }
+
+    pub fn publish(&mut self, id: &str) -> Result<Submission, ApiError> {
+        self.show(id, "publish")
+    }
+
+    pub fn unpublish(&mut self, id: &str) -> Result<Submission, ApiError> {
+        self.show(id, "unpublish")
+    }
+
+    pub fn delete_submission(&mut self, id: &str) -> Result<(), ApiError> {
+        let url = format!("{}/api/v1/submissions/{}", self.base, encode(id));
+        let response = self
+            .transport
+            .delete(&url, &self.session)
+            .map_err(unreached)?;
+        owned(&url, response).map(drop)
+    }
+
+    pub fn submissions(&mut self) -> Result<Vec<SubmissionInfo>, ApiError> {
+        let url = format!("{}/api/v1/submissions", self.base);
+        let response = self.transport.get(&url, &self.session).map_err(unreached)?;
+        parse(&url, &owned(&url, response)?)
+    }
+
+    fn show(&mut self, id: &str, action: &str) -> Result<Submission, ApiError> {
+        let url = format!("{}/api/v1/submissions/{}/{action}", self.base, encode(id));
+        let response = self
+            .transport
+            .post_json(&url, b"", &self.session)
+            .map_err(unreached)?;
+        parse(&url, &owned(&url, response)?)
     }
 
     pub fn maps(&mut self, ids: &[u32], md5s: &[String]) -> Result<MapsAnswer, ApiError> {
@@ -470,35 +540,42 @@ fn unreached(error: ApiError) -> ApiError {
 }
 
 fn answer(url: &str, response: Response) -> Result<Option<Vec<u8>>, ApiError> {
-    let told = |body: &[u8]| serde_json::from_slice::<ServerError>(body).ok();
     match response.status {
         200 => Ok(Some(response.body)),
         404 => Ok(None),
-        429 => Err(ApiError::Busy {
+        _ => Err(refusal(url, response)),
+    }
+}
+
+fn owned(url: &str, response: Response) -> Result<Vec<u8>, ApiError> {
+    match response.status {
+        200..=299 => Ok(response.body),
+        _ => Err(refusal(url, response)),
+    }
+}
+
+fn refusal(url: &str, response: Response) -> ApiError {
+    let told: ServerError = serde_json::from_slice(&response.body).unwrap_or_default();
+    match (response.status, told.error.as_deref()) {
+        (429, Some("one_per_hour")) => ApiError::TooSoon {
+            retry_after: told.retry_after.or(response.retry_after).unwrap_or(HOUR),
+        },
+        (429, _) => ApiError::Busy {
             retry_after: response
                 .retry_after
                 .filter(|seconds| *seconds > 0)
-                .or_else(|| told(&response.body).and_then(|error| error.retry_after))
+                .or(told.retry_after)
                 .unwrap_or(60),
-        }),
-        503 if told(&response.body)
-            .and_then(|error| error.error)
-            .as_deref()
-            == Some("busy_today") =>
-        {
-            Err(ApiError::BusyToday)
-        }
-        401 if told(&response.body)
-            .and_then(|error| error.error)
-            .as_deref()
-            == Some("login_required") =>
-        {
-            Err(ApiError::LoginRequired)
-        }
-        status => Err(ApiError::Status {
+        },
+        (503, Some("busy_today")) => ApiError::BusyToday,
+        (401, Some("login_required")) => ApiError::LoginRequired,
+        (403, Some("not_your_scan")) => ApiError::NotYourScan,
+        (409, Some("no_potential_top")) => ApiError::NoPotentialTop,
+        (404, Some("not_found")) => ApiError::NotOnServer,
+        (status, _) => ApiError::Status {
             status,
             url: url.into(),
-        }),
+        },
     }
 }
 
@@ -561,12 +638,7 @@ impl Transport for Http {
 
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
         let request = self.agent.get(url).header("Accept", "application/json");
-        let request = if token.is_empty() {
-            request
-        } else {
-            request.header("Authorization", format!("Bearer {token}"))
-        };
-        read(request.call().map_err(network)?)
+        read(bearer(request, token).call().map_err(network)?)
     }
 
     fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
@@ -575,12 +647,20 @@ impl Transport for Http {
             .post(url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json");
-        let request = if token.is_empty() {
-            request
-        } else {
-            request.header("Authorization", format!("Bearer {token}"))
-        };
-        read(request.send(body).map_err(network)?)
+        read(bearer(request, token).send(body).map_err(network)?)
+    }
+
+    fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
+        let request = self.agent.delete(url).header("Accept", "application/json");
+        read(bearer(request, token).call().map_err(network)?)
+    }
+}
+
+fn bearer<B>(request: ureq::RequestBuilder<B>, token: &str) -> ureq::RequestBuilder<B> {
+    if token.is_empty() {
+        request
+    } else {
+        request.header("Authorization", format!("Bearer {token}"))
     }
 }
 
@@ -642,7 +722,8 @@ mod tests {
 
     use super::{
         ApiError, Client, Credentials, Login, Response, Score, ScoreBeatmap, ScoreBeatmapset,
-        ScoreStatistics, Server, Transport, User, UserKey, UserStatistics, unix_time,
+        ScoreStatistics, Server, Submission, SubmissionInfo, Transport, User, UserKey,
+        UserStatistics, unix_time,
     };
 
     #[derive(Default)]
@@ -682,6 +763,11 @@ mod tests {
             ));
             Ok(self.answers.pop_front().expect("no scripted answer"))
         }
+
+        fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
+            self.requests.push(format!("DELETE {url} bearer={token}"));
+            Ok(self.answers.pop_front().expect("no scripted answer"))
+        }
     }
 
     fn server(fake: Fake) -> Server<Fake> {
@@ -700,6 +786,10 @@ mod tests {
         }
 
         fn post_json(&mut self, _: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
+            Err(ApiError::Network("refused".into()))
+        }
+
+        fn delete(&mut self, _: &str, _: &str) -> Result<Response, ApiError> {
             Err(ApiError::Network("refused".into()))
         }
     }
@@ -880,6 +970,115 @@ mod tests {
             ["POST https://api.test/api/auth/logout bearer=tok "]
         );
         server(Fake::default()).logout().unwrap();
+    }
+
+    #[test]
+    fn a_submit_posts_the_body_with_the_session_and_reads_the_answer() {
+        let fake = Fake::default().answer(
+            201,
+            r#"{"id":"abc","visibility":"private","status":"unverified"}"#,
+        );
+        let mut api = server(fake).with_session("tok");
+        assert_eq!(
+            api.submit(br#"{"scan":1}"#).unwrap(),
+            Submission {
+                id: "abc".into(),
+                visibility: "private".into(),
+                status: "unverified".into(),
+            }
+        );
+        assert_eq!(
+            api.transport.requests,
+            [r#"POST https://api.test/api/v1/submissions bearer=tok {"scan":1}"#]
+        );
+    }
+
+    #[test]
+    fn the_servers_refusals_have_their_own_errors() {
+        let fake = Fake::default()
+            .answer(429, r#"{"error":"one_per_hour","retry_after":1790}"#)
+            .answer(403, r#"{"error":"not_your_scan"}"#)
+            .answer(409, r#"{"error":"no_potential_top"}"#)
+            .answer(401, r#"{"error":"login_required"}"#);
+        let mut api = server(fake).with_session("tok");
+        let soon = api.submit(b"{}").unwrap_err();
+        assert!(matches!(soon, ApiError::TooSoon { retry_after: 1790 }));
+        assert_eq!(
+            soon.to_string(),
+            "you can send one new scan an hour; try again in 30 min"
+        );
+        let other = api.submit(b"{}").unwrap_err();
+        assert!(matches!(other, ApiError::NotYourScan));
+        assert_eq!(other.to_string(), "this scan belongs to another player");
+        let bare = api.publish("abc").unwrap_err();
+        assert!(matches!(bare, ApiError::NoPotentialTop));
+        assert_eq!(
+            bare.to_string(),
+            "this scan has no Potential Top to publish"
+        );
+        assert!(matches!(api.submissions(), Err(ApiError::LoginRequired)));
+    }
+
+    #[test]
+    fn publish_unpublish_delete_and_the_list_use_the_owner_routes() {
+        let fake = Fake::default()
+            .answer(200, r#"{"id":"abc","visibility":"public","status":"unverified"}"#)
+            .answer(200, r#"{"id":"abc","visibility":"private","status":"unverified"}"#)
+            .answer(204, "")
+            .answer(
+                200,
+                r#"[{"id":"abc","made_at":1800000000,"created_at":1800000100,"visibility":"public","status":"verified","current_pp":1000,"potential_pp":1054.5,"lost_pp":54.5,"lost_total":2,"lost_ranked":2},{"id":"def","made_at":1800000200,"created_at":1800000300,"visibility":"private","status":"unverified","current_pp":null,"potential_pp":null,"lost_pp":null,"lost_total":0,"lost_ranked":0}]"#,
+            );
+        let mut api = server(fake).with_session("tok");
+        assert_eq!(api.publish("abc").unwrap().visibility, "public");
+        assert_eq!(api.unpublish("abc").unwrap().visibility, "private");
+        api.delete_submission("abc").unwrap();
+        assert_eq!(
+            api.submissions().unwrap(),
+            [
+                SubmissionInfo {
+                    id: "abc".into(),
+                    made_at: 1_800_000_000,
+                    visibility: "public".into(),
+                    status: "verified".into(),
+                    lost_pp: Some(54.5),
+                },
+                SubmissionInfo {
+                    id: "def".into(),
+                    made_at: 1_800_000_200,
+                    visibility: "private".into(),
+                    status: "unverified".into(),
+                    lost_pp: None,
+                },
+            ]
+        );
+        assert_eq!(
+            api.transport.requests,
+            [
+                "POST https://api.test/api/v1/submissions/abc/publish bearer=tok ",
+                "POST https://api.test/api/v1/submissions/abc/unpublish bearer=tok ",
+                "DELETE https://api.test/api/v1/submissions/abc bearer=tok",
+                "GET https://api.test/api/v1/submissions bearer=tok",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scan_gone_from_the_server_has_its_own_error() {
+        let fake = Fake::default()
+            .answer(404, r#"{"error":"not_found"}"#)
+            .answer(404, r#"{"error":"not_found"}"#);
+        let mut api = server(fake).with_session("tok");
+        let gone = api.unpublish("abc").unwrap_err();
+        assert!(matches!(gone, ApiError::NotOnServer));
+        assert_eq!(
+            gone.to_string(),
+            "this scan is no longer on the Lost Scores server"
+        );
+        assert!(matches!(
+            api.delete_submission("abc"),
+            Err(ApiError::NotOnServer)
+        ));
     }
 
     const TOKEN: &str = r#"{"token_type":"Bearer","expires_in":86400,"access_token":"t1"}"#;

@@ -275,6 +275,14 @@ mod tests {
             ));
             self.next()
         }
+
+        fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(format!("DELETE {url} bearer={token}"));
+            self.next()
+        }
     }
 
     fn map(id: u32) -> String {

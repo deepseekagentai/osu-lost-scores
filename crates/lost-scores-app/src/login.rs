@@ -231,6 +231,10 @@ mod tests {
             panic!("unexpected GET {url}")
         }
 
+        fn delete(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
+            panic!("unexpected DELETE {url}")
+        }
+
         fn post_json(&mut self, url: &str, body: &[u8], _: &str) -> Result<Response, ApiError> {
             self.requests
                 .lock()
