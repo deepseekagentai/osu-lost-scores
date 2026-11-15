@@ -149,6 +149,10 @@ pub fn credentials_file() -> Option<PathBuf> {
     app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("credentials.json"))
 }
 
+pub fn session_file() -> Option<PathBuf> {
+    app_dir(&["XDG_CONFIG_HOME", "APPDATA"], ".config").map(|dir| dir.join("session.json"))
+}
+
 pub fn cache_root() -> Option<PathBuf> {
     app_dir(&["XDG_CACHE_HOME", "LOCALAPPDATA"], ".cache")
 }

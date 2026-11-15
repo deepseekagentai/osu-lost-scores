@@ -55,6 +55,11 @@ impl<T: Transport> Shared<T> {
         }
     }
 
+    pub fn with_session(mut self, token: &str) -> Self {
+        self.server = self.server.with_session(token);
+        self
+    }
+
     pub fn on_wait(mut self, notice: impl FnMut(u64) + Send + 'static) -> Self {
         self.notice = Box::new(notice);
         self
@@ -455,6 +460,26 @@ mod tests {
             )]
         );
         assert_eq!(api.lookup_size(), 200);
+    }
+
+    #[test]
+    fn shared_sends_the_session_with_every_request() {
+        let fake = Fake::default()
+            .answer(200, USER)
+            .answer(200, &answer(&[1], &[], None))
+            .answer(200, "osu file format v14");
+        let mut api = Shared::with_transport(fake.clone(), "https://api.test").with_session("tok");
+        assert_eq!(api.player("Synthetic").unwrap().id, 7);
+        assert_eq!(api.batch(&[1]).unwrap().len(), 1);
+        assert_eq!(api.download(5).unwrap(), b"osu file format v14");
+        assert_eq!(
+            fake.requests(),
+            [
+                "GET https://api.test/v1/osu/users/Synthetic/osu?key=username bearer=tok",
+                r#"POST https://api.test/v1/maps bearer=tok {"ids":[1],"md5s":[]}"#,
+                "GET https://osu.ppy.sh/osu/5 bearer=",
+            ]
+        );
     }
 
     #[test]

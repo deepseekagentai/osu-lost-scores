@@ -515,7 +515,7 @@ fn parse<D: DeserializeOwned>(url: &str, body: &[u8]) -> Result<D, ApiError> {
     })
 }
 
-fn encode(text: &str) -> String {
+pub fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| {
             if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
