@@ -10,5 +10,6 @@ pub mod rows;
 pub mod session;
 pub mod setup;
 pub mod shared;
+pub mod submission;
 pub mod timings;
 pub mod updates;

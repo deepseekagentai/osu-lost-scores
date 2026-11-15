@@ -11,6 +11,8 @@ use crate::ticker::Ticker;
 
 const TOUCH_DEVICE: u32 = 1 << 2;
 
+pub const FORMULA: &str = "2026.1026.0";
+
 pub(crate) const fn reference_mod_bits(mods: Mods) -> u32 {
     mods.bits() & !TOUCH_DEVICE
 }

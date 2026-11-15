@@ -15,6 +15,7 @@ use crate::setup;
 
 pub const VERSION: u32 = 1;
 const FILE: &str = "scan.json";
+const SUBMISSION: &str = "submission.json";
 const FOLDER_FORMAT: &str = "%Y-%m-%d_%H-%M-%SZ";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,6 +30,14 @@ pub struct SavedScan {
     pub lost_total: usize,
     pub lost_ranked: usize,
     pub potential: Option<PotentialResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sent {
+    pub id: String,
+    pub visibility: String,
+    pub status: String,
+    pub server: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +147,27 @@ pub fn load(folder: &Path) -> Result<SavedScan> {
     serde_json::from_slice(&data).with_context(|| format!("cannot parse {}", file.display()))
 }
 
+pub fn submission(folder: &Path, server: &str) -> Option<Sent> {
+    let sent: Sent = serde_json::from_slice(&fs::read(folder.join(SUBMISSION)).ok()?).ok()?;
+    (sent.server == server.trim_end_matches('/')).then_some(sent)
+}
+
+pub fn remember(folder: &Path, sent: &Sent) -> Result<()> {
+    let file = folder.join(SUBMISSION);
+    write_atomic(&file, &serde_json::to_vec(sent)?)
+        .with_context(|| format!("cannot write {}", file.display()))
+}
+
+pub fn forget(folder: &Path) -> Result<()> {
+    let file = folder.join(SUBMISSION);
+    match fs::remove_file(&file) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            Err(error).with_context(|| format!("cannot remove {}", file.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lost_scores_core::grade::Grade;
@@ -146,7 +176,10 @@ mod tests {
     use std::cell::Cell;
     use std::path::PathBuf;
 
-    use super::{SavedScan, VERSION, list, load, remove, replace, save, size};
+    use super::{
+        SavedScan, Sent, VERSION, forget, list, load, remember, remove, replace, save, size,
+        submission,
+    };
     use crate::pipeline::PotentialResult;
     use crate::rows::{Hits, LostRow, OnlineRow, PotentialRow};
 
@@ -256,6 +289,27 @@ mod tests {
             lost_ranked: 9,
             potential: None,
         }
+    }
+
+    #[test]
+    fn a_scans_submission_is_kept_next_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = save(dir.path(), &scan(1_700_000_000)).unwrap();
+        assert_eq!(submission(&folder, "https://api.test"), None);
+        let sent = Sent {
+            id: "abc".into(),
+            visibility: "private".into(),
+            status: "unverified".into(),
+            server: "https://api.test".into(),
+        };
+        remember(&folder, &sent).unwrap();
+        assert_eq!(submission(&folder, "https://api.test/"), Some(sent));
+        assert_eq!(submission(&folder, "http://127.0.0.1:8787"), None);
+        assert_eq!(list(dir.path()).len(), 1);
+        forget(&folder).unwrap();
+        assert_eq!(submission(&folder, "https://api.test"), None);
+        forget(&folder).unwrap();
+        assert!(folder.join("scan.json").is_file());
     }
 
     #[test]
