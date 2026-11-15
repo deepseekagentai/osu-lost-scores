@@ -10,6 +10,7 @@ const API_URL: &str = "https://osu.ppy.sh/api/v2";
 const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
 const HOUR: u64 = 3600;
+const MAX_SUBMISSION: usize = 2 * 1024 * 1024;
 pub const SERVER_URL: &str = "https://lost.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +78,24 @@ pub enum ApiError {
     NoPotentialTop,
     #[error("this scan is no longer on the Lost Scores server")]
     NotOnServer,
+    #[error(
+        "this scan is too big to send ({:.1} MB; the server takes 2 MB)",
+        megabytes(.bytes)
+    )]
+    TooBig { bytes: usize },
+    #[error("the Lost Scores server refused this scan")]
+    BadScan,
+    #[error("the Lost Scores server answered {status} for {url}")]
+    ServerStatus { status: u16, url: String },
+    #[error("unexpected answer from the Lost Scores server for {url}")]
+    ServerFormat {
+        url: String,
+        source: serde_json::Error,
+    },
+}
+
+fn megabytes(bytes: &usize) -> f64 {
+    *bytes as f64 / 1_048_576.0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -430,12 +449,15 @@ impl<T: Transport> Server<T> {
     }
 
     pub fn submit(&mut self, body: &[u8]) -> Result<Submission, ApiError> {
+        if body.len() > MAX_SUBMISSION {
+            return Err(ApiError::TooBig { bytes: body.len() });
+        }
         let url = format!("{}/api/v1/submissions", self.base);
         let response = self
             .transport
             .post_json(&url, body, &self.session)
             .map_err(unreached)?;
-        parse(&url, &owned(&url, response)?)
+        from_server(&url, &owned(&url, response)?)
     }
 
     pub fn publish(&mut self, id: &str) -> Result<Submission, ApiError> {
@@ -458,7 +480,7 @@ impl<T: Transport> Server<T> {
     pub fn submissions(&mut self) -> Result<Vec<SubmissionInfo>, ApiError> {
         let url = format!("{}/api/v1/submissions", self.base);
         let response = self.transport.get(&url, &self.session).map_err(unreached)?;
-        parse(&url, &owned(&url, response)?)
+        from_server(&url, &owned(&url, response)?)
     }
 
     fn show(&mut self, id: &str, action: &str) -> Result<Submission, ApiError> {
@@ -467,7 +489,7 @@ impl<T: Transport> Server<T> {
             .transport
             .post_json(&url, b"", &self.session)
             .map_err(unreached)?;
-        parse(&url, &owned(&url, response)?)
+        from_server(&url, &owned(&url, response)?)
     }
 
     pub fn maps(&mut self, ids: &[u32], md5s: &[String]) -> Result<MapsAnswer, ApiError> {
@@ -550,8 +572,19 @@ fn answer(url: &str, response: Response) -> Result<Option<Vec<u8>>, ApiError> {
 fn owned(url: &str, response: Response) -> Result<Vec<u8>, ApiError> {
     match response.status {
         200..=299 => Ok(response.body),
-        _ => Err(refusal(url, response)),
+        _ => Err(match refusal(url, response) {
+            ApiError::Status { status: 400, .. } => ApiError::BadScan,
+            ApiError::Status { status, url } => ApiError::ServerStatus { status, url },
+            other => other,
+        }),
     }
+}
+
+fn from_server<D: DeserializeOwned>(url: &str, body: &[u8]) -> Result<D, ApiError> {
+    serde_json::from_slice(body).map_err(|source| ApiError::ServerFormat {
+        url: url.into(),
+        source,
+    })
 }
 
 fn refusal(url: &str, response: Response) -> ApiError {
@@ -1079,6 +1112,39 @@ mod tests {
             api.delete_submission("abc"),
             Err(ApiError::NotOnServer)
         ));
+    }
+
+    #[test]
+    fn a_scan_too_big_for_the_server_is_not_sent() {
+        let mut api = server(Fake::default()).with_session("tok");
+        let error = api.submit(&vec![b' '; 2 * 1024 * 1024 + 1]).unwrap_err();
+        assert!(matches!(error, ApiError::TooBig { .. }));
+        assert_eq!(
+            error.to_string(),
+            "this scan is too big to send (2.0 MB; the server takes 2 MB)"
+        );
+        assert!(api.transport.requests.is_empty());
+    }
+
+    #[test]
+    fn other_answers_on_submissions_name_the_lost_scores_server() {
+        let fake = Fake::default()
+            .answer(400, r#"{"error":"bad_request"}"#)
+            .answer(500, "oops")
+            .answer(200, "not json");
+        let mut api = server(fake).with_session("tok");
+        assert_eq!(
+            api.submit(b"{}").unwrap_err().to_string(),
+            "the Lost Scores server refused this scan"
+        );
+        assert_eq!(
+            api.publish("abc").unwrap_err().to_string(),
+            "the Lost Scores server answered 500 for https://api.test/api/v1/submissions/abc/publish"
+        );
+        assert_eq!(
+            api.submissions().unwrap_err().to_string(),
+            "unexpected answer from the Lost Scores server for https://api.test/api/v1/submissions"
+        );
     }
 
     const TOKEN: &str = r#"{"token_type":"Bearer","expires_in":86400,"access_token":"t1"}"#;
