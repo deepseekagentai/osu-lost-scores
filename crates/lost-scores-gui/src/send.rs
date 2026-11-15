@@ -79,3 +79,14 @@ pub fn offer(top: &PotentialResult) -> Option<String> {
         )
     })
 }
+
+pub const SERVER_COPY_STAYS: &str =
+    " Its copy on the Lost Scores server stays; delete it there first if you want it gone.";
+
+pub fn server_copies(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 of them stays on the Lost Scores server.".to_owned(),
+        many => format!(" {many} of them stay on the Lost Scores server."),
+    }
+}

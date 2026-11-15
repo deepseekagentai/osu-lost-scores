@@ -91,6 +91,7 @@ struct Session {
     courier: RefCell<Courier>,
     sent_epoch: Cell<u64>,
     offered: RefCell<Option<PathBuf>>,
+    declined: RefCell<Option<PathBuf>>,
     publish_next: Cell<bool>,
     images_view: Cell<bool>,
     picked_images: Cell<bool>,
@@ -179,6 +180,7 @@ impl Session {
             courier: RefCell::new(send::over_http()),
             sent_epoch: Cell::new(0),
             offered: RefCell::new(None),
+            declined: RefCell::new(None),
             publish_next: Cell::new(false),
             images_view: Cell::new(true),
             picked_images: Cell::new(true),
@@ -713,9 +715,14 @@ impl Session {
             _ => return,
         };
         let date = when(entry.made_at, &TimeZone::system());
+        let stays = if history::submission(&entry.folder, &shared::server_url()).is_some() {
+            send::SERVER_COPY_STAYS
+        } else {
+            ""
+        };
         self.ask_delete(
             vec![entry.folder],
-            format!("Move the scan from {date} to the trash?"),
+            format!("Move the scan from {date} to the trash?{stays}"),
             format!("Moved the scan from {date} to the trash"),
         );
     }
@@ -736,7 +743,17 @@ impl Session {
         }
         let bytes: u64 = folders.iter().map(|folder| history::size(folder)).sum();
         let count = folders.len();
-        self.ask_delete(folders, older_prompt(count, bytes), older_done(count));
+        let server = shared::server_url();
+        let sent = folders
+            .iter()
+            .filter(|folder| history::submission(folder, &server).is_some())
+            .count();
+        let prompt = format!(
+            "{}{}",
+            older_prompt(count, bytes),
+            send::server_copies(sent)
+        );
+        self.ask_delete(folders, prompt, older_done(count));
     }
 
     fn ask_delete(&self, folders: Vec<PathBuf>, message: String, done: String) {
@@ -835,7 +852,12 @@ impl Session {
     }
 
     fn offer(&self, folder: &Path, scan: &history::SavedScan) {
-        let text = scan.potential.as_ref().and_then(send::offer);
+        let declined = self.declined.borrow().as_deref() == Some(folder);
+        let text = scan
+            .potential
+            .as_ref()
+            .and_then(send::offer)
+            .filter(|_| !declined);
         *self.offered.borrow_mut() = text.as_ref().map(|_| folder.to_path_buf());
         self.window
             .global::<State>()
@@ -844,7 +866,8 @@ impl Session {
     }
 
     fn dismiss_offer(&self) {
-        *self.offered.borrow_mut() = None;
+        let offered = self.offered.borrow_mut().take();
+        *self.declined.borrow_mut() = offered;
         self.show_sent();
     }
 
@@ -3646,6 +3669,66 @@ mod tests {
         let state = window.global::<State>();
         begin(&session);
         finished_scan(&session, root.path(), 0.2);
+        assert!(!state.get_offer_shown());
+    }
+
+    #[test]
+    fn trashing_a_sent_scan_says_its_server_copy_stays() {
+        let _files = files();
+        let (window, session, _root) = keyless(650.0);
+        let state = window.global::<State>();
+        let dir = history::scans_dir().unwrap();
+        let mut older = saved_scan();
+        older.made_at -= 600;
+        let older = history::save(&dir, &older).unwrap();
+        let newer = history::save(&dir, &saved_scan()).unwrap();
+        history::remember(
+            &older,
+            &Sent::new(&answer("public", "unverified"), &login().server),
+        )
+        .unwrap();
+        session.reload_scans(&dir);
+        let index = session
+            .entries
+            .borrow()
+            .iter()
+            .position(|entry| entry.folder == older)
+            .unwrap();
+        session.ask_delete_scan(index);
+        assert!(state.get_delete_confirm_open());
+        assert!(
+            state
+                .get_delete_message()
+                .contains("Its copy on the Lost Scores server stays"),
+            "{}",
+            state.get_delete_message()
+        );
+        session.cancel_delete();
+        session.ask_delete_older();
+        assert!(
+            state
+                .get_delete_message()
+                .contains("1 of them stays on the Lost Scores server"),
+            "{}",
+            state.get_delete_message()
+        );
+        session.cancel_delete();
+        std::fs::remove_dir_all(older).unwrap();
+        std::fs::remove_dir_all(newer).unwrap();
+    }
+
+    #[test]
+    fn a_declined_offer_stays_hidden_after_the_status_refresh() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        state.invoke_dismiss_offer();
+        let scan = history::load(&folder).unwrap();
+        session.handle(Message::Refreshed(Some(Box::new(Finished {
+            scan,
+            folder,
+        }))));
         assert!(!state.get_offer_shown());
     }
 }
