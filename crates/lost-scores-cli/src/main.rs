@@ -666,7 +666,7 @@ mod tests {
         }
 
         fn post_json(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
-            assert!(url.ends_with("/v1/auth/token"), "{url}");
+            assert!(url.ends_with("/api/v1/auth/token"), "{url}");
             Ok(Response {
                 status: 200,
                 retry_after: None,

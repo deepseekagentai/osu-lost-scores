@@ -320,8 +320,8 @@ mod tests {
         assert_eq!(
             fake.requests(),
             [
-                r#"POST https://api.test/v1/maps bearer= {"ids":[1,2],"md5s":[]}"#,
-                r#"POST https://api.test/v1/maps bearer= {"ids":[2],"md5s":[]}"#,
+                r#"POST https://api.test/api/v1/maps bearer= {"ids":[1,2],"md5s":[]}"#,
+                r#"POST https://api.test/api/v1/maps bearer= {"ids":[2],"md5s":[]}"#,
             ]
         );
     }
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(
             fake.requests(),
             [format!(
-                r#"POST https://api.test/v1/maps bearer= {{"ids":[],"md5s":["{}","{}"]}}"#,
+                r#"POST https://api.test/api/v1/maps bearer= {{"ids":[],"md5s":["{}","{}"]}}"#,
                 md5s[0], md5s[1]
             )]
         );
@@ -475,8 +475,8 @@ mod tests {
         assert_eq!(
             fake.requests(),
             [
-                "GET https://api.test/v1/osu/users/Synthetic/osu?key=username bearer=tok",
-                r#"POST https://api.test/v1/maps bearer=tok {"ids":[1],"md5s":[]}"#,
+                "GET https://api.test/api/v1/osu/users/Synthetic/osu?key=username bearer=tok",
+                r#"POST https://api.test/api/v1/maps bearer=tok {"ids":[1],"md5s":[]}"#,
                 "GET https://osu.ppy.sh/osu/5 bearer=",
             ]
         );

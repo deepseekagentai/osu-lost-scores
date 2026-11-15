@@ -9,7 +9,7 @@ const TOKEN_URL: &str = "https://osu.ppy.sh/oauth/token";
 const API_URL: &str = "https://osu.ppy.sh/api/v2";
 const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
-pub const SERVER_URL: &str = "https://api.lemon4ik.kz";
+pub const SERVER_URL: &str = "https://lost.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Credentials {
@@ -365,14 +365,14 @@ impl<T: Transport> Server<T> {
 
     pub fn login_url(&self, challenge: &str, port: u16) -> String {
         format!(
-            "{}/v1/auth/start?challenge={}&port={port}",
+            "{}/api/v1/auth/start?challenge={}&port={port}",
             self.base,
             encode(challenge)
         )
     }
 
     pub fn redeem(&mut self, code: &str, verifier: &str) -> Result<Option<Login>, ApiError> {
-        let url = format!("{}/v1/auth/token", self.base);
+        let url = format!("{}/api/v1/auth/token", self.base);
         let body = to_json(&url, &Redeem { code, verifier })?;
         let response = self
             .transport
@@ -401,7 +401,7 @@ impl<T: Transport> Server<T> {
     }
 
     pub fn maps(&mut self, ids: &[u32], md5s: &[String]) -> Result<MapsAnswer, ApiError> {
-        let url = format!("{}/v1/maps", self.base);
+        let url = format!("{}/api/v1/maps", self.base);
         let body = to_json(&url, &MapsQuestion { ids, md5s })?;
         let response = self
             .transport
@@ -415,7 +415,7 @@ impl<T: Transport> Server<T> {
 
     pub fn user_by(&mut self, key: UserKey, value: &str) -> Result<User, ApiError> {
         let url = format!(
-            "{}/v1/osu/users/{}/osu?key={}",
+            "{}/api/v1/osu/users/{}/osu?key={}",
             self.base,
             encode(value),
             key.as_str()
@@ -426,7 +426,7 @@ impl<T: Transport> Server<T> {
 
     pub fn best_scores(&mut self, user_id: u32, offset: u32) -> Result<Vec<Score>, ApiError> {
         let url = format!(
-            "{}/v1/osu/users/{user_id}/scores/best?mode=osu&limit={BEST_PAGE}&offset={offset}",
+            "{}/api/v1/osu/users/{user_id}/scores/best?mode=osu&limit={BEST_PAGE}&offset={offset}",
             self.base
         );
         Ok(self.get_json(&url)?.unwrap_or_default())
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(answer.retry_after, Some(5));
         assert_eq!(
             api.transport.requests[0],
-            r#"POST https://api.test/v1/maps bearer= {"ids":[1,2,3],"md5s":["abc"]}"#
+            r#"POST https://api.test/api/v1/maps bearer= {"ids":[1,2,3],"md5s":["abc"]}"#
         );
     }
 
@@ -778,8 +778,8 @@ mod tests {
         assert_eq!(
             api.transport.requests,
             [
-                "GET https://api.test/v1/osu/users/Some%20Name/osu?key=username bearer=",
-                "GET https://api.test/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=100 bearer=",
+                "GET https://api.test/api/v1/osu/users/Some%20Name/osu?key=username bearer=",
+                "GET https://api.test/api/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=100 bearer=",
             ]
         );
     }
@@ -813,9 +813,9 @@ mod tests {
         assert_eq!(
             api.transport.requests,
             [
-                r#"POST https://api.test/v1/maps bearer=s3cret {"ids":[1],"md5s":[]}"#,
-                "GET https://api.test/v1/osu/users/7/osu?key=id bearer=s3cret",
-                "GET https://api.test/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=0 bearer=s3cret",
+                r#"POST https://api.test/api/v1/maps bearer=s3cret {"ids":[1],"md5s":[]}"#,
+                "GET https://api.test/api/v1/osu/users/7/osu?key=id bearer=s3cret",
+                "GET https://api.test/api/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=0 bearer=s3cret",
                 "GET https://osu.ppy.sh/osu/5 bearer=",
             ]
         );
@@ -843,7 +843,7 @@ mod tests {
         ));
         assert_eq!(
             api.transport.requests[0],
-            r#"POST https://api.test/v1/auth/token bearer= {"code":"code1","verifier":"verifier1"}"#
+            r#"POST https://api.test/api/v1/auth/token bearer= {"code":"code1","verifier":"verifier1"}"#
         );
     }
 
@@ -867,7 +867,7 @@ mod tests {
     fn the_login_url_carries_the_challenge_and_the_port() {
         assert_eq!(
             server(Fake::default()).login_url("ab12", 53682),
-            "https://api.test/v1/auth/start?challenge=ab12&port=53682"
+            "https://api.test/api/v1/auth/start?challenge=ab12&port=53682"
         );
     }
 

@@ -82,7 +82,7 @@ The program has no telemetry. It goes online for these things and nothing else:
 - saving keys, in the window or with `lost-scores login --keys`, checks them with the osu! API;
 - the window looks up your player when it starts, for the account card, and loads your avatar from a.ppy.sh;
 - a scan asks about your player, your online top and the statuses of your maps; the check for missing beatmap IDs also downloads the `.osu` files of the maps you no longer have from osu.ppy.sh;
-- with your keys these questions go to the osu! API; without them they go to the Lost Scores server at api.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes, and counts the requests of each account per day to share the queue fairly;
+- with your keys these questions go to the osu! API; without them they go to the Lost Scores server at lost.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes, and counts the requests of each account per day to share the queue fairly;
 - the results load the map covers from assets.ppy.sh;
 - "Check for updates" asks GitHub for the latest release;
 - the catbox button uploads the pictures of the shown scan to catbox.moe.

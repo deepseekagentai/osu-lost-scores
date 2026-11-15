@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(
             first.url,
             format!(
-                "https://api.test/v1/auth/start?challenge={}&port={}",
+                "https://api.test/api/v1/auth/start?challenge={}&port={}",
                 challenge_of(&first.verifier),
                 first.listener.local_addr().unwrap().port()
             )
@@ -337,7 +337,7 @@ mod tests {
         let requests = fake.requests();
         assert_eq!(requests.len(), 1);
         let (url, body) = requests[0].split_once(' ').unwrap();
-        assert_eq!(url, "https://api.test/v1/auth/token");
+        assert_eq!(url, "https://api.test/api/v1/auth/token");
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["code"], "abc");
         assert_eq!(challenge_of(body["verifier"].as_str().unwrap()), challenge);
