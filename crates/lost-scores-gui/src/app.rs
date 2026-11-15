@@ -86,6 +86,7 @@ struct Session {
     pending_delete: RefCell<Option<Removal>>,
     opens_results: Cell<bool>,
     opener: RefCell<Opener>,
+    revoker: RefCell<Revoker>,
     images_view: Cell<bool>,
     picked_images: Cell<bool>,
     picture_tops: RefCell<Vec<f32>>,
@@ -98,6 +99,7 @@ struct Session {
 }
 
 type Opener = Arc<dyn Fn(&OsStr) -> std::io::Result<()> + Send + Sync>;
+type Revoker = Arc<dyn Fn(Login) + Send + Sync>;
 
 enum Access {
     Keys(Credentials),
@@ -162,6 +164,13 @@ impl Session {
             pending_delete: RefCell::new(None),
             opens_results: Cell::new(false),
             opener: RefCell::new(Arc::new(|target| open::that(target))),
+            revoker: RefCell::new(Arc::new(|login: Login| {
+                thread::spawn(move || {
+                    let _ = Server::new(Http::new(USER_AGENT), &login.server)
+                        .with_session(&login.token)
+                        .logout();
+                });
+            })),
             images_view: Cell::new(true),
             picked_images: Cell::new(true),
             picture_tops: RefCell::new(Vec::new()),
@@ -228,7 +237,7 @@ fn stored_credentials() -> Option<Credentials> {
 }
 
 fn stored_login() -> Option<Login> {
-    setup::session_file().and_then(|path| stored::load(&path))
+    setup::session_file().and_then(|path| stored::load_for(&path, &shared::server_url()))
 }
 
 fn load_settings() -> Settings {
@@ -1202,6 +1211,8 @@ impl Session {
                     return;
                 }
                 *self.credentials.borrow_mut() = Some(credentials);
+                self.login_epoch.set(self.login_epoch.get() + 1);
+                state.set_logging_in(false);
                 state.set_own_keys(true);
                 state.set_keys_open(false);
                 self.adopt_profile(&profile);
@@ -1754,6 +1765,11 @@ impl Session {
     fn log_out(&self) {
         let state = self.window.global::<State>();
         state.set_confirm_open(false);
+        let login = self
+            .login
+            .borrow()
+            .clone()
+            .or_else(|| setup::session_file().and_then(|path| stored::load(&path)));
         if let Some(path) = setup::credentials_file()
             && let Err(error) = keys::delete(&path)
         {
@@ -1766,13 +1782,10 @@ impl Session {
             self.log(&format!("Could not delete the saved login: {error:#}"));
             return;
         }
-        let login = self.login.borrow_mut().take();
+        *self.login.borrow_mut() = None;
         if let Some(login) = login {
-            thread::spawn(move || {
-                let _ = Server::new(Http::new(USER_AGENT), &shared::server_url())
-                    .with_session(&login.token)
-                    .logout();
-            });
+            let revoke = self.revoker.borrow().clone();
+            revoke(login);
         }
         self.disconnect();
         self.log("Logged out");
@@ -2023,7 +2036,63 @@ mod tests {
             token: "tok".into(),
             osu_id: 9,
             username: "Logged".into(),
+            server: "http://127.0.0.1:9".into(),
         }
+    }
+
+    #[test]
+    fn a_saved_login_for_another_server_is_not_restored() {
+        let _files = files();
+        let path = setup::session_file().unwrap();
+        stored::save(
+            &path,
+            &Login {
+                server: "https://elsewhere.test".into(),
+                ..login()
+            },
+        )
+        .unwrap();
+        assert_eq!(super::stored_login(), None);
+        stored::save(&path, &login()).unwrap();
+        assert_eq!(super::stored_login(), Some(login()));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_login_that_finishes_after_keys_were_saved_is_dropped() {
+        let _files = files();
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        state.set_logging_in(true);
+        let epoch = session.login_epoch.get();
+        let keys = Credentials {
+            client_id: "1".into(),
+            client_secret: "x".into(),
+        };
+        session.keys_checked(keys, Ok(profile("Keyed", 3)));
+        assert!(!state.get_logging_in());
+        session.login_finished(epoch, Ok(login()));
+        assert!(state.get_own_keys());
+        assert!(!state.get_logged_in());
+        assert_eq!(state.get_user_name(), "Keyed");
+        assert!(!setup::session_file().unwrap().exists());
+        lost_scores_app::keys::delete(&setup::credentials_file().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn logging_out_revokes_a_session_left_by_the_command_line() {
+        let _files = files();
+        let (window, session, _root) = session(650.0);
+        let path = setup::session_file().unwrap();
+        stored::save(&path, &login()).unwrap();
+        let revoked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = revoked.clone();
+        *session.revoker.borrow_mut() =
+            std::sync::Arc::new(move |login: Login| seen.lock().unwrap().push(login));
+        session.log_out();
+        assert_eq!(*revoked.lock().unwrap(), vec![login()]);
+        assert!(!path.exists());
+        assert!(!window.global::<State>().get_connected());
     }
 
     fn write_config(state: &State<'_>) {
