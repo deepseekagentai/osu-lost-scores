@@ -36,6 +36,16 @@ fn save_keys(home: &Path) {
     .unwrap();
 }
 
+fn save_session(home: &Path) {
+    let dir = home.join("config").join("lost-scores");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("session.json"),
+        r#"{"token":"t","osu_id":7,"username":"p"}"#,
+    )
+    .unwrap();
+}
+
 fn potential(home: &Path, extra: &[&str]) -> Output {
     let osu = osu_folder(home);
     let osu = osu.to_str().unwrap();
@@ -60,6 +70,7 @@ fn help_names_the_files_it_keeps() {
     for file in [
         config.join("config.json"),
         config.join("credentials.json"),
+        config.join("session.json"),
         home.path()
             .join("data")
             .join("lost-scores")
@@ -88,15 +99,34 @@ fn potential_offline_with_saved_keys_says_to_drop_offline() {
 }
 
 #[test]
-fn potential_without_keys_asks_the_shared_server() {
+fn without_keys_or_session_the_cli_says_to_log_in() {
     let home = tempfile::tempdir().unwrap();
     let output = potential(home.path(), &[]);
     let log = text(&output.stderr);
     assert!(!output.status.success());
-    assert!(
-        !log.contains("login") && !log.contains("--offline"),
-        "{log}"
-    );
+    assert!(log.contains("run `lost-scores login` first"), "{log}");
+}
+
+#[test]
+fn a_saved_session_picks_the_shared_server() {
+    let home = tempfile::tempdir().unwrap();
+    save_session(home.path());
+    let output = potential(home.path(), &[]);
+    let log = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(log.contains("cannot reach the Lost Scores server"), "{log}");
+}
+
+#[test]
+fn logout_deletes_the_session_and_the_keys() {
+    let home = tempfile::tempdir().unwrap();
+    save_keys(home.path());
+    save_session(home.path());
+    let output = lost_scores(home.path(), &["logout"]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let dir = home.path().join("config").join("lost-scores");
+    assert!(!dir.join("credentials.json").exists());
+    assert!(!dir.join("session.json").exists());
 }
 
 #[test]

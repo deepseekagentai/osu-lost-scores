@@ -11,19 +11,22 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lost_scores_app::keys;
-use lost_scores_app::online::Online;
+use lost_scores_app::login;
+use lost_scores_app::online::{Online, USER_AGENT};
 use lost_scores_app::pipeline::{self, Api, Event};
 use lost_scores_app::rows;
+use lost_scores_app::session::{self, Session};
 use lost_scores_app::setup;
 use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::timings::Timings;
-use osu_api::Credentials;
+use osu_api::{Credentials, Http, Server};
 use serde::Serialize;
 
 use crate::dump::Dump;
 use crate::progress::{Notes, Printer};
 
 const OFFLINE_HINT: &str = "run without --offline";
+const LOGIN_HINT: &str = "run `lost-scores login` first";
 
 #[derive(Parser)]
 #[command(
@@ -102,9 +105,17 @@ enum Command {
         #[command(flatten)]
         source: Source,
     },
-    #[command(about = "Save the keys of your own osu! OAuth application")]
-    Login,
-    #[command(about = "Delete the saved osu! OAuth keys")]
+    #[command(
+        about = "Log in with your osu! account in the browser to scan through the shared server"
+    )]
+    Login {
+        #[arg(
+            long,
+            help = "Save the keys of your own osu! OAuth application instead"
+        )]
+        keys: bool,
+    },
+    #[command(about = "Log out of osu! and delete the saved osu! OAuth keys")]
     Logout,
     #[command(
         about = "Dump every replay of the player with its beatmap and pp as JSON, for checks"
@@ -117,7 +128,7 @@ enum Command {
     },
 }
 
-const EXAMPLES: [(&str, &str); 5] = [
+const EXAMPLES: [(&str, &str); 6] = [
     ("lost-scores", "lost plays on ranked maps"),
     (
         "lost-scores --all --sort date",
@@ -133,6 +144,10 @@ const EXAMPLES: [(&str, &str); 5] = [
     ),
     (
         "lost-scores login",
+        "log in with osu! to scan through the shared server",
+    ),
+    (
+        "lost-scores login --keys",
         "use your own osu! API keys instead of the shared server",
     ),
 ];
@@ -148,6 +163,7 @@ fn guide() -> String {
     let files = [
         ("settings", setup::config_file()),
         ("API keys", setup::credentials_file()),
+        ("osu! login", setup::session_file()),
         ("map data", setup::maps_file()),
         ("map cache", setup::osu_cache_dir()),
     ];
@@ -215,7 +231,7 @@ fn run(cli: Cli) -> Result<()> {
             ),
             Some(source),
         ),
-        Some(Command::Login) => (login(), None),
+        Some(Command::Login { keys }) => (if *keys { save_keys() } else { log_in() }, None),
         Some(Command::Logout) => (logout(), None),
         None => (
             show_lost(&cli.source, &cli.view, &notes, &mut timings, &mut events),
@@ -241,9 +257,14 @@ fn saved_keys() -> Option<Credentials> {
     keys::from_env().or_else(|| setup::credentials_file().and_then(|path| keys::load(&path)))
 }
 
-fn connect(source: &Source, notes: &Notes) -> Option<Box<dyn Api>> {
+fn saved_session() -> Option<Session> {
+    setup::session_file().and_then(|path| session::load(&path))
+}
+
+fn connect(source: &Source, notes: &Notes) -> (Option<Box<dyn Api>>, &'static str) {
     client(
         saved_keys(),
+        saved_session(),
         source.offline,
         source.server.as_deref(),
         notes.clone(),
@@ -252,20 +273,25 @@ fn connect(source: &Source, notes: &Notes) -> Option<Box<dyn Api>> {
 
 fn client(
     keys: Option<Credentials>,
+    session: Option<Session>,
     offline: bool,
     server: Option<&str>,
     notes: Notes,
-) -> Option<Box<dyn Api>> {
+) -> (Option<Box<dyn Api>>, &'static str) {
     if offline {
-        return None;
+        return (None, OFFLINE_HINT);
     }
     if let (Some(keys), None) = (&keys, server) {
-        return Some(Box::new(Online::new(keys.clone())));
+        return (Some(Box::new(Online::new(keys.clone()))), OFFLINE_HINT);
     }
+    let Some(session) = session else {
+        return (None, LOGIN_HINT);
+    };
     let base = server.map_or_else(shared::server_url, str::to_owned);
-    Some(Box::new(
-        Shared::at(&base).on_wait(move |seconds| notes.waiting(seconds)),
-    ))
+    let api = Shared::at(&base)
+        .with_session(&session.token)
+        .on_wait(move |seconds| notes.waiting(seconds));
+    (Some(Box::new(api)), OFFLINE_HINT)
 }
 
 fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {
@@ -286,11 +312,11 @@ fn dump_replays(
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source, notes);
+    let (mut api, hint) = connect(source, notes);
     let read = pipeline::read(
         &pipeline_source(source, None),
         api.as_deref_mut().map(|api| api as &mut dyn Api),
-        OFFLINE_HINT,
+        hint,
         timings,
         events,
     )?;
@@ -313,11 +339,11 @@ fn show_lost(
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source, notes);
+    let (mut api, hint) = connect(source, notes);
     let read = pipeline::read(
         &pipeline_source(source, view.maps.as_deref()),
         api.as_deref_mut().map(|api| api as &mut dyn Api),
-        OFFLINE_HINT,
+        hint,
         timings,
         events,
     )?;
@@ -325,7 +351,7 @@ fn show_lost(
         view.maps.as_deref(),
         &read.scan,
         api.as_deref_mut().map(|api| api as &mut dyn Api),
-        OFFLINE_HINT,
+        hint,
         pipeline::unix_now(),
         timings,
         events,
@@ -383,12 +409,12 @@ fn show_potential(
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
-    let mut api = connect(source, notes)
-        .with_context(|| format!("the potential top needs the osu! API: {OFFLINE_HINT}"))?;
+    let (api, hint) = connect(source, notes);
+    let mut api = api.with_context(|| format!("the potential top needs the osu! API: {hint}"))?;
     let read = pipeline::read(
         &pipeline_source(source, maps),
         Some(api.as_mut() as &mut dyn Api),
-        OFFLINE_HINT,
+        hint,
         timings,
         events,
     )?;
@@ -399,7 +425,7 @@ fn show_potential(
         maps,
         &read.scan,
         Some(api.as_mut() as &mut dyn Api),
-        OFFLINE_HINT,
+        hint,
         pipeline::unix_now(),
         timings,
         events,
@@ -443,7 +469,24 @@ fn show_potential(
     Ok(())
 }
 
-fn login() -> Result<()> {
+fn log_in() -> Result<()> {
+    let path = setup::session_file().context("cannot find a folder for the settings")?;
+    let mut server = Server::new(Http::new(USER_AGENT), &shared::server_url());
+    let pending = login::begin(&server).context("cannot listen for the browser")?;
+    eprintln!(
+        "Log in with osu! in the browser. If it does not open, go to:\n  {}",
+        pending.url
+    );
+    if open::that(&pending.url).is_err() {
+        eprintln!("cannot open the browser; open the address above yourself");
+    }
+    let session = login::wait(&mut server, pending, login::LIMIT)?;
+    session::save(&path, &session)?;
+    eprintln!("logged in as {}", rows::printable(&session.username));
+    Ok(())
+}
+
+fn save_keys() -> Result<()> {
     let path = setup::credentials_file().context("cannot find a folder for the settings")?;
     eprintln!(
         "Create an OAuth application at https://osu.ppy.sh/home/account/edit (OAuth section, any name, callback URL http://localhost) and paste its keys."
@@ -473,14 +516,32 @@ fn login() -> Result<()> {
 }
 
 fn logout() -> Result<()> {
-    let path = setup::credentials_file().context("cannot find a folder for the settings")?;
-    if keys::delete(&path)? {
+    let keys_path = setup::credentials_file().context("cannot find a folder for the settings")?;
+    let session_path = setup::session_file().context("cannot find a folder for the settings")?;
+    if let Some(saved) = session::load(&session_path) {
+        let revoked = Server::new(Http::new(USER_AGENT), &shared::server_url())
+            .with_session(&saved.token)
+            .logout();
+        if let Err(error) = revoked {
+            eprintln!(
+                "cannot end the session on the server ({}); it expires by itself",
+                rows::printable(&error.to_string())
+            );
+        }
+    }
+    let logged_out = session::delete(&session_path)?;
+    if logged_out {
+        eprintln!("logged out of osu!");
+    }
+    let keys_deleted = keys::delete(&keys_path)?;
+    if keys_deleted {
         eprintln!(
             "keys deleted from {}",
-            rows::printable(&path.display().to_string())
+            rows::printable(&keys_path.display().to_string())
         );
-    } else {
-        eprintln!("no saved keys");
+    }
+    if !logged_out && !keys_deleted {
+        eprintln!("not logged in and no saved keys");
     }
     Ok(())
 }
@@ -494,10 +555,11 @@ fn write_json(mut writer: impl Write, value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+    use lost_scores_app::session::Session;
     use osu_api::Credentials;
 
-    use super::{Cli, client};
+    use super::{Cli, Command, LOGIN_HINT, OFFLINE_HINT, client};
     use crate::progress::Notes;
 
     #[test]
@@ -512,29 +574,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn without_keys_the_scan_goes_through_the_server() {
-        let api = client(None, false, None, Notes::default()).unwrap();
-        assert!(api.shared());
+    fn session() -> Session {
+        Session {
+            token: "t".into(),
+            osu_id: 7,
+            username: "p".into(),
+        }
     }
 
     #[test]
-    fn saved_keys_keep_the_own_client_unless_a_server_is_given() {
-        let own = client(Some(keys()), false, None, Notes::default()).unwrap();
-        assert!(!own.shared());
-        let server = client(
+    fn without_keys_or_session_nothing_is_asked_and_the_hint_says_to_log_in() {
+        let (api, hint) = client(None, None, false, None, Notes::default());
+        assert!(api.is_none());
+        assert_eq!(hint, LOGIN_HINT);
+    }
+
+    #[test]
+    fn a_saved_session_picks_the_shared_server() {
+        let (api, _) = client(None, Some(session()), false, None, Notes::default());
+        assert!(api.unwrap().shared());
+    }
+
+    #[test]
+    fn keys_still_win_over_a_session() {
+        let (own, _) = client(Some(keys()), Some(session()), false, None, Notes::default());
+        assert!(!own.unwrap().shared());
+        let server = Some("http://127.0.0.1:9");
+        let (shared, _) = client(
             Some(keys()),
+            Some(session()),
             false,
-            Some("http://127.0.0.1:9"),
+            server,
             Notes::default(),
-        )
-        .unwrap();
-        assert!(server.shared());
+        );
+        assert!(shared.unwrap().shared());
+        let (none, hint) = client(Some(keys()), None, false, server, Notes::default());
+        assert!(none.is_none());
+        assert_eq!(hint, LOGIN_HINT);
     }
 
     #[test]
     fn offline_goes_nowhere() {
-        assert!(client(Some(keys()), true, None, Notes::default()).is_none());
-        assert!(client(None, true, None, Notes::default()).is_none());
+        for (keys, session) in [(Some(keys()), Some(session())), (None, None)] {
+            let (api, hint) = client(keys, session, true, None, Notes::default());
+            assert!(api.is_none());
+            assert_eq!(hint, OFFLINE_HINT);
+        }
+    }
+
+    #[test]
+    fn login_keys_keeps_the_old_prompt() {
+        let parsed = Cli::try_parse_from(["lost-scores", "login", "--keys"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Login { keys: true })
+        ));
+        let parsed = Cli::try_parse_from(["lost-scores", "login"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Login { keys: false })
+        ));
     }
 }

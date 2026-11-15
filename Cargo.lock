@@ -2713,6 +2713,7 @@ dependencies = [
  "indicatif",
  "lost-scores-app",
  "lost-scores-core",
+ "open",
  "osu-api",
  "osu-formats",
  "rpassword",

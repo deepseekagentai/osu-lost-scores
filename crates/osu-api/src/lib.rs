@@ -62,7 +62,7 @@ pub enum ApiError {
     Busy { retry_after: u64 },
     #[error("the Lost Scores server is busy today; add your own API keys to scan now")]
     BusyToday,
-    #[error("log in with your osu! account first")]
+    #[error("your osu! login has expired; log in again")]
     LoginRequired,
 }
 
@@ -849,7 +849,10 @@ mod tests {
         let mut api = server(Fake::default().answer(401, required).answer(401, required));
         let maps = api.maps(&[1], &[]).unwrap_err();
         assert!(matches!(maps, ApiError::LoginRequired));
-        assert_eq!(maps.to_string(), "log in with your osu! account first");
+        assert_eq!(
+            maps.to_string(),
+            "your osu! login has expired; log in again"
+        );
         assert!(matches!(
             api.user_by(UserKey::Id, "7"),
             Err(ApiError::LoginRequired)

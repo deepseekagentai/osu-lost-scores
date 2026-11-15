@@ -22,7 +22,7 @@ The program is not signed yet, so the first start needs one more step:
 - **Windows:** SmartScreen may say "Windows protected your PC". Choose "More info", then "Run anyway". With Smart App Control turned on in Windows 11, an unsigned program cannot start at all and cannot be allowed one by one; that ends when the builds are signed.
 - **macOS 15 and newer:** the system says it cannot verify Lost Scores. Choose Done, open System Settings, Privacy & Security, and choose "Open Anyway" next to Lost Scores. On macOS 14 and older, Control-click Lost Scores, choose Open, then Open again. For the command line, run `xattr -d com.apple.quarantine lost-scores` once.
 
-You need osu!stable with your replays. Your own osu! API keys are optional: without them the program asks the Lost Scores server, which shares one map cache and one queue between all players. The program only reads the osu! folder and never changes it.
+You need osu!stable with your replays, and either your osu! account or the keys of your own osu! OAuth application. Logged in with osu!, the program asks the Lost Scores server, which shares one map cache and one queue between all players; with your own keys it asks the osu! API itself. The program only reads the osu! folder and never changes it.
 
 ## Window
 
@@ -68,8 +68,8 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 - `--all` also shows loved and unranked maps; `--sort date`, `--limit N` and `--json` change the output.
 - `lost-scores potential` shows your top 200 as it would be if ScoreV1 had kept your best plays: the potential pp and accuracy, and which lost plays would be in it.
 - `--check-missing` also finds lost plays on maps you no longer have in Songs. It downloads only the maps that can hold a lost play into the map cache; the first run takes a few minutes.
-- Without keys, your player and the statuses of your maps come from the Lost Scores server. Maps it already knows come back at once; new ones wait in its queue, which asks osu! for all players together within the osu! rate limit, and a wait counts down on the progress bar.
-- `lost-scores login` saves the keys of your own osu! OAuth application (create one at https://osu.ppy.sh/home/account/edit), and the program then asks the osu! API itself: the first run asks about the statuses and ranked dates of your maps, about 180 requests for a few thousand maps, and later runs only about new maps; statuses that can still change are asked again once a week. Long steps show a progress bar with the time left. `--offline` stays offline, `lost-scores logout` deletes the keys. `LOST_SCORES_CLIENT_ID` and `LOST_SCORES_CLIENT_SECRET` work instead of saved keys.
+- `lost-scores login` logs in with your osu! account in the browser; then your player and the statuses of your maps come from the Lost Scores server. Maps it already knows come back at once; new ones wait in its queue, which asks osu! for all players together within the osu! rate limit, and a wait counts down on the progress bar. The browser has to run on the same computer as the program; over SSH, use your own keys.
+- `lost-scores login --keys` saves the keys of your own osu! OAuth application (create one at https://osu.ppy.sh/home/account/edit), and the program then asks the osu! API itself: the first run asks about the statuses and ranked dates of your maps, about 180 requests for a few thousand maps, and later runs only about new maps; statuses that can still change are asked again once a week. Long steps show a progress bar with the time left. `--offline` stays offline, `lost-scores logout` logs out and deletes the keys. `LOST_SCORES_CLIENT_ID` and `LOST_SCORES_CLIENT_SECRET` work instead of saved keys.
 - `--osu-dir`, `--player` and `--songs-dir` override the detection. Options of a command go after it: `lost-scores potential --limit 100`.
 - `--timings` prints how long each step took.
 - `lost-scores scan --output replays.json` dumps every replay of the player with its beatmap and pp, for checks. For checks too, the table and `lost-scores potential` take a hidden `--maps <file>` that uses another map catalog instead of the saved one.
@@ -78,10 +78,11 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 
 The program has no telemetry. It goes online for these things and nothing else:
 
-- saving keys, in the window or with `lost-scores login`, checks them with the osu! API;
+- logging in opens osu!'s login page through the Lost Scores server, which keeps your osu! ID, your name and your earlier names, and the session of the program; the program keeps the session in its settings folder, and logging out ends it on the server;
+- saving keys, in the window or with `lost-scores login --keys`, checks them with the osu! API;
 - the window looks up your player when it starts, for the account card, and loads your avatar from a.ppy.sh;
 - a scan asks about your player, your online top and the statuses of your maps; the check for missing beatmap IDs also downloads the `.osu` files of the maps you no longer have from osu.ppy.sh;
-- with your keys these questions go to the osu! API; without them they go to the Lost Scores server at api.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes; while your maps wait in its queue it keeps a hash of your network address to take turns between players, and drops it when they are served;
+- with your keys these questions go to the osu! API; without them they go to the Lost Scores server at api.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes, and counts the requests of each account per day to share the queue fairly;
 - the results load the map covers from assets.ppy.sh;
 - "Check for updates" asks GitHub for the latest release;
 - the catbox button uploads the pictures of the shown scan to catbox.moe.
