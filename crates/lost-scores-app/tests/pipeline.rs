@@ -4,10 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{Isolated, Replay, isolate_environment, write};
+use lost_scores_app::history;
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    Api, Event, PlayerLookup, Source, Step, find, load_catalog, lost, potential, read,
-    refresh_statuses,
+    Api, Event, Lost, PlayerLookup, Source, Step, find, load_catalog, lost, potential, read,
+    refresh_statuses, saved, unix_now,
 };
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
@@ -769,6 +770,32 @@ fn potential_refuses_a_player_the_api_gave_no_statistics_for() {
     )
     .expect_err("potential must not invent a zero");
     assert!(error.to_string().contains("no statistics"), "{error}");
+}
+
+#[test]
+fn the_window_and_the_command_line_build_the_same_saved_scan() {
+    let player = Player {
+        id: 7,
+        names: vec!["Lemon".into(), "OldName".into()],
+        pp: Some(1000.0),
+        accuracy: Some(98.5),
+        global_rank: Some(12),
+    };
+    let found = Lost {
+        rows: Vec::new(),
+        total: 3,
+        ranked: 2,
+    };
+    let mut from = source(Path::new("/osu"), None);
+    from.check_missing = true;
+    let before = unix_now();
+    let scan = saved(&from, true, &player, found, None);
+    assert_eq!(scan.version, history::VERSION);
+    assert!((before..=unix_now()).contains(&scan.made_at));
+    assert_eq!((scan.player_id, scan.player_name.as_str()), (7, "Lemon"));
+    assert!(scan.include_all && scan.check_missing);
+    assert_eq!((scan.lost_total, scan.lost_ranked), (3, 2));
+    assert!(scan.lost.is_empty() && scan.potential.is_none());
 }
 
 #[test]

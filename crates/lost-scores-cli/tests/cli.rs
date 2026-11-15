@@ -127,6 +127,42 @@ fn a_session_from_another_server_is_not_sent() {
     assert!(log.contains("run `lost-scores login` first"), "{log}");
 }
 
+fn submit(home: &Path, extra: &[&str]) -> Output {
+    let osu = osu_folder(home);
+    let osu = osu.to_str().unwrap();
+    let mut args = vec!["submit", "--osu-dir", osu, "--player", "p"];
+    args.extend(extra);
+    lost_scores(home, &args)
+}
+
+#[test]
+fn submit_without_a_session_says_to_log_in() {
+    let home = tempfile::tempdir().unwrap();
+    save_keys(home.path());
+    let output = submit(home.path(), &[]);
+    let log = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(log.contains("run `lost-scores login` first"), "{log}");
+    assert!(
+        !home
+            .path()
+            .join("data")
+            .join("lost-scores")
+            .join("scans")
+            .exists()
+    );
+}
+
+#[test]
+fn submit_offline_says_to_drop_offline() {
+    let home = tempfile::tempdir().unwrap();
+    save_session(home.path(), "http://127.0.0.1:9");
+    let output = submit(home.path(), &["--offline"]);
+    let log = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(log.contains("run without --offline"), "{log}");
+}
+
 #[test]
 fn logout_deletes_the_session_and_the_keys() {
     let home = tempfile::tempdir().unwrap();

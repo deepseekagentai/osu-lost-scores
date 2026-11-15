@@ -9,12 +9,10 @@ use lost_scores_app::cache;
 use lost_scores_app::history::{self, SavedScan};
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    self, Api, Event, Lost, PlayerLookup, PotentialResult, Source, Step, find, load_catalog, lost,
-    potential, read, refresh_statuses,
+    self, Api, Event, PlayerLookup, Source, Step, find, load_catalog, lost, read, refresh_statuses,
 };
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
-use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::MapCatalog;
 use osu_api::ApiError;
 
@@ -158,10 +156,11 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     proceed!();
     let scores = find(&read.scan, &catalog, &mut timings);
     let found = lost(&scores, &catalog);
-    let result = potential_top(api, &player, &scores, &catalog, &mut timings, &mut events)?;
+    let result =
+        pipeline::potential_top(api, &player, &scores, &catalog, &mut timings, &mut events)?;
     proceed!();
     sink.send(Message::Saving);
-    let scan = saved(job, &player, found, result);
+    let scan = pipeline::saved(&job.source, job.include_all, &player, found, result);
     let folder = history::save(&job.scans_dir, &scan)?;
     let shown = scan.clone();
     if !sink.send(Message::Finished(Box::new(Finished {
@@ -183,39 +182,6 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     proceed!();
     sink.send(Message::Refreshed(refreshed));
     Ok(Outcome::Finished)
-}
-
-const NO_STATISTICS: &str =
-    "The osu! API sent no statistics for this player; the Potential Top is left out";
-
-fn potential_top(
-    api: &mut dyn Api,
-    player: &Player,
-    scores: &[LostScore<'_>],
-    catalog: &MapCatalog,
-    timings: &mut Timings,
-    events: &mut dyn FnMut(Event),
-) -> Result<Option<PotentialResult>> {
-    if player.pp.is_none() || player.accuracy.is_none() {
-        events(Event::Log(NO_STATISTICS.to_owned()));
-        return Ok(None);
-    }
-    potential(api, player, scores, catalog, timings, events).map(Some)
-}
-
-fn saved(job: &Job, player: &Player, found: Lost, result: Option<PotentialResult>) -> SavedScan {
-    SavedScan {
-        version: history::VERSION,
-        made_at: pipeline::unix_now(),
-        player_id: player.id,
-        player_name: player.names.first().cloned().unwrap_or_default(),
-        include_all: job.include_all,
-        check_missing: job.source.check_missing,
-        lost: found.rows,
-        lost_total: found.total,
-        lost_ranked: found.ranked,
-        potential: result,
-    }
 }
 
 struct Completed<'a> {
@@ -260,7 +226,7 @@ fn refresh(
     }
     let scores = find(scan, catalog, timings);
     let found = lost(&scores, catalog);
-    let result = match potential_top(api, player, &scores, catalog, timings, events) {
+    let result = match pipeline::potential_top(api, player, &scores, catalog, timings, events) {
         Ok(result) => result,
         Err(error) if expired(&error) => return Err(error),
         Err(error) => {
@@ -270,7 +236,7 @@ fn refresh(
             return Ok(None);
         }
     };
-    let updated = saved(job, player, found, result);
+    let updated = pipeline::saved(&job.source, job.include_all, player, found, result);
     match history::replace(folder, &updated) {
         Ok(()) => {
             create_images(job, &updated, folder, events, &mut HttpFetch::new());

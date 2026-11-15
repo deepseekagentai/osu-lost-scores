@@ -7,6 +7,7 @@ use jiff::Timestamp;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use lost_scores_core::files::write_atomic;
+use osu_api::Submission;
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::PotentialResult;
@@ -38,6 +39,17 @@ pub struct Sent {
     pub visibility: String,
     pub status: String,
     pub server: String,
+}
+
+impl Sent {
+    pub fn new(answer: &Submission, server: &str) -> Self {
+        Self {
+            id: answer.id.clone(),
+            visibility: answer.visibility.clone(),
+            status: answer.status.clone(),
+            server: server.trim_end_matches('/').to_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,6 +188,8 @@ mod tests {
     use std::cell::Cell;
     use std::path::PathBuf;
 
+    use osu_api::Submission;
+
     use super::{
         SavedScan, Sent, VERSION, forget, list, load, remember, remove, replace, save, size,
         submission,
@@ -296,12 +310,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = save(dir.path(), &scan(1_700_000_000)).unwrap();
         assert_eq!(submission(&folder, "https://api.test"), None);
-        let sent = Sent {
+        let answer = Submission {
             id: "abc".into(),
             visibility: "private".into(),
             status: "unverified".into(),
-            server: "https://api.test".into(),
         };
+        let sent = Sent::new(&answer, "https://api.test/");
+        assert_eq!(sent.server, "https://api.test");
         remember(&folder, &sent).unwrap();
         assert_eq!(submission(&folder, "https://api.test/"), Some(sent));
         assert_eq!(submission(&folder, "http://127.0.0.1:8787"), None);

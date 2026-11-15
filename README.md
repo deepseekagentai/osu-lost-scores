@@ -70,6 +70,7 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 - `--check-missing` also finds lost plays on maps you no longer have in Songs. It downloads only the maps that can hold a lost play into the map cache; the first run takes a few minutes.
 - `lost-scores login` logs in with your osu! account in the browser; then your player and the statuses of your maps come from the Lost Scores server. Maps it already knows come back at once; new ones wait in its queue, which asks osu! for all players together within the osu! rate limit, and a wait counts down on the progress bar. The browser has to run on the same computer as the program; over SSH, use your own keys.
 - `lost-scores login --keys` saves the keys of your own osu! OAuth application (create one at https://osu.ppy.sh/home/account/edit), and the program then asks the osu! API itself: the first run asks about the statuses and ranked dates of your maps, about 180 requests for a few thousand maps, and later runs only about new maps; statuses that can still change are asked again once a week. Long steps show a progress bar with the time left. `--offline` stays offline, `lost-scores logout` logs out and deletes the keys. `LOST_SCORES_CLIENT_ID` and `LOST_SCORES_CLIENT_SECRET` work instead of saved keys.
+- `lost-scores submit` scans like the window, keeps the scan in the history and sends it to your profile on the Lost Scores server, where only you see it; `--publish` also puts it in the Hall of Fame. It needs `lost-scores login`: a scan belongs to an osu! account, so your own keys are not enough. The server takes one new scan an hour from each account.
 - `--osu-dir`, `--player` and `--songs-dir` override the detection. Options of a command go after it: `lost-scores potential --limit 100`.
 - `--timings` prints how long each step took.
 - `lost-scores scan --output replays.json` dumps every replay of the player with its beatmap and pp, for checks. For checks too, the table and `lost-scores potential` take a hidden `--maps <file>` that uses another map catalog instead of the saved one.
@@ -85,9 +86,10 @@ The program has no telemetry. It goes online for these things and nothing else:
 - with your keys these questions go to the osu! API; without them they go to the Lost Scores server at lost.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes, and counts the requests of each account per day to share the queue fairly;
 - the results load the map covers from assets.ppy.sh;
 - "Check for updates" asks GitHub for the latest release;
-- the catbox button uploads the pictures of the shown scan to catbox.moe.
+- the catbox button uploads the pictures of the shown scan to catbox.moe;
+- sending a scan uploads it to the Lost Scores server: your player, your lost plays and the Potential Top. The server keeps it until you delete it and shows it to others only after you publish it.
 
-Your keys, settings and scans stay on your computer.
+Your keys and settings stay on your computer, and so do your scans unless you send them.
 
 ## Build from source
 

@@ -11,6 +11,7 @@ use std::thread;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use lost_scores_app::history::{self, Sent};
 use lost_scores_app::keys;
 use lost_scores_app::login;
 use lost_scores_app::online::{Online, USER_AGENT};
@@ -19,8 +20,9 @@ use lost_scores_app::rows;
 use lost_scores_app::session::{self, Session};
 use lost_scores_app::setup;
 use lost_scores_app::shared::{self, Shared};
+use lost_scores_app::submission;
 use lost_scores_app::timings::Timings;
-use osu_api::{Credentials, Http, Server, Transport};
+use osu_api::{Credentials, Http, Server, Submission, Transport};
 use serde::Serialize;
 
 use crate::dump::Dump;
@@ -106,6 +108,13 @@ enum Command {
         #[command(flatten)]
         source: Source,
     },
+    #[command(about = "Scan and send the scan to your profile on the Lost Scores server")]
+    Submit {
+        #[arg(long, help = "Also publish it to the Hall of Fame")]
+        publish: bool,
+        #[command(flatten)]
+        source: Source,
+    },
     #[command(
         about = "Log in with your osu! account in the browser to scan through the shared server"
     )]
@@ -129,7 +138,7 @@ enum Command {
     },
 }
 
-const EXAMPLES: [(&str, &str); 6] = [
+const EXAMPLES: [(&str, &str); 7] = [
     ("lost-scores", "lost plays on ranked maps"),
     (
         "lost-scores --all --sort date",
@@ -146,6 +155,10 @@ const EXAMPLES: [(&str, &str); 6] = [
     (
         "lost-scores login",
         "log in with osu! to scan through the shared server",
+    ),
+    (
+        "lost-scores submit --publish",
+        "send the scan to your profile and the Hall of Fame",
     ),
     (
         "lost-scores login --keys",
@@ -230,6 +243,10 @@ fn run(cli: Cli) -> Result<()> {
                 &mut timings,
                 &mut events,
             ),
+            Some(source),
+        ),
+        Some(Command::Submit { publish, source }) => (
+            submit(source, *publish, &notes, &mut timings, &mut events),
             Some(source),
         ),
         Some(Command::Login { keys }) => (if *keys { save_keys() } else { log_in() }, None),
@@ -471,6 +488,81 @@ fn show_potential(
     Ok(())
 }
 
+fn submit(
+    source: &Source,
+    publish: bool,
+    notes: &Notes,
+    timings: &mut Timings,
+    events: &mut dyn FnMut(Event),
+) -> Result<()> {
+    ensure!(
+        !source.offline,
+        "sending a scan needs the Lost Scores server: {OFFLINE_HINT}"
+    );
+    let base = source.server.clone().unwrap_or_else(shared::server_url);
+    let session = saved_session()
+        .filter(|session| session.server == base.trim_end_matches('/'))
+        .with_context(|| format!("sending a scan needs your osu! login: {LOGIN_HINT}"))?;
+    let scans_dir = history::scans_dir().context("cannot find a folder for the scans")?;
+    let (api, hint) = connect(source, notes);
+    let mut api = api.with_context(|| format!("sending a scan needs the osu! API: {hint}"))?;
+    let from = pipeline_source(source, None);
+    let read = pipeline::read(
+        &from,
+        Some(api.as_mut() as &mut dyn Api),
+        hint,
+        timings,
+        events,
+    )?;
+    let player = read
+        .player
+        .context("sending a scan needs the player's profile from the osu! API")?;
+    let mut catalog = pipeline::load_catalog(
+        None,
+        &read.scan,
+        Some(api.as_mut() as &mut dyn Api),
+        hint,
+        pipeline::unix_now(),
+        timings,
+        events,
+    )?;
+    pipeline::refresh_statuses(
+        None,
+        &mut catalog,
+        api.as_mut(),
+        pipeline::unix_now(),
+        timings,
+        events,
+    )?;
+    let scores = pipeline::find(&read.scan, &catalog, timings);
+    let found = pipeline::lost(&scores, &catalog);
+    let top = pipeline::potential_top(api.as_mut(), &player, &scores, &catalog, timings, events)?;
+    let include_all =
+        setup::config_file().is_some_and(|path| setup::load_settings(&path).include_all);
+    let scan = pipeline::saved(&from, include_all, &player, found, top);
+    let folder = history::save(&scans_dir, &scan)?;
+    let mut server = Server::new(Http::new(USER_AGENT), &base).with_session(&session.token);
+    let mut sent = server.submit(&submission::body(&scan)?)?;
+    history::remember(&folder, &Sent::new(&sent, server.base()))?;
+    if publish {
+        let id = sent.id.clone();
+        sent = server
+            .publish(&id)
+            .with_context(|| format!("scan {id} was sent but stays private"))?;
+        history::remember(&folder, &Sent::new(&sent, server.base()))?;
+    }
+    println!("sent scan {}: {}", sent.id, state(&sent));
+    Ok(())
+}
+
+fn state(sent: &Submission) -> String {
+    if sent.visibility == "public" {
+        format!("published, {}", sent.status)
+    } else {
+        sent.visibility.clone()
+    }
+}
+
 fn log_in() -> Result<()> {
     let path = setup::session_file().context("cannot find a folder for the settings")?;
     let server = Server::new(Http::new(USER_AGENT), &shared::server_url());
@@ -583,6 +675,20 @@ mod tests {
     #[test]
     fn arguments_are_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn submit_publish_parses() {
+        let cli = Cli::try_parse_from(["lost-scores", "submit", "--publish"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Submit { publish: true, .. })
+        ));
+        let cli = Cli::try_parse_from(["lost-scores", "submit"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Submit { publish: false, .. })
+        ));
     }
 
     fn keys() -> Credentials {

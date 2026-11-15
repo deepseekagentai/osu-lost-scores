@@ -12,6 +12,7 @@ use lost_scores_core::{Scan, Stage, lost as find_lost, pp};
 use osu_api::{ApiError, Score};
 use serde::{Deserialize, Serialize};
 
+use crate::history::{self, SavedScan};
 use crate::online::Player;
 use crate::rows::{
     LostRow, OnlineRow, PotentialRow, online_rows, potential_rows, printable, rows as lost_rows,
@@ -416,6 +417,45 @@ pub fn lost(found: &[LostScore<'_>], catalog: &MapCatalog) -> Lost {
         total: found.len(),
         ranked: found.iter().filter(|l| l.status.gives_pp()).count(),
         rows: lost_rows(found, catalog),
+    }
+}
+
+const NO_STATISTICS: &str =
+    "The osu! API sent no statistics for this player; the Potential Top is left out";
+
+pub fn potential_top(
+    api: &mut dyn Api,
+    player: &Player,
+    found: &[LostScore<'_>],
+    catalog: &MapCatalog,
+    timings: &mut Timings,
+    events: &mut dyn FnMut(Event),
+) -> Result<Option<PotentialResult>> {
+    if player.pp.is_none() || player.accuracy.is_none() {
+        events(Event::Log(NO_STATISTICS.to_owned()));
+        return Ok(None);
+    }
+    potential(api, player, found, catalog, timings, events).map(Some)
+}
+
+pub fn saved(
+    source: &Source,
+    include_all: bool,
+    player: &Player,
+    found: Lost,
+    top: Option<PotentialResult>,
+) -> SavedScan {
+    SavedScan {
+        version: history::VERSION,
+        made_at: unix_now(),
+        player_id: player.id,
+        player_name: player.names.first().cloned().unwrap_or_default(),
+        include_all,
+        check_missing: source.check_missing,
+        lost: found.rows,
+        lost_total: found.total,
+        lost_ranked: found.ranked,
+        potential: top,
     }
 }
 
