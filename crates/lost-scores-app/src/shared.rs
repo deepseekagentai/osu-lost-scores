@@ -263,11 +263,11 @@ mod tests {
             self.next()
         }
 
-        fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError> {
-            self.requests
-                .lock()
-                .unwrap()
-                .push(format!("POST {url} {}", String::from_utf8_lossy(body)));
+        fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
+            self.requests.lock().unwrap().push(format!(
+                "POST {url} bearer={token} {}",
+                String::from_utf8_lossy(body)
+            ));
             self.next()
         }
     }
@@ -315,8 +315,8 @@ mod tests {
         assert_eq!(
             fake.requests(),
             [
-                r#"POST https://api.test/v1/maps {"ids":[1,2],"md5s":[]}"#,
-                r#"POST https://api.test/v1/maps {"ids":[2],"md5s":[]}"#,
+                r#"POST https://api.test/v1/maps bearer= {"ids":[1,2],"md5s":[]}"#,
+                r#"POST https://api.test/v1/maps bearer= {"ids":[2],"md5s":[]}"#,
             ]
         );
     }
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(
             fake.requests(),
             [format!(
-                r#"POST https://api.test/v1/maps {{"ids":[],"md5s":["{}","{}"]}}"#,
+                r#"POST https://api.test/v1/maps bearer= {{"ids":[],"md5s":["{}","{}"]}}"#,
                 md5s[0], md5s[1]
             )]
         );

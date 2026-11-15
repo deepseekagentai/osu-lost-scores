@@ -27,7 +27,7 @@ pub struct Response {
 pub trait Transport {
     fn post_form(&mut self, url: &str, form: &[(&str, &str)]) -> Result<Response, ApiError>;
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
-    fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError>;
+    fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +62,8 @@ pub enum ApiError {
     Busy { retry_after: u64 },
     #[error("the Lost Scores server is busy today; add your own API keys to scan now")]
     BusyToday,
+    #[error("log in with your osu! account first")]
+    LoginRequired,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -316,6 +318,19 @@ struct MapsQuestion<'a> {
     md5s: &'a [String],
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct Login {
+    pub token: String,
+    pub osu_id: u32,
+    pub username: String,
+}
+
+#[derive(Serialize)]
+struct Redeem<'a> {
+    code: &'a str,
+    verifier: &'a str,
+}
+
 #[derive(Deserialize)]
 struct ServerError {
     #[serde(default)]
@@ -327,6 +342,7 @@ struct ServerError {
 pub struct Server<T> {
     transport: T,
     base: String,
+    session: String,
 }
 
 impl<T: Transport> Server<T> {
@@ -334,17 +350,59 @@ impl<T: Transport> Server<T> {
         Self {
             transport,
             base: base.trim_end_matches('/').to_owned(),
+            session: String::new(),
+        }
+    }
+
+    pub fn with_session(mut self, token: &str) -> Self {
+        self.session = token.to_owned();
+        self
+    }
+
+    pub fn login_url(&self, challenge: &str, port: u16) -> String {
+        format!(
+            "{}/v1/auth/start?challenge={}&port={port}",
+            self.base,
+            encode(challenge)
+        )
+    }
+
+    pub fn redeem(&mut self, code: &str, verifier: &str) -> Result<Option<Login>, ApiError> {
+        let url = format!("{}/v1/auth/token", self.base);
+        let body = to_json(&url, &Redeem { code, verifier })?;
+        let response = self
+            .transport
+            .post_json(&url, &body, "")
+            .map_err(unreached)?;
+        match response.status {
+            200 => parse(&url, &response.body).map(Some),
+            410 => Ok(None),
+            status => Err(ApiError::Status { status, url }),
+        }
+    }
+
+    pub fn logout(&mut self) -> Result<(), ApiError> {
+        if self.session.is_empty() {
+            return Ok(());
+        }
+        let url = format!("{}/api/auth/logout", self.base);
+        let response = self
+            .transport
+            .post_json(&url, b"", &self.session)
+            .map_err(unreached)?;
+        match response.status {
+            200..=299 => Ok(()),
+            status => Err(ApiError::Status { status, url }),
         }
     }
 
     pub fn maps(&mut self, ids: &[u32], md5s: &[String]) -> Result<MapsAnswer, ApiError> {
         let url = format!("{}/v1/maps", self.base);
-        let body =
-            serde_json::to_vec(&MapsQuestion { ids, md5s }).map_err(|source| ApiError::Format {
-                url: url.clone(),
-                source,
-            })?;
-        let response = self.transport.post_json(&url, &body).map_err(unreached)?;
+        let body = to_json(&url, &MapsQuestion { ids, md5s })?;
+        let response = self
+            .transport
+            .post_json(&url, &body, &self.session)
+            .map_err(unreached)?;
         match answer(&url, response)? {
             Some(body) => parse(&url, &body),
             None => Err(ApiError::Status { status: 404, url }),
@@ -385,12 +443,19 @@ impl<T: Transport> Server<T> {
     }
 
     fn get_json<D: DeserializeOwned>(&mut self, url: &str) -> Result<Option<D>, ApiError> {
-        let response = self.transport.get(url, "").map_err(unreached)?;
+        let response = self.transport.get(url, &self.session).map_err(unreached)?;
         match answer(url, response)? {
             Some(body) => parse(url, &body).map(Some),
             None => Ok(None),
         }
     }
+}
+
+fn to_json<S: Serialize>(url: &str, value: &S) -> Result<Vec<u8>, ApiError> {
+    serde_json::to_vec(value).map_err(|source| ApiError::Format {
+        url: url.into(),
+        source,
+    })
 }
 
 fn unreached(error: ApiError) -> ApiError {
@@ -418,6 +483,13 @@ fn answer(url: &str, response: Response) -> Result<Option<Vec<u8>>, ApiError> {
             == Some("busy_today") =>
         {
             Err(ApiError::BusyToday)
+        }
+        401 if told(&response.body)
+            .and_then(|error| error.error)
+            .as_deref()
+            == Some("login_required") =>
+        {
+            Err(ApiError::LoginRequired)
         }
         status => Err(ApiError::Status {
             status,
@@ -493,15 +565,18 @@ impl Transport for Http {
         read(request.call().map_err(network)?)
     }
 
-    fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError> {
-        let response = self
+    fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
+        let request = self
             .agent
             .post(url)
             .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .send(body)
-            .map_err(network)?;
-        read(response)
+            .header("Content-Type", "application/json");
+        let request = if token.is_empty() {
+            request
+        } else {
+            request.header("Authorization", format!("Bearer {token}"))
+        };
+        read(request.send(body).map_err(network)?)
     }
 }
 
@@ -562,7 +637,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ApiError, Client, Credentials, Response, Score, ScoreBeatmap, ScoreBeatmapset,
+        ApiError, Client, Credentials, Login, Response, Score, ScoreBeatmap, ScoreBeatmapset,
         ScoreStatistics, Server, Transport, User, UserKey, UserStatistics, unix_time,
     };
 
@@ -596,9 +671,11 @@ mod tests {
             Ok(self.answers.pop_front().expect("no scripted answer"))
         }
 
-        fn post_json(&mut self, url: &str, body: &[u8]) -> Result<Response, ApiError> {
-            self.requests
-                .push(format!("POST {url} {}", String::from_utf8_lossy(body)));
+        fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
+            self.requests.push(format!(
+                "POST {url} bearer={token} {}",
+                String::from_utf8_lossy(body)
+            ));
             Ok(self.answers.pop_front().expect("no scripted answer"))
         }
     }
@@ -618,7 +695,7 @@ mod tests {
             Err(ApiError::Network("refused".into()))
         }
 
-        fn post_json(&mut self, _: &str, _: &[u8]) -> Result<Response, ApiError> {
+        fn post_json(&mut self, _: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
             Err(ApiError::Network("refused".into()))
         }
     }
@@ -658,7 +735,7 @@ mod tests {
         assert_eq!(answer.retry_after, Some(5));
         assert_eq!(
             api.transport.requests[0],
-            r#"POST https://api.test/v1/maps {"ids":[1,2,3],"md5s":["abc"]}"#
+            r#"POST https://api.test/v1/maps bearer= {"ids":[1,2,3],"md5s":["abc"]}"#
         );
     }
 
@@ -712,6 +789,90 @@ mod tests {
             api.transport.requests[0],
             "GET https://osu.ppy.sh/osu/5 bearer="
         );
+    }
+
+    #[test]
+    fn the_session_goes_to_the_server_and_never_to_osu_files() {
+        let fake = Fake::default()
+            .answer(200, r#"{"beatmaps":[]}"#)
+            .answer(
+                200,
+                r#"{"id":7,"username":"Some Name","previous_usernames":[],"statistics":null}"#,
+            )
+            .answer(200, "[]")
+            .answer(200, "osu file format v14");
+        let mut api = server(fake).with_session("s3cret");
+        api.maps(&[1], &[]).unwrap();
+        api.user_by(UserKey::Id, "7").unwrap();
+        api.best_scores(7, 0).unwrap();
+        api.osu_file(5).unwrap();
+        assert_eq!(
+            api.transport.requests,
+            [
+                r#"POST https://api.test/v1/maps bearer=s3cret {"ids":[1],"md5s":[]}"#,
+                "GET https://api.test/v1/osu/users/7/osu?key=id bearer=s3cret",
+                "GET https://api.test/v1/osu/users/7/scores/best?mode=osu&limit=100&offset=0 bearer=s3cret",
+                "GET https://osu.ppy.sh/osu/5 bearer=",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_redeem_reads_the_session_or_expired() {
+        let fake = Fake::default()
+            .answer(200, r#"{"token":"tok","osu_id":7,"username":"Some Name"}"#)
+            .answer(410, r#"{"error":"login_expired"}"#)
+            .answer(400, r#"{"error":"bad_request"}"#);
+        let mut api = server(fake);
+        assert_eq!(
+            api.redeem("code1", "verifier1").unwrap(),
+            Some(Login {
+                token: "tok".into(),
+                osu_id: 7,
+                username: "Some Name".into(),
+            })
+        );
+        assert_eq!(api.redeem("code2", "verifier2").unwrap(), None);
+        assert!(matches!(
+            api.redeem("code3", "verifier3"),
+            Err(ApiError::Status { status: 400, .. })
+        ));
+        assert_eq!(
+            api.transport.requests[0],
+            r#"POST https://api.test/v1/auth/token bearer= {"code":"code1","verifier":"verifier1"}"#
+        );
+    }
+
+    #[test]
+    fn a_401_from_the_server_asks_to_log_in() {
+        let required = r#"{"error":"login_required"}"#;
+        let mut api = server(Fake::default().answer(401, required).answer(401, required));
+        let maps = api.maps(&[1], &[]).unwrap_err();
+        assert!(matches!(maps, ApiError::LoginRequired));
+        assert_eq!(maps.to_string(), "log in with your osu! account first");
+        assert!(matches!(
+            api.user_by(UserKey::Id, "7"),
+            Err(ApiError::LoginRequired)
+        ));
+    }
+
+    #[test]
+    fn the_login_url_carries_the_challenge_and_the_port() {
+        assert_eq!(
+            server(Fake::default()).login_url("ab12", 53682),
+            "https://api.test/v1/auth/start?challenge=ab12&port=53682"
+        );
+    }
+
+    #[test]
+    fn logging_out_revokes_the_session_on_the_server() {
+        let mut api = server(Fake::default().answer(204, "")).with_session("tok");
+        api.logout().unwrap();
+        assert_eq!(
+            api.transport.requests,
+            ["POST https://api.test/api/auth/logout bearer=tok "]
+        );
+        server(Fake::default()).logout().unwrap();
     }
 
     const TOKEN: &str = r#"{"token_type":"Bearer","expires_in":86400,"access_token":"t1"}"#;
