@@ -103,7 +103,7 @@ On Linux the window needs the fontconfig development files (`libfontconfig1-dev`
 - [Font Awesome Free](https://fontawesome.com) (CC BY 4.0), the icons.
 - [Fredoka](https://fonts.google.com/specimen/Fredoka) (OFL 1.1, the licence is in `crates/lost-scores-gui/assets/OFL.txt`).
 - [Slint](https://slint.dev) (GPLv3, or the royalty-free licence with attribution), the window toolkit.
-- [osu-web](https://github.com/ppy/osu-web) artwork © ppy Pty Ltd (AGPL-3.0), the grade and mod icons.
+- [osu-web](https://github.com/ppy/osu-web) artwork © ppy Pty Ltd (AGPL-3.0), the grade and mod icons and the guest avatar.
 
 ## License
 

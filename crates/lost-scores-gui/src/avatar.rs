@@ -7,6 +7,8 @@ use crate::share::rasters::{Fetch, HttpFetch, cached, rounded_square};
 
 const CORNER_RATIO: f32 = 16.0 / 120.0;
 
+pub const GUEST: &[u8] = include_bytes!("../assets/osu-web/avatar-guest.png");
+
 pub fn avatar_pixels(logical: f32, scale: f32) -> u32 {
     (logical * scale).round() as u32
 }

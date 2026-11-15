@@ -22,7 +22,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 use crate::account::{
     Account, Field, KeysError, Profile, check_fields, keys_error, lookup_failure, parse_account,
 };
-use crate::avatar::{avatar_pixels, fetch, render_avatar};
+use crate::avatar::{GUEST, avatar_pixels, fetch, render_avatar};
 use crate::clipboard::{Clipboard, Request};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
@@ -239,6 +239,7 @@ impl Session {
         self.bind(&state);
         self.bind_extras(&state);
         self.load_newest();
+        self.refresh_avatar();
         *self.credentials.borrow_mut() = stored_credentials();
         state.set_own_keys(self.credentials.borrow().is_some());
         self.adopt_player();
@@ -1138,9 +1139,7 @@ impl Session {
         let name = profile.username.clone();
         self.change_settings(|settings| settings.player = Some(name.clone()));
         self.epoch.set(self.epoch.get() + 1);
-        *self.avatar.borrow_mut() = None;
-        state.set_has_avatar(false);
-        self.rendered.set(0);
+        self.show_guest();
         state.set_connected(true);
         state.set_user_name(name.into());
         self.show_profile(profile);
@@ -1233,26 +1232,36 @@ impl Session {
         }
     }
 
+    fn show_guest(&self) {
+        *self.avatar.borrow_mut() = None;
+        self.rendered.set(0);
+        self.refresh_avatar();
+    }
+
     fn refresh_avatar(&self) {
         let pixels = avatar_pixels(AVATAR_LOGICAL, self.window.window().scale_factor());
         if pixels == self.rendered.get() {
             return;
         }
-        let rendered = match self.avatar.borrow().as_ref() {
-            Some(bytes) => render_avatar(bytes, pixels),
-            None => return,
-        };
-        match rendered {
-            Ok(buffer) => {
-                let state = self.window.global::<State>();
-                state.set_avatar(slint::Image::from_rgba8(buffer));
-                state.set_has_avatar(true);
-                self.rendered.set(pixels);
-            }
-            Err(error) => {
+        let own = self
+            .avatar
+            .borrow()
+            .as_deref()
+            .map(|bytes| render_avatar(bytes, pixels));
+        let rendered = match own {
+            Some(Ok(buffer)) => Ok(buffer),
+            Some(Err(error)) => {
                 *self.avatar.borrow_mut() = None;
                 self.log(&format!("Could not show the avatar: {error:#}"));
+                render_avatar(GUEST, pixels)
             }
+            None => render_avatar(GUEST, pixels),
+        };
+        if let Ok(buffer) = rendered {
+            let state = self.window.global::<State>();
+            state.set_avatar(slint::Image::from_rgba8(buffer));
+            state.set_has_avatar(true);
+            self.rendered.set(pixels);
         }
     }
 
@@ -1608,9 +1617,7 @@ impl Session {
         state.set_own_keys(false);
         self.epoch.set(self.epoch.get() + 1);
         self.player.set(None);
-        *self.avatar.borrow_mut() = None;
-        self.rendered.set(0);
-        state.set_has_avatar(false);
+        self.show_guest();
         state.set_stats_ready(false);
         self.log("Removed the saved API keys; scans go through the shared Lost Scores server");
         let name = state.get_user_name().to_string();
@@ -1947,6 +1954,30 @@ mod tests {
             window.global::<State>().get_status(),
             "Waiting in the shared queue: 42 s"
         );
+    }
+
+    fn middle_pixel(state: &State<'_>) -> (u8, u8, u8) {
+        let image = state.get_avatar();
+        let buffer = image.to_rgba8().unwrap();
+        let size = buffer.width() as usize;
+        let pixel = buffer.as_slice()[size / 2 * size + size / 2];
+        (pixel.r, pixel.g, pixel.b)
+    }
+
+    #[test]
+    fn the_guest_avatar_stands_in_until_the_player_avatar_arrives() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        session.refresh_avatar();
+        assert!(state.get_has_avatar());
+        let (r, g, b) = middle_pixel(&state);
+        assert!(r.abs_diff(g) < 12 && g.abs_diff(b) < 12, "{r} {g} {b}");
+        session.player.set(Some(2));
+        session.avatar_arrived(2, Some(png()));
+        assert_eq!(middle_pixel(&state), (200, 120, 40));
+        session.log_out();
+        let (r, g, b) = middle_pixel(&state);
+        assert!(r.abs_diff(g) < 12 && g.abs_diff(b) < 12, "{r} {g} {b}");
     }
 
     #[test]

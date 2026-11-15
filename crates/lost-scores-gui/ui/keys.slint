@@ -24,7 +24,7 @@ component Label inherits HorizontalLayout {
     Rectangle { horizontal-stretch: 1; }
     if root.missing: Text {
         text: "required";
-        color: T.down;
+        color: T.need;
         font-size: 12px;
         font-weight: 500;
         vertical-alignment: center;
@@ -42,7 +42,7 @@ component TextField inherits Rectangle {
     border-radius: 8px;
     background: T.field;
     border-width: 2px;
-    border-color: root.missing ? T.down : (input.has-focus || area.has-hover ? T.acc : transparent);
+    border-color: root.missing ? T.need : (input.has-focus || area.has-hover ? T.acc : transparent);
     animate border-color { duration: 150ms; }
     area := TouchArea {
         mouse-cursor: MouseCursor.text;
@@ -188,7 +188,7 @@ export component KeysSheet inherits Rectangle {
             }
             if State.keys-error != "": Text {
                 text: State.keys-error;
-                color: T.down;
+                color: T.need;
                 font-size: 13px;
                 font-weight: 500;
                 wrap: word-wrap;

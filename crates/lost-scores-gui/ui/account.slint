@@ -65,34 +65,67 @@ component NameField inherits Rectangle {
     }
 }
 
-component Connect inherits VerticalLayout {
-    padding: 24px;
-    spacing: 10px;
-    Text {
-        text: "Connect your account";
-        color: #ffffff;
-        font-size: 22px;
-        font-weight: 600;
-        horizontal-alignment: center;
+component Avatar inherits VerticalLayout {
+    alignment: start;
+    Rectangle {
+        width: 120px;
+        height: 120px;
+        Rectangle {
+            x: round(parent.absolute-position.x / 4px) * 4px - parent.absolute-position.x;
+            y: round(parent.absolute-position.y / 4px) * 4px - parent.absolute-position.y;
+            width: 120px;
+            height: 120px;
+            border-radius: 16px;
+            background: T.field;
+            if State.has-avatar: Image {
+                x: 0px;
+                y: 0px;
+                source: State.avatar;
+                width: 120px;
+                height: 120px;
+                image-fit: fill;
+                image-rendering: pixelated;
+            }
+        }
     }
-    Rectangle { height: 4px; }
-    PrimaryButton {
-        text: "Log in with osu!";
-        enabled: false;
-        tip: "Arrives with the Lost Scores server";
-    }
-    Text {
-        text: "or";
-        color: T.k;
-        font-size: 14px;
-        horizontal-alignment: center;
-    }
-    SecondaryButton {
-        text: "Use Custom API Keys";
-        enabled: !State.busy;
-        tip: "For advanced users with their own osu! API credentials";
-        clicked => {
-            State.open-keys();
+}
+
+component Connect inherits HorizontalLayout {
+    padding-left: 20px;
+    padding-right: 26px;
+    padding-top: 20px;
+    padding-bottom: 20px;
+    spacing: 20px;
+    Avatar { }
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        Text {
+            text: "Connect your account";
+            color: #ffffff;
+            font-size: 22px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+        Rectangle { height: 4px; }
+        PrimaryButton {
+            text: "Log in with osu!";
+            enabled: false;
+            tip: "Arrives with the Lost Scores server";
+        }
+        Text {
+            text: "or";
+            color: T.k;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
+        SecondaryButton {
+            text: "Use Custom API Keys";
+            enabled: !State.busy;
+            tip: "For advanced users with their own osu! API credentials";
+            clicked => {
+                State.open-keys();
+            }
         }
     }
 }
@@ -103,30 +136,7 @@ component Profile inherits HorizontalLayout {
     padding-top: 20px;
     padding-bottom: 20px;
     spacing: 20px;
-    VerticalLayout {
-        alignment: start;
-        Rectangle {
-            width: 120px;
-            height: 120px;
-            frame := Rectangle {
-                x: round(parent.absolute-position.x / 4px) * 4px - parent.absolute-position.x;
-                y: round(parent.absolute-position.y / 4px) * 4px - parent.absolute-position.y;
-                width: 120px;
-                height: 120px;
-                border-radius: 16px;
-                background: T.field;
-                if State.has-avatar: Image {
-                    x: 0px;
-                    y: 0px;
-                    source: State.avatar;
-                    width: 120px;
-                    height: 120px;
-                    image-fit: fill;
-                    image-rendering: pixelated;
-                }
-            }
-        }
-    }
+    Avatar { }
     VerticalLayout {
         spacing: 12px;
         HorizontalLayout {

@@ -11,7 +11,7 @@ use lost_scores_app::pipeline::PotentialResult;
 use lost_scores_app::rows::{Hits, LostRow, OnlineRow, PotentialRow};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
-use lost_scores_gui::avatar::render_avatar;
+use lost_scores_gui::avatar::{GUEST, render_avatar};
 use lost_scores_gui::table::{Column, Tab, Table, when};
 use lost_scores_gui::view::{RowsModel, foot};
 use lost_scores_gui::{LogEntry, MainWindow, State};
@@ -74,6 +74,11 @@ fn avatar() -> slint::Image {
     slint::Image::from_rgba8(render_avatar(&png, pixels).unwrap())
 }
 
+fn guest() -> slint::Image {
+    let pixels = (120.0 * SCALE) as u32;
+    slint::Image::from_rgba8(render_avatar(GUEST, pixels).unwrap())
+}
+
 fn log(lines: &[(&str, &str)]) -> ModelRc<LogEntry> {
     ModelRc::new(VecModel::from(
         lines
@@ -102,6 +107,8 @@ fn render_snapshots() {
         });
     let state = window.global::<State>();
     state.set_osu_dir("/home/player/games/osu!".into());
+    state.set_avatar(guest());
+    state.set_has_avatar(true);
 
     draw(&surface, &dir.join("1-main-disconnected.png"));
 
