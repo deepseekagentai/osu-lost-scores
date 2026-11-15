@@ -24,7 +24,6 @@ use crate::dump::Dump;
 use crate::progress::{Notes, Printer};
 
 const OFFLINE_HINT: &str = "run without --offline";
-const QUIET_WAIT_S: u64 = 10;
 
 #[derive(Parser)]
 #[command(
@@ -264,13 +263,9 @@ fn client(
         return Some(Box::new(Online::new(keys.clone())));
     }
     let base = server.map_or_else(shared::server_url, str::to_owned);
-    Some(Box::new(Shared::at(&base).on_wait(move |seconds| {
-        if seconds >= QUIET_WAIT_S {
-            notes.say(&format!(
-                "waiting in the shared queue of the Lost Scores server: about {seconds} s"
-            ));
-        }
-    })))
+    Some(Box::new(
+        Shared::at(&base).on_wait(move |seconds| notes.waiting(seconds)),
+    ))
 }
 
 fn pipeline_source(source: &Source, maps: Option<&Path>) -> pipeline::Source {

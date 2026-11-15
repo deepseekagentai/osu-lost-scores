@@ -3,24 +3,33 @@ use std::sync::{Arc, Mutex, PoisonError};
 use indicatif::{ProgressBar, ProgressStyle};
 use lost_scores_app::pipeline::{Event, Step};
 
+#[derive(Default)]
+struct Shown {
+    bar: Option<(&'static str, ProgressBar)>,
+    last_wait: Option<u64>,
+}
+
 #[derive(Clone, Default)]
-pub struct Notes(Arc<Mutex<Option<ProgressBar>>>);
+pub struct Notes(Arc<Mutex<Shown>>);
 
 impl Notes {
-    pub fn say(&self, line: &str) {
-        match self
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            Some(bar) => bar.suspend(|| eprintln!("{line}")),
-            None => eprintln!("{line}"),
+    pub fn waiting(&self, seconds: u64) {
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let fresh = shown.last_wait.is_none_or(|last| seconds > last);
+        shown.last_wait = Some(seconds);
+        match &shown.bar {
+            Some((label, bar)) => bar.set_message(format!("{label}, shared queue: {seconds} s")),
+            None if fresh => {
+                eprintln!("waiting in the shared queue of the Lost Scores server: {seconds} s");
+            }
+            None => {}
         }
     }
 
-    fn show(&self, bar: Option<ProgressBar>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = bar;
+    fn show(&self, bar: Option<(&'static str, ProgressBar)>) {
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        shown.bar = bar;
+        shown.last_wait = None;
     }
 }
 
@@ -60,12 +69,13 @@ impl Printer {
                 }
                 if self.bar.is_none() {
                     let created = bar(label);
-                    self.notes.show(Some(created.clone()));
+                    self.notes.show(Some((label, created.clone())));
                     self.bar = Some((step, created));
                 }
                 let Some((_, bar)) = &self.bar else {
                     return;
                 };
+                bar.set_message(label);
                 bar.update(|state| {
                     state.set_len(total as u64);
                     state.set_pos(done as u64);
@@ -109,6 +119,31 @@ mod tests {
     use lost_scores_app::pipeline::{Event, Step};
 
     use super::Printer;
+
+    fn message(printer: &Printer) -> String {
+        printer.bar.as_ref().unwrap().1.message()
+    }
+
+    #[test]
+    fn a_queue_wait_shows_on_the_bar_until_the_next_request() {
+        let mut printer = Printer::new();
+        let notes = printer.notes();
+        printer.handle(Event::Progress {
+            step: Step::Catalog,
+            done: 0,
+            total: 5,
+        });
+        notes.waiting(12);
+        assert_eq!(message(&printer), "map statuses, shared queue: 12 s");
+        notes.waiting(11);
+        assert_eq!(message(&printer), "map statuses, shared queue: 11 s");
+        printer.handle(Event::Progress {
+            step: Step::Catalog,
+            done: 1,
+            total: 5,
+        });
+        assert_eq!(message(&printer), "map statuses");
+    }
 
     #[test]
     fn a_finished_run_leaves_no_bar_behind() {

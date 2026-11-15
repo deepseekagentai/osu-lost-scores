@@ -58,6 +58,7 @@ pub fn fetch_missing<E, S: MapSource<Error = E> + OsuFiles<Error = E> + ?Sized>(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<MissingReport, MissingError<E>> {
     let mut report = MissingReport::default();
+    progress(0, md5s.len());
     for (done, md5) in md5s.iter().enumerate() {
         if !is_md5(md5) {
             progress(done + 1, md5s.len());
@@ -426,7 +427,7 @@ mod tests {
             |count, total| done.push((count, total)),
         )
         .unwrap();
-        assert_eq!(done, [(1, 2), (2, 2)]);
+        assert_eq!(done, [(0, 2), (1, 2), (2, 2)]);
     }
 
     fn old_entry(checked_at: Option<i64>) -> MapInfo {

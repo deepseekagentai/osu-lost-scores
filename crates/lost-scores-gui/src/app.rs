@@ -1938,7 +1938,7 @@ mod tests {
         session.handle(Message::Queue(42));
         assert_eq!(
             window.global::<State>().get_status(),
-            "Waiting in the shared queue: about 42 s"
+            "Waiting in the shared queue: 42 s"
         );
     }
 

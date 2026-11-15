@@ -87,8 +87,10 @@ impl<T: Transport> Shared<T> {
                 retry_after: seconds,
             });
         }
-        (self.notice)(seconds);
-        (self.sleep)(pause);
+        for left in (1..=seconds).rev() {
+            (self.notice)(left);
+            (self.sleep)(Duration::from_secs(1));
+        }
         *idle += pause;
         Ok(())
     }
@@ -307,8 +309,9 @@ mod tests {
         let ids: Vec<u32> = maps.iter().filter_map(|map| map.info.beatmap_id).collect();
         assert_eq!(ids, [1, 2]);
         assert_eq!(maps[0].info.status, MapStatus::Ranked);
-        assert_eq!(*notices.lock().unwrap(), [9]);
-        assert_eq!(*sleeps.lock().unwrap(), [Duration::from_secs(9)]);
+        assert_eq!(notices.lock().unwrap()[0], 9);
+        let waited: Duration = sleeps.lock().unwrap().iter().sum();
+        assert_eq!(waited, Duration::from_secs(9));
         assert_eq!(
             fake.requests(),
             [
@@ -339,7 +342,8 @@ mod tests {
             .answer(200, &answer(&[2], &[], None));
         let (mut api, _, sleeps) = shared(&fake);
         assert_eq!(api.batch(&[1, 2]).unwrap().len(), 2);
-        assert_eq!(sleeps.lock().unwrap().len(), 2);
+        let waited: Duration = sleeps.lock().unwrap().iter().sum();
+        assert_eq!(waited, Duration::from_secs(2000));
     }
 
     #[test]
@@ -361,8 +365,20 @@ mod tests {
             .answer(200, USER);
         let (mut api, notices, sleeps) = shared(&fake);
         assert_eq!(api.player("Synthetic").unwrap().id, 7);
-        assert_eq!(*notices.lock().unwrap(), [5]);
-        assert_eq!(*sleeps.lock().unwrap(), [Duration::from_secs(5)]);
+        assert_eq!(notices.lock().unwrap()[0], 5);
+        let waited: Duration = sleeps.lock().unwrap().iter().sum();
+        assert_eq!(waited, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_wait_counts_down_by_the_second() {
+        let fake = Fake::default()
+            .answer(200, &answer(&[], &[1], Some(3)))
+            .answer(200, &answer(&[1], &[], None));
+        let (mut api, notices, sleeps) = shared(&fake);
+        api.batch(&[1]).unwrap();
+        assert_eq!(*notices.lock().unwrap(), [3, 2, 1]);
+        assert_eq!(*sleeps.lock().unwrap(), [Duration::from_secs(1); 3]);
     }
 
     #[test]

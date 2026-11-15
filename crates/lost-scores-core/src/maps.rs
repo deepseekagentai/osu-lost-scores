@@ -233,6 +233,7 @@ pub fn fill<S: MapSource + ?Sized>(
         .iter()
         .filter(|item| item.beatmap_id.is_none())
         .count();
+    progress(0, batches + without_id.div_ceil(group));
     let mut fetched = Vec::new();
     for (done, chunk) in ids.chunks(size).enumerate() {
         fetched.extend(source.batch(chunk)?);
@@ -326,6 +327,7 @@ pub fn refresh<S: MapSource + ?Sized>(
 ) -> Result<usize, S::Error> {
     let size = source.batch_size();
     let batches = ids.len().div_ceil(size);
+    progress(0, batches);
     let mut fetched = Vec::new();
     for (done, chunk) in ids.chunks(size).enumerate() {
         fetched.extend(source.batch(chunk)?);
@@ -826,7 +828,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(source.groups, [vec!["a", "b"], vec!["c"]]);
-        assert_eq!(steps, [(1, 2), (2, 2)]);
+        assert_eq!(steps, [(0, 2), (1, 2), (2, 2)]);
         assert_eq!((report.by_md5, report.not_found), (1, 2));
         assert_eq!(catalog.get("b").unwrap().beatmap_id, Some(22));
     }
@@ -863,7 +865,7 @@ mod tests {
             |done, total| steps.push((done, total)),
         )
         .unwrap();
-        assert_eq!(steps, [(1, 2), (2, 3), (3, 3)]);
+        assert_eq!(steps, [(0, 2), (1, 2), (2, 3), (3, 3)]);
     }
 
     #[test]
@@ -881,6 +883,6 @@ mod tests {
         .unwrap();
         let sizes: Vec<usize> = source.batch_calls.iter().map(Vec::len).collect();
         assert_eq!(sizes, [50, 1]);
-        assert_eq!(steps, [(1, 2), (2, 2)]);
+        assert_eq!(steps, [(0, 2), (1, 2), (2, 2)]);
     }
 }

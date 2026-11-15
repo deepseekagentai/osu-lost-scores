@@ -167,7 +167,7 @@ fn render_snapshots() {
 
     state.set_busy(true);
     state.set_progress(0.70);
-    state.set_status("Waiting in the shared queue: about 12 s".into());
+    state.set_status("Waiting in the shared queue: 12 s".into());
     draw(&surface, &dir.join("6-main-queue.png"));
 
     state.set_progress(0.42);

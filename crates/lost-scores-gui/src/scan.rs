@@ -59,7 +59,7 @@ impl ScanState {
     }
 
     pub fn queued(&mut self, seconds: u64) {
-        self.status = format!("Waiting in the shared queue: about {seconds} s");
+        self.status = format!("Waiting in the shared queue: {seconds} s");
     }
 
     pub fn saving(&mut self) {
@@ -231,7 +231,7 @@ mod tests {
         state.apply(&progress(Step::Catalog, 1, 15), CLOCK);
         let reached = state.progress;
         state.queued(12);
-        assert_eq!(state.status, "Waiting in the shared queue: about 12 s");
+        assert_eq!(state.status, "Waiting in the shared queue: 12 s");
         assert_eq!(state.progress, reached);
         state.apply(&progress(Step::Catalog, 2, 15), CLOCK);
         assert_eq!(state.status, "Fetching map statuses: 2 of 15 requests");
