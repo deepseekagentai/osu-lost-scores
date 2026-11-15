@@ -99,13 +99,11 @@ pub fn status_text(step: Step, done: usize, total: usize) -> String {
     let done = thousands(done as f64);
     let total = thousands(total as f64);
     match step {
-        Step::Songs => format!("Reading Songs: {done} of {total} files"),
+        Step::Songs => format!("Reading Songs: {done} of {total}"),
         Step::Replays => format!("Reading replays: {done} of {total}"),
         Step::MissingMaps => format!("Looking up missing maps: {done} of {total}"),
-        Step::Pp => format!("Calculating pp: {done} of {total} replays"),
-        Step::Catalog | Step::Refresh => {
-            format!("Fetching map statuses: {done} of {total} requests")
-        }
+        Step::Pp => format!("Calculating pp: {done} of {total}"),
+        Step::Catalog | Step::Refresh => format!("Fetching map statuses: {done} of {total}"),
         Step::OnlineTop => "Fetching your top plays...".to_owned(),
         Step::Potential => "Building the potential top...".to_owned(),
         Step::Covers => format!("Downloading covers: {done} of {total}"),
@@ -202,11 +200,11 @@ mod tests {
     fn status_texts_use_thousands_separators() {
         assert_eq!(
             status_text(Step::Pp, 1798, 14982),
-            "Calculating pp: 1,798 of 14,982 replays"
+            "Calculating pp: 1,798 of 14,982"
         );
         assert_eq!(
             status_text(Step::Songs, 1200, 14000),
-            "Reading Songs: 1,200 of 14,000 files"
+            "Reading Songs: 1,200 of 14,000"
         );
         assert_eq!(
             status_text(Step::Replays, 3, 14982),
@@ -218,7 +216,7 @@ mod tests {
         );
         assert_eq!(
             status_text(Step::Catalog, 4, 190),
-            "Fetching map statuses: 4 of 190 requests"
+            "Fetching map statuses: 4 of 190"
         );
         assert_eq!(
             status_text(Step::OnlineTop, 0, 1),
@@ -240,7 +238,7 @@ mod tests {
         assert_eq!(state.status, "Waiting in the shared queue: 12 s");
         assert_eq!(state.progress, reached);
         state.apply(&progress(Step::Catalog, 2, 15), CLOCK);
-        assert_eq!(state.status, "Fetching map statuses: 2 of 15 requests");
+        assert_eq!(state.status, "Fetching map statuses: 2 of 15");
     }
 
     #[test]
@@ -272,10 +270,7 @@ mod tests {
         let value = progress_value(Step::Pp, 0, 0);
         assert!(value.is_finite());
         assert!((value - 0.65).abs() < 1e-6);
-        assert_eq!(
-            status_text(Step::Pp, 0, 0),
-            "Calculating pp: 0 of 0 replays"
-        );
+        assert_eq!(status_text(Step::Pp, 0, 0), "Calculating pp: 0 of 0");
     }
 
     #[test]

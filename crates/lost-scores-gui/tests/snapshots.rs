@@ -181,7 +181,7 @@ fn render_snapshots() {
     draw(&surface, &dir.join("6-main-queue.png"));
 
     state.set_progress(0.42);
-    state.set_status("Calculating pp: 1,798 of 14,982 replays".into());
+    state.set_status("Calculating pp: 1,798 of 14,982".into());
     state.set_log(log(&[
         ("[17:50:02]", "osu!: /home/player/games/osu!"),
         ("[17:50:02]", "player: SamplePlayer"),
