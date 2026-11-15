@@ -122,11 +122,6 @@ fn render_snapshots() {
     state.set_keys_error("User not found or API keys are invalid".into());
     draw(&surface, &dir.join("3-keys-sheet-rejected.png"));
 
-    state.set_keys_player_only(true);
-    state.set_keys_error("".into());
-    draw(&surface, &dir.join("3-player-sheet.png"));
-    state.set_keys_player_only(false);
-
     state.set_keys_open(false);
     state.set_confirm_open(true);
     draw(&surface, &dir.join("4-logout-confirm.png"));
@@ -163,6 +158,9 @@ fn render_snapshots() {
 
     state.set_own_keys(false);
     draw(&surface, &dir.join("5-main-shared-server.png"));
+    state.set_editing_name(true);
+    draw(&surface, &dir.join("5-main-editing-name.png"));
+    state.set_editing_name(false);
     state.set_own_keys(true);
 
     state.set_busy(true);

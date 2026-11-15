@@ -38,6 +38,33 @@ component StatValue inherits HorizontalLayout {
     }
 }
 
+component NameField inherits Rectangle {
+    height: 44px;
+    border-radius: 8px;
+    background: T.field;
+    border-width: 2px;
+    border-color: T.acc;
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: State.user-name;
+        color: #ffffff;
+        font-size: 26px;
+        font-weight: 600;
+        vertical-alignment: center;
+        single-line: true;
+        enabled: !State.name-busy;
+        init => {
+            self.focus();
+            self.select-all();
+        }
+        accepted => {
+            State.change-player(self.text);
+        }
+    }
+}
+
 component Connect inherits VerticalLayout {
     padding: 24px;
     spacing: 10px;
@@ -59,14 +86,6 @@ component Connect inherits VerticalLayout {
         color: T.k;
         font-size: 14px;
         horizontal-alignment: center;
-    }
-    SecondaryButton {
-        text: "Choose Player";
-        enabled: !State.busy;
-        tip: "Scan through the shared Lost Scores server, no API keys needed";
-        clicked => {
-            State.open-player();
-        }
     }
     SecondaryButton {
         text: "Use Custom API Keys";
@@ -115,7 +134,7 @@ component Profile inherits HorizontalLayout {
             Rectangle {
                 horizontal-stretch: 1;
                 min-width: 40px;
-                name := Text {
+                if !State.editing-name: Text {
                     width: parent.width;
                     text: State.user-name;
                     color: #ffffff;
@@ -124,22 +143,19 @@ component Profile inherits HorizontalLayout {
                     vertical-alignment: center;
                     overflow: elide;
                 }
-                TipArea {
+                if !State.editing-name: TipArea {
                     tip: State.user-name;
                     anchor: parent.absolute-position;
                     anchor-height: parent.height;
                 }
+                if State.editing-name: NameField { }
             }
             IconButton {
                 icon: @image-url("../assets/i-user-pen.svg");
-                tip: State.own-keys ? "Change user" : "Change player";
-                enabled: !State.busy;
+                tip: "Change player: name, ID or profile link";
+                enabled: !State.busy && !State.name-busy;
                 clicked => {
-                    if (State.own-keys) {
-                        State.open-keys();
-                    } else {
-                        State.open-player();
-                    }
+                    State.editing-name = !State.editing-name;
                 }
             }
             if State.own-keys: IconButton {

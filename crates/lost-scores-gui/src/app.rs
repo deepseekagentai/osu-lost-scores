@@ -9,14 +9,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use jiff::tz::TimeZone;
-use lost_scores_app::online::Online;
+use lost_scores_app::online::{Online, Player};
 use lost_scores_app::pipeline::{PotentialResult, Source};
 use lost_scores_app::rows::thousands;
 use lost_scores_app::setup::Settings;
 use lost_scores_app::shared::Shared;
 use lost_scores_app::updates::latest_release;
 use lost_scores_app::{cache, history, keys, setup};
-use osu_api::{Credentials, UserKey};
+use osu_api::{ApiError, Credentials, UserKey};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::account::{
@@ -27,7 +27,7 @@ use crate::clipboard::{Clipboard, Request};
 use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
-use crate::scan::{NEEDS_FOLDER, NEEDS_PLAYER, Phase, ScanState, check_folders};
+use crate::scan::{NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
 use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_message};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
@@ -300,7 +300,7 @@ impl Session {
         let session = self.clone();
         state.on_open_keys(move || session.open_keys());
         let session = self.clone();
-        state.on_open_player(move || session.open_player());
+        state.on_change_player(move |text| session.change_player(&text));
         let session = self.clone();
         state.on_cancel_keys(move || session.window.global::<State>().set_keys_open(false));
         let session = self.clone();
@@ -1029,26 +1029,14 @@ impl Session {
 
     fn open_keys(&self) {
         let state = self.window.global::<State>();
+        let saved = self.saved_player();
+        let from_config = saved.is_none();
+        let name = saved.or_else(|| self.config_name()).unwrap_or_default();
         let credentials = self.credentials.borrow().clone();
+        state.set_keys_user_from_config(from_config && !name.is_empty());
+        state.set_keys_user(name.into());
         state.set_keys_id(credentials.as_ref().map_or("", |c| &c.client_id).into());
         state.set_keys_secret(credentials.as_ref().map_or("", |c| &c.client_secret).into());
-        self.open_sheet(false);
-    }
-
-    fn open_player(&self) {
-        self.open_sheet(true);
-    }
-
-    fn open_sheet(&self, player_only: bool) {
-        let state = self.window.global::<State>();
-        if !state.get_keys_open() {
-            let saved = self.saved_player();
-            let from_config = saved.is_none();
-            let name = saved.or_else(|| self.config_name()).unwrap_or_default();
-            state.set_keys_user_from_config(from_config && !name.is_empty());
-            state.set_keys_user(name.into());
-        }
-        state.set_keys_player_only(player_only);
         self.clear_key_errors(&state);
         self.close_popups();
         state.set_keys_open(true);
@@ -1063,10 +1051,6 @@ impl Session {
 
     fn save_keys(self: &Rc<Self>) {
         let state = self.window.global::<State>();
-        if state.get_keys_player_only() {
-            self.save_player();
-            return;
-        }
         let user = state.get_keys_user().to_string();
         let id = state.get_keys_id().trim().to_owned();
         let secret = state.get_keys_secret().trim().to_owned();
@@ -1116,39 +1100,36 @@ impl Session {
         }
     }
 
-    fn save_player(self: &Rc<Self>) {
+    fn change_player(self: &Rc<Self>, text: &str) {
         let state = self.window.global::<State>();
-        let user = state.get_keys_user().to_string();
-        self.clear_key_errors(&state);
-        if user.trim().is_empty() {
-            state.set_keys_user_missing(true);
+        let wanted = text.trim();
+        if wanted.is_empty() || wanted == state.get_user_name().as_str() {
+            state.set_editing_name(false);
             return;
         }
-        let account = parse_account(&user);
+        let account = parse_account(wanted);
         let (_, shown) = account_key(&account);
-        state.set_keys_busy(true);
+        state.set_name_busy(true);
         state.set_status(format!("Looking up the player '{shown}'...").into());
         let credentials = self.credentials.borrow().clone();
         let weak = self.weak.clone();
         thread::spawn(move || {
             let result = look_up(credentials.as_ref(), &account);
-            on_ui(&weak, move |app| {
-                app.window.global::<State>().set_keys_busy(false);
-                app.player_checked(result);
-            });
+            on_ui(&weak, move |app| app.player_found(result));
         });
     }
 
-    fn player_checked(self: &Rc<Self>, result: Result<Profile, String>) {
+    fn player_found(self: &Rc<Self>, result: Result<Profile, String>) {
         let state = self.window.global::<State>();
-        state.set_status("".into());
+        state.set_name_busy(false);
+        state.set_editing_name(false);
         match result {
             Ok(profile) => {
-                state.set_keys_open(false);
+                state.set_status("".into());
                 self.adopt_profile(&profile);
                 self.log(&format!("Player: {}", profile.username));
             }
-            Err(error) => state.set_keys_error(error.into()),
+            Err(error) => state.set_status(error.into()),
         }
     }
 
@@ -1359,7 +1340,7 @@ impl Session {
         let state = self.window.global::<State>();
         let connected = state.get_connected();
         if !connected {
-            state.set_status(NEEDS_PLAYER.into());
+            state.set_status(NEEDS_ACCOUNT.into());
             return None;
         }
         if self.refreshing.get() || !self.scan.borrow().can_start(connected) {
@@ -1678,14 +1659,27 @@ fn validate(credentials: &Credentials, account: &Account) -> Result<Profile, Key
 }
 
 fn look_up(credentials: Option<&Credentials>, account: &Account) -> Result<Profile, String> {
-    if let Some(credentials) = credentials {
-        return validate(credentials, account).map_err(|error| error.to_string());
-    }
     let (key, value) = account_key(account);
-    Shared::new()
-        .account(key, &value)
+    let mut ask = |key: UserKey, value: &str| match credentials {
+        Some(credentials) => Online::new(credentials.clone()).account(key, value),
+        None => Shared::new().account(key, value),
+    };
+    by_id_then_name(key, &value, &mut ask)
         .map(|player| Profile::from_player(&player))
         .map_err(|error| lookup_failure(&value, &error))
+}
+
+fn by_id_then_name(
+    key: UserKey,
+    value: &str,
+    ask: &mut impl FnMut(UserKey, &str) -> Result<Player, ApiError>,
+) -> Result<Player, ApiError> {
+    match ask(key, value) {
+        Err(ApiError::Status { status: 404, .. }) if key == UserKey::Id => {
+            ask(UserKey::Username, value)
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -1694,7 +1688,7 @@ mod tests {
     use std::sync::Mutex;
 
     use lost_scores_app::setup;
-    use osu_api::Credentials;
+    use osu_api::{ApiError, Credentials, UserKey};
     use slint::{ComponentHandle, LogicalSize, Model};
     use tempfile::TempDir;
 
@@ -1702,7 +1696,7 @@ mod tests {
 
     use super::Session;
     use crate::account::Profile;
-    use crate::scan::NEEDS_PLAYER;
+    use crate::scan::NEEDS_ACCOUNT;
     use crate::share::render::ShareImage;
     use crate::table::Tab;
     use crate::worker::{Finished, Message};
@@ -1843,7 +1837,7 @@ mod tests {
         let state = window.global::<State>();
         state.set_connected(false);
         assert!(session.prepare_scan().is_none());
-        assert_eq!(state.get_status(), NEEDS_PLAYER);
+        assert_eq!(state.get_status(), NEEDS_ACCOUNT);
     }
 
     #[test]
@@ -1860,63 +1854,76 @@ mod tests {
     }
 
     #[test]
-    fn change_player_opens_the_sheet_with_only_the_name() {
-        let (window, session, _root) = keyless(650.0);
-        session.settings.borrow_mut().player = Some("Synthetic".into());
-        let state = window.global::<State>();
-        state.invoke_open_player();
-        assert!(state.get_keys_open());
-        assert!(state.get_keys_player_only());
-        assert_eq!(state.get_keys_user(), "Synthetic");
-    }
-
-    #[test]
-    fn a_checked_player_replaces_the_name_and_is_remembered() {
+    fn a_found_player_replaces_the_name_and_is_remembered() {
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
-        state.invoke_open_player();
-        session.player_checked(Ok(profile("Other", 9)));
-        assert!(!state.get_keys_open());
+        state.set_editing_name(true);
+        session.player_found(Ok(profile("Other", 9)));
+        assert!(!state.get_editing_name());
         assert_eq!(state.get_user_name(), "Other");
         assert_eq!(session.settings.borrow().player.as_deref(), Some("Other"));
-        assert!(!state.get_own_keys());
-        assert!(session.credentials.borrow().is_none());
     }
 
     #[test]
-    fn a_player_the_server_does_not_know_keeps_the_sheet_open_with_the_reason() {
+    fn a_player_that_is_not_found_leaves_the_previous_name() {
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
-        state.invoke_open_player();
-        session.player_checked(Err("The osu! API does not know the player Nobody".into()));
-        assert!(state.get_keys_open());
+        state.set_editing_name(true);
+        session.player_found(Err("The osu! API does not know the player Nobody".into()));
+        assert!(!state.get_editing_name());
+        assert_eq!(state.get_user_name(), "Synthetic");
         assert_eq!(
-            state.get_keys_error(),
+            state.get_status(),
             "The osu! API does not know the player Nobody"
         );
-        assert_eq!(state.get_user_name(), "Synthetic");
     }
 
     #[test]
-    fn saving_an_empty_player_marks_the_field_and_asks_nobody() {
+    fn an_empty_or_unchanged_name_closes_the_field_without_a_lookup() {
         let (window, _session, _root) = keyless(650.0);
         let state = window.global::<State>();
-        state.invoke_open_player();
-        state.set_keys_user("  ".into());
-        state.invoke_save_keys();
-        assert!(state.get_keys_user_missing());
-        assert!(!state.get_keys_id_missing());
-        assert!(!state.get_keys_busy());
+        for text in ["   ", "Synthetic"] {
+            state.set_editing_name(true);
+            state.invoke_change_player(text.into());
+            assert!(!state.get_editing_name(), "{text}");
+            assert!(!state.get_name_busy(), "{text}");
+        }
     }
 
     #[test]
-    fn custom_keys_from_the_player_sheet_show_the_key_fields() {
-        let (window, _session, _root) = keyless(650.0);
-        let state = window.global::<State>();
-        state.invoke_open_player();
-        state.invoke_open_keys();
-        assert!(state.get_keys_open());
-        assert!(!state.get_keys_player_only());
+    fn digits_are_tried_as_an_id_first_then_as_a_name() {
+        let player = |id| Player {
+            id,
+            names: vec!["Found".into()],
+            pp: None,
+            accuracy: None,
+            global_rank: None,
+        };
+        let mut asked = Vec::new();
+        let found = super::by_id_then_name(UserKey::Id, "727", &mut |key, value: &str| {
+            asked.push((key, value.to_owned()));
+            match key {
+                UserKey::Id => Err(ApiError::Status {
+                    status: 404,
+                    url: "u".into(),
+                }),
+                UserKey::Username => Ok(player(5)),
+            }
+        });
+        assert_eq!(found.unwrap().id, 5);
+        assert_eq!(
+            asked,
+            [
+                (UserKey::Id, "727".to_owned()),
+                (UserKey::Username, "727".to_owned())
+            ]
+        );
+        let mut calls = 0;
+        let by_id = super::by_id_then_name(UserKey::Id, "727", &mut |_, _: &str| {
+            calls += 1;
+            Ok(player(727))
+        });
+        assert_eq!((by_id.unwrap().id, calls), (727, 1));
     }
 
     #[test]

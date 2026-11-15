@@ -52,6 +52,12 @@ export component MainWindow inherits Window {
     changed layers => {
         keys.focus();
     }
+    property <bool> editing-name: State.editing-name;
+    changed editing-name => {
+        if (!root.editing-name) {
+            keys.focus();
+        }
+    }
     keys := FocusScope {
         init => {
             self.focus();
@@ -76,6 +82,8 @@ export component MainWindow inherits Window {
                     if (!State.keys-busy) {
                         State.cancel-keys();
                     }
+                } else if (State.editing-name) {
+                    State.editing-name = false;
                 } else if ((State.show-results || root.two-columns) && !State.images-shown && State.search-text != "") {
                     State.search-text = "";
                     State.search-changed("");

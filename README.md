@@ -26,7 +26,7 @@ You need osu!stable with your replays. Your own osu! API keys are optional: with
 
 ## Window
 
-The window runs the same scan as the command line. The player name comes from the osu! config, and the pen next to the name changes it. Without your own keys the scan goes through the Lost Scores server, and a wait in its queue shows in the status line. "Use Custom API Keys" in the same sheet saves the keys of your own osu! OAuth application instead; they are checked before they are saved, and the door next to the name removes them.
+The window runs the same scan as the command line. The player name comes from the osu! config; the pen next to the name lets you type another name, an ID or a profile link in its place, and a player that is not found leaves the name as it was. Without your own keys the scan goes through the Lost Scores server, and a wait in its queue counts down in the status line. "Use Custom API Keys" saves the keys of your own osu! OAuth application instead; they are checked before they are saved, and the door next to the name removes them.
 
 - The osu! folder is found the same way as in the command line and remembered; the folder button picks another one.
 - Start Scan shows the progress and a log. Every finished scan is kept in the scan history, and the results view opens any earlier scan.
@@ -68,7 +68,7 @@ The cross next to an older scan, or "Delete older scans" at the bottom of the li
 - `--all` also shows loved and unranked maps; `--sort date`, `--limit N` and `--json` change the output.
 - `lost-scores potential` shows your top 200 as it would be if ScoreV1 had kept your best plays: the potential pp and accuracy, and which lost plays would be in it.
 - `--check-missing` also finds lost plays on maps you no longer have in Songs. It downloads only the maps that can hold a lost play into the map cache; the first run takes a few minutes.
-- Without keys, your player and the statuses of your maps come from the Lost Scores server. Maps it already knows come back at once; new ones wait in its queue, which asks osu! for all players together within the osu! rate limit, and waits longer than ten seconds are printed.
+- Without keys, your player and the statuses of your maps come from the Lost Scores server. Maps it already knows come back at once; new ones wait in its queue, which asks osu! for all players together within the osu! rate limit, and a wait counts down on the progress bar.
 - `lost-scores login` saves the keys of your own osu! OAuth application (create one at https://osu.ppy.sh/home/account/edit), and the program then asks the osu! API itself: the first run asks about the statuses and ranked dates of your maps, about 180 requests for a few thousand maps, and later runs only about new maps; statuses that can still change are asked again once a week. Long steps show a progress bar with the time left. `--offline` stays offline, `lost-scores logout` deletes the keys. `LOST_SCORES_CLIENT_ID` and `LOST_SCORES_CLIENT_SECRET` work instead of saved keys.
 - `--osu-dir`, `--player` and `--songs-dir` override the detection. Options of a command go after it: `lost-scores potential --limit 100`.
 - `--timings` prints how long each step took.

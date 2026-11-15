@@ -6,7 +6,7 @@ use lost_scores_app::{detect, setup};
 
 use crate::log::stamp;
 
-pub const NEEDS_PLAYER: &str = "Choose a player to start";
+pub const NEEDS_ACCOUNT: &str = "Log in or add your own API keys to start";
 pub const NEEDS_FOLDER: &str =
     "Could not find your osu! folder: pick it with the button next to the path";
 
