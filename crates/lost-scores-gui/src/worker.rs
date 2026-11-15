@@ -179,7 +179,7 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         player: &player,
         folder: &folder,
     };
-    let refreshed = refresh(&finished, api, &mut catalog, &mut timings, &mut events);
+    let refreshed = refresh(&finished, api, &mut catalog, &mut timings, &mut events)?;
     proceed!();
     sink.send(Message::Refreshed(refreshed));
     Ok(Outcome::Finished)
@@ -231,7 +231,7 @@ fn refresh(
     catalog: &mut MapCatalog,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
-) -> Option<Box<Finished>> {
+) -> Result<Option<Box<Finished>>> {
     let Completed {
         job,
         scan,
@@ -247,41 +247,43 @@ fn refresh(
         events,
     ) {
         Ok(changed) => changed,
+        Err(error) if expired(&error) => return Err(error),
         Err(error) => {
             events(Event::Log(format!(
                 "could not refresh map statuses: {error:#}"
             )));
-            return None;
+            return Ok(None);
         }
     };
     if changed == 0 {
-        return None;
+        return Ok(None);
     }
     let scores = find(scan, catalog, timings);
     let found = lost(&scores, catalog);
     let result = match potential_top(api, player, &scores, catalog, timings, events) {
         Ok(result) => result,
+        Err(error) if expired(&error) => return Err(error),
         Err(error) => {
             events(Event::Log(format!(
                 "could not rebuild the potential top: {error:#}"
             )));
-            return None;
+            return Ok(None);
         }
     };
     let updated = saved(job, player, found, result);
     match history::replace(folder, &updated) {
         Ok(()) => {
             create_images(job, &updated, folder, events, &mut HttpFetch::new());
-            Some(Box::new(Finished {
+            Ok(Some(Box::new(Finished {
                 scan: updated,
                 folder: folder.to_path_buf(),
-            }))
+            })))
         }
         Err(error) => {
             events(Event::Log(format!(
                 "could not save the updated scan: {error:#}"
             )));
-            None
+            Ok(None)
         }
     }
 }

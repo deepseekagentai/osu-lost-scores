@@ -9,8 +9,7 @@ use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{Api, Event, Source};
 use lost_scores_app::rows::{Hits, LostRow};
 use lost_scores_core::grade::Grade;
-use lost_scores_core::maps::MapStatus;
-use lost_scores_core::maps::{FetchedMap, MapSource};
+use lost_scores_core::maps::{FetchedMap, MapCatalog, MapInfo, MapSource, MapStatus};
 use lost_scores_core::missing::OsuFiles;
 use lost_scores_gui::share::rasters::Fetch;
 use lost_scores_gui::worker::{Job, Message, Outcome, Sink, create_images, render_command, run};
@@ -33,6 +32,7 @@ struct Fake {
     known: bool,
     statistics: bool,
     failure: Option<u16>,
+    expired_maps: bool,
 }
 
 impl Fake {
@@ -41,22 +41,21 @@ impl Fake {
             known: true,
             statistics: true,
             failure: None,
+            expired_maps: false,
         }
     }
 
     fn unknown() -> Self {
         Self {
             known: false,
-            statistics: true,
-            failure: None,
+            ..Self::known()
         }
     }
 
     fn without_statistics() -> Self {
         Self {
-            known: true,
             statistics: false,
-            failure: None,
+            ..Self::known()
         }
     }
 
@@ -76,6 +75,9 @@ impl MapSource for Fake {
     type Error = ApiError;
 
     fn batch(&mut self, _: &[u32]) -> Result<Vec<FetchedMap>, ApiError> {
+        if self.expired_maps {
+            return Err(ApiError::LoginRequired);
+        }
         Ok(Vec::new())
     }
 
@@ -284,6 +286,35 @@ fn an_expired_login_ends_the_scan_with_its_own_message() {
         Some(Message::LoginExpired)
     ));
     assert!(history::list(&job.scans_dir).is_empty());
+}
+
+#[test]
+fn an_expired_login_in_the_status_refresh_ends_with_its_own_message() {
+    let _serial = serial();
+    let root = tempfile::tempdir().unwrap();
+    let job = job(root.path());
+    let mut catalog = MapCatalog::default();
+    catalog.insert(
+        "a".repeat(32),
+        MapInfo {
+            beatmap_id: Some(5),
+            status: MapStatus::Graveyard,
+            ranked_at: None,
+            outdated: false,
+            checked_at: None,
+        },
+    );
+    catalog.save(job.source.maps.as_ref().unwrap()).unwrap();
+    let sink = Recorder::open();
+    let mut api = Fake {
+        expired_maps: true,
+        ..Fake::known()
+    };
+    run(&job, &mut api, &sink);
+    assert!(matches!(
+        sink.messages.borrow().last(),
+        Some(Message::LoginExpired)
+    ));
 }
 
 #[test]

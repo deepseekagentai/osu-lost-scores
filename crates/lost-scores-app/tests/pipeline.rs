@@ -18,6 +18,7 @@ use tempfile::TempDir;
 
 const SAMPLE: &[u8] = include_bytes!("fixtures/sample.osu");
 const SAMPLE_MD5: &str = "0b577cbe9bc774600d20cfa17c0aa94c";
+const UNCACHED_MD5: &str = "ffffffffffffffffffffffffffffffff";
 const SAMPLE_PATH: &str = "Songs/1 Sample/sample.osu";
 const EARLY_TICKS: i64 = 638_355_968_000_000_000;
 const NOW: i64 = 1_800_000_000;
@@ -30,6 +31,7 @@ struct Fake {
     bare_player: bool,
     lookup_failure: Option<u16>,
     shared: bool,
+    expired: bool,
 }
 
 impl MapSource for Fake {
@@ -37,6 +39,9 @@ impl MapSource for Fake {
 
     fn batch(&mut self, ids: &[u32]) -> Result<Vec<FetchedMap>, ApiError> {
         self.calls.push(format!("batch {ids:?}"));
+        if self.expired {
+            return Err(ApiError::LoginRequired);
+        }
         if self.fail_batch {
             return Err(ApiError::Network("down".into()));
         }
@@ -45,6 +50,9 @@ impl MapSource for Fake {
 
     fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
         self.calls.push(format!("lookup {md5}"));
+        if self.expired {
+            return Err(ApiError::LoginRequired);
+        }
         Ok(Some(FetchedMap {
             checksum: Some(md5.to_owned()),
             info: MapInfo {
@@ -63,6 +71,9 @@ impl OsuFiles for Fake {
 
     fn download(&mut self, beatmap_id: u32) -> Result<Vec<u8>, ApiError> {
         self.calls.push(format!("download {beatmap_id}"));
+        if self.expired {
+            return Err(ApiError::LoginRequired);
+        }
         Ok(Vec::new())
     }
 }
@@ -576,6 +587,83 @@ fn a_failed_status_refresh_warns_and_carries_on() {
             .any(|line| line.starts_with("Could not refresh map statuses: ")),
         "{events:?}"
     );
+}
+
+fn expired_login(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| matches!(cause.downcast_ref(), Some(ApiError::LoginRequired)))
+}
+
+#[test]
+fn an_expired_login_stops_the_status_refresh_instead_of_a_warning() {
+    let _osu = osu_folder();
+    let mut catalog = MapCatalog::default();
+    catalog.insert(
+        SAMPLE_MD5.to_owned(),
+        MapInfo {
+            beatmap_id: Some(5),
+            status: MapStatus::Pending,
+            ranked_at: None,
+            outdated: false,
+            checked_at: None,
+        },
+    );
+    let mut fake = Fake {
+        expired: true,
+        ..Fake::default()
+    };
+    let error = refresh_statuses(
+        None,
+        &mut catalog,
+        &mut fake,
+        NOW,
+        &mut Timings::new(),
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(expired_login(&error), "{error:#}");
+}
+
+#[test]
+fn an_expired_login_while_checking_missing_maps_stays_an_expired_login() {
+    let _osu = osu_folder();
+    let root = tempfile::tempdir().unwrap();
+    let osu = root.path().join("osu");
+    for (name, counts, score, ticks) in [
+        ("a.osr", [7, 0, 0, 0], 500_000, EARLY_TICKS),
+        ("b.osr", [5, 2, 0, 0], 900_000, EARLY_TICKS + 1),
+    ] {
+        let replay = Replay {
+            mode: 0,
+            player: "Lemon",
+            beatmap_md5: UNCACHED_MD5,
+            counts,
+            score,
+            max_combo: 8,
+            mods: 0,
+            ticks,
+        };
+        write(&osu, &format!("Data/r/{name}"), &replay.bytes());
+    }
+    write(&osu, "Songs/.keep", b"");
+    let mut fake = Fake {
+        expired: true,
+        ..Fake::default()
+    };
+    let mut source = source(&osu, Some(root.path().join("maps.json")));
+    source.check_missing = true;
+    let result = read(
+        &source,
+        Some(&mut fake),
+        "",
+        &mut Timings::new(),
+        &mut |_| {},
+    );
+    let error = result
+        .err()
+        .unwrap_or_else(|| panic!("no error after {:?}", fake.calls));
+    assert!(expired_login(&error), "{error:#}");
 }
 
 #[test]

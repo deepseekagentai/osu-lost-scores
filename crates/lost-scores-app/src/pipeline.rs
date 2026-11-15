@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use lost_scores_core::lost::LostScore;
 use lost_scores_core::maps::{self, MapCatalog, MapSource, Wanted};
-use lost_scores_core::missing::{OsuFiles, fetch_missing, missing_maps};
+use lost_scores_core::missing::{MissingError, OsuFiles, fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
 use lost_scores_core::{Scan, Stage, lost as find_lost, pp};
 use osu_api::{ApiError, Score};
@@ -279,7 +279,10 @@ fn add_missing_maps(
     if let Some(path) = catalog_path.as_ref().filter(|_| catalog != before) {
         catalog.save(path)?;
     }
-    let report = report?;
+    let report = report.map_err(|error| match error {
+        MissingError::Source(error) => anyhow::Error::new(error),
+        other => anyhow::Error::new(other),
+    })?;
     events(Event::Log(format!(
         "{} maps missing from Songs looked up: {} from the cache, {} downloaded, {} not on the server, {} changed since the replay",
         report.maps, report.cached, report.downloaded, report.not_found, report.mismatched
@@ -385,6 +388,7 @@ pub fn refresh_statuses(
     });
     let changed = match refreshed {
         Ok(changed) => changed,
+        Err(ApiError::LoginRequired) => return Err(ApiError::LoginRequired.into()),
         Err(error) => {
             events(Event::Log(format!(
                 "Could not refresh map statuses: {}",
