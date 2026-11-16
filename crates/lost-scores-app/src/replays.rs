@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use osu_api::{ApiError, MAX_REPLAY, Server, Transport};
+use osu_api::{ApiError, MAX_REPLAY};
 use osu_formats::ReplayHeader;
 
 use crate::history::{SavedScan, Sent};
@@ -42,8 +42,31 @@ fn readable(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub fn send_queued<T: Transport>(
-    server: &mut Server<T>,
+const PP_MATCH: f64 = 1e-6;
+
+pub type Upload<'a> = dyn FnMut(&str, usize, &[u8]) -> Result<String, ApiError> + 'a;
+
+pub fn in_top(scan: &SavedScan) -> Vec<usize> {
+    let Some(top) = &scan.potential else {
+        return Vec::new();
+    };
+    let mut rows: Vec<usize> = top
+        .rows
+        .iter()
+        .filter(|place| place.lost)
+        .filter_map(|place| {
+            scan.lost.iter().position(|lost| {
+                lost.beatmap_id == Some(place.beatmap_id) && (lost.pp - place.pp).abs() <= PP_MATCH
+            })
+        })
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+pub fn send_queued(
+    upload: &mut Upload<'_>,
     sent: &mut Sent,
     scan: &SavedScan,
     replays_dir: &Path,
@@ -62,7 +85,7 @@ pub fn send_queued<T: Transport>(
                 continue;
             }
         };
-        match server.upload_replay(&sent.id, row, &bytes) {
+        match upload(&sent.id, row, &bytes) {
             Ok(sha256) => {
                 sent.queued.remove(&row);
                 sent.replays.insert(row, sha256);
@@ -117,65 +140,46 @@ pub fn describe(outcome: &Outcome, scan: &SavedScan) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::fs;
     use std::path::Path;
-    use std::rc::Rc;
 
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
-    use osu_api::{ApiError, Response, Server, Submission, Transport};
+    use osu_api::{ApiError, Submission};
 
-    use super::{Outcome, describe, send_queued};
+    use super::{Outcome, describe, in_top, send_queued};
     use crate::history::{SavedScan, Sent, VERSION};
-    use crate::rows::{Hits, LostRow};
+    use crate::pipeline::PotentialResult;
+    use crate::rows::{Hits, LostRow, PotentialRow};
 
-    struct Fake {
-        answers: VecDeque<(u16, &'static str)>,
-        requests: Rc<RefCell<Vec<String>>>,
+    struct Uploads {
+        answers: VecDeque<Result<String, ApiError>>,
+        calls: Vec<String>,
     }
 
-    impl Transport for Fake {
-        fn post_form(&mut self, url: &str, _: &[(&str, &str)]) -> Result<Response, ApiError> {
-            panic!("unexpected POST {url}")
+    impl Uploads {
+        fn new(answers: Vec<Result<&str, ApiError>>) -> Self {
+            Self {
+                answers: answers
+                    .into_iter()
+                    .map(|answer| answer.map(str::to_owned))
+                    .collect(),
+                calls: Vec::new(),
+            }
         }
 
-        fn get(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
-            panic!("unexpected GET {url}")
+        fn send(&mut self, record: &mut Sent, saved: &SavedScan, dir: &Path) -> Vec<Outcome> {
+            send_queued(
+                &mut |id: &str, row: usize, bytes: &[u8]| {
+                    self.calls.push(format!("{id} {row} {}", bytes.len()));
+                    self.answers.pop_front().expect("no scripted answer")
+                },
+                record,
+                saved,
+                dir,
+            )
         }
-
-        fn post_json(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
-            panic!("unexpected POST {url}")
-        }
-
-        fn delete(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
-            panic!("unexpected DELETE {url}")
-        }
-
-        fn put(&mut self, url: &str, body: &[u8], _: &str) -> Result<Response, ApiError> {
-            self.requests
-                .borrow_mut()
-                .push(format!("PUT {url} {}", body.len()));
-            let (status, body) = self.answers.pop_front().expect("no scripted answer");
-            Ok(Response {
-                status,
-                retry_after: None,
-                body: body.as_bytes().to_vec(),
-            })
-        }
-    }
-
-    fn server(answers: &[(u16, &'static str)]) -> (Server<Fake>, Rc<RefCell<Vec<String>>>) {
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        let fake = Fake {
-            answers: answers.iter().copied().collect(),
-            requests: Rc::clone(&requests),
-        };
-        (
-            Server::new(fake, "https://api.test").with_session("tok"),
-            requests,
-        )
     }
 
     fn row(file: &str) -> LostRow {
@@ -301,31 +305,22 @@ mod tests {
     fn the_chosen_replays_are_sent_and_remembered() {
         let dir = tempfile::tempdir().unwrap();
         files(dir.path(), &[("a.osr", replay()), ("b.osr", replay())]);
-        let (mut api, requests) =
-            server(&[(200, r#"{"sha256":"aa"}"#), (200, r#"{"sha256":"bb"}"#)]);
+        let mut uploads = Uploads::new(vec![Ok("aa"), Ok("bb")]);
         let mut record = sent(&[0, 1]);
-        let outcomes = send_queued(
-            &mut api,
-            &mut record,
-            &scan(&["a.osr", "b.osr"]),
-            dir.path(),
-        );
+        let outcomes = uploads.send(&mut record, &scan(&["a.osr", "b.osr"]), dir.path());
         assert!(matches!(
             outcomes[..],
             [Outcome::Sent { row: 0 }, Outcome::Sent { row: 1 }]
         ));
         assert_eq!(
             record.replays.into_iter().collect::<Vec<_>>(),
-            [(0, "aa".into()), (1, "bb".into())]
+            [(0, "aa".to_owned()), (1, "bb".to_owned())]
         );
         assert!(record.queued.is_empty());
         let size = replay().len();
         assert_eq!(
-            *requests.borrow(),
-            [
-                format!("PUT https://api.test/api/v1/submissions/abc/replays/0 {size}"),
-                format!("PUT https://api.test/api/v1/submissions/abc/replays/1 {size}"),
-            ]
+            uploads.calls,
+            [format!("abc 0 {size}"), format!("abc 1 {size}")]
         );
     }
 
@@ -342,11 +337,11 @@ mod tests {
         );
         let saved = scan(&["a.osr", "b.osr", "c.osr"]);
         let mut record = sent(&[0, 1, 2]);
-        let (mut api, _) = server(&[
-            (200, r#"{"sha256":"aa"}"#),
-            (503, r#"{"error":"replays_paused","retry_after":3600}"#),
+        let mut uploads = Uploads::new(vec![
+            Ok("aa"),
+            Err(ApiError::ReplaysPaused { retry_after: 3600 }),
         ]);
-        let outcomes = send_queued(&mut api, &mut record, &saved, dir.path());
+        let outcomes = uploads.send(&mut record, &saved, dir.path());
         assert!(matches!(
             outcomes[..],
             [
@@ -357,8 +352,8 @@ mod tests {
             ]
         ));
         assert_eq!(record.queued.iter().copied().collect::<Vec<_>>(), [1, 2]);
-        let (mut later, _) = server(&[(200, r#"{"sha256":"bb"}"#), (200, r#"{"sha256":"cc"}"#)]);
-        send_queued(&mut later, &mut record, &saved, dir.path());
+        let mut later = Uploads::new(vec![Ok("bb"), Ok("cc")]);
+        later.send(&mut record, &saved, dir.path());
         assert!(record.queued.is_empty());
         assert_eq!(record.replays.len(), 3);
     }
@@ -372,14 +367,9 @@ mod tests {
             dir.path(),
             &[("b.osr", broken), ("c.osr", vec![0; 4 * 1024 * 1024 + 1])],
         );
-        let (mut api, requests) = server(&[]);
+        let mut uploads = Uploads::new(Vec::new());
         let mut record = sent(&[0, 1, 2]);
-        let outcomes = send_queued(
-            &mut api,
-            &mut record,
-            &scan(&["a.osr", "b.osr", "c.osr"]),
-            dir.path(),
-        );
+        let outcomes = uploads.send(&mut record, &scan(&["a.osr", "b.osr", "c.osr"]), dir.path());
         assert!(matches!(
             outcomes[..],
             [
@@ -389,24 +379,19 @@ mod tests {
             ]
         ));
         assert!(record.queued.is_empty() && record.replays.is_empty());
-        assert!(requests.borrow().is_empty());
+        assert!(uploads.calls.is_empty());
     }
 
     #[test]
     fn a_refused_replay_is_reported_with_the_servers_reason() {
         let dir = tempfile::tempdir().unwrap();
         files(dir.path(), &[("a.osr", replay()), ("b.osr", replay())]);
-        let (mut api, requests) = server(&[
-            (400, r#"{"error":"replay_mismatch"}"#),
-            (404, r#"{"error":"not_found"}"#),
+        let mut uploads = Uploads::new(vec![
+            Err(ApiError::ReplayMismatch),
+            Err(ApiError::NotOnServer),
         ]);
         let mut record = sent(&[0, 1, 2]);
-        let outcomes = send_queued(
-            &mut api,
-            &mut record,
-            &scan(&["a.osr", "b.osr", "c.osr"]),
-            dir.path(),
-        );
+        let outcomes = uploads.send(&mut record, &scan(&["a.osr", "b.osr", "c.osr"]), dir.path());
         assert!(matches!(
             outcomes[..],
             [
@@ -421,6 +406,58 @@ mod tests {
             ]
         ));
         assert!(record.queued.is_empty() && record.replays.is_empty());
-        assert_eq!(requests.borrow().len(), 2);
+        assert_eq!(uploads.calls.len(), 2);
+    }
+
+    #[test]
+    fn the_plays_in_the_top_are_the_lost_places_of_the_potential_top() {
+        let mut saved = scan(&["a.osr", "b.osr", "c.osr"]);
+        saved.lost[1].beatmap_id = Some(12);
+        saved.lost[1].pp = 200.0;
+        saved.lost[2].beatmap_id = Some(13);
+        let place = |pp: f64, lost: bool, beatmap_id: u32| PotentialRow {
+            place: 1,
+            pp,
+            weight: 1.0,
+            weighted: pp,
+            lost,
+            beatmap_id,
+            beatmapset_id: None,
+            artist: String::new(),
+            title: String::new(),
+            version: String::new(),
+            creator: String::new(),
+            mods: String::new(),
+            accuracy: 0.0,
+            unix_time: 0,
+            played: String::new(),
+            hits: Hits {
+                n300: 0,
+                n100: 0,
+                n50: 0,
+                misses: 0,
+            },
+            score: 0,
+            grade: Grade::S,
+            status: MapStatus::Ranked,
+            kept_pp: None,
+        };
+        assert!(in_top(&saved).is_empty());
+        saved.potential = Some(PotentialResult {
+            current_pp: 1000.0,
+            potential_pp: 1100.0,
+            current_accuracy: 98.0,
+            potential_accuracy: 98.0,
+            global_rank: None,
+            lost_in_top: 2,
+            rows: vec![
+                place(400.0, false, 99),
+                place(321.5, true, 11),
+                place(200.0, true, 12),
+                place(150.0, false, 13),
+            ],
+            online: Vec::new(),
+        });
+        assert_eq!(in_top(&saved), [0, 1]);
     }
 }

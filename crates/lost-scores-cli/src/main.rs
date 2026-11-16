@@ -113,7 +113,10 @@ enum Command {
     Submit {
         #[arg(long, help = "Also publish it to the Hall of Fame")]
         publish: bool,
-        #[arg(long, help = "Also share the replays of the lost plays")]
+        #[arg(
+            long,
+            help = "Also share the replays of the lost plays in your Potential Top"
+        )]
         replays: bool,
         #[command(flatten)]
         source: Source,
@@ -570,9 +573,10 @@ fn submit(
     }
     println!("sent scan {}: {}", sent.id, state(&sent));
     if share_replays {
-        record.queued.extend(0..scan.lost.len());
+        record.queued.extend(replays::in_top(&scan));
         let replays_dir = read.osu_dir.join("Data").join("r");
-        for outcome in replays::send_queued(&mut server, &mut record, &scan, &replays_dir) {
+        let mut upload = |id: &str, row: usize, bytes: &[u8]| server.upload_replay(id, row, bytes);
+        for outcome in replays::send_queued(&mut upload, &mut record, &scan, &replays_dir) {
             eprintln!("{}", replays::describe(&outcome, &scan));
         }
         history::remember(&folder, &record)?;

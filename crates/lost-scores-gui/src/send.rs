@@ -1,8 +1,11 @@
+use std::path::Path;
 use std::sync::Arc;
 
-use lost_scores_app::history::Sent;
+use anyhow::Result;
+use lost_scores_app::history::{self, Sent};
 use lost_scores_app::online::USER_AGENT;
 use lost_scores_app::pipeline::PotentialResult;
+use lost_scores_app::replays::{self, Outcome};
 use lost_scores_app::rows::thousands;
 use lost_scores_app::session::Session as Login;
 use osu_api::{ApiError, Http, Server, Submission, SubmissionInfo};
@@ -13,12 +16,18 @@ pub enum Call {
     Unpublish(String),
     Delete(String),
     List,
+    Replay {
+        id: String,
+        row: usize,
+        bytes: Vec<u8>,
+    },
 }
 
 pub enum Reply {
     Sent(Submission),
     Deleted,
     Listed(Vec<SubmissionInfo>),
+    Replayed(String),
 }
 
 pub type Courier = Arc<dyn Fn(&Login, Call) -> Result<Reply, ApiError> + Send + Sync>;
@@ -33,8 +42,80 @@ pub fn over_http() -> Courier {
             Call::Unpublish(id) => server.unpublish(&id).map(Reply::Sent),
             Call::Delete(id) => server.delete_submission(&id).map(|()| Reply::Deleted),
             Call::List => server.submissions().map(Reply::Listed),
+            Call::Replay { id, row, bytes } => {
+                server.upload_replay(&id, row, &bytes).map(Reply::Replayed)
+            }
         }
     })
+}
+
+#[derive(Debug, Default)]
+pub struct Shared {
+    pub lines: Vec<String>,
+    pub sent: usize,
+    pub waiting: Option<String>,
+}
+
+impl Shared {
+    pub fn summary(&self) -> Option<String> {
+        match (self.sent, &self.waiting) {
+            (0, Some(waiting)) => Some(crate::account::sentence(waiting)),
+            (0, None) => self
+                .lines
+                .first()
+                .map(|line| crate::account::sentence(line)),
+            (1, _) => Some("Shared 1 replay".into()),
+            (count, _) => Some(format!("Shared {count} replays")),
+        }
+    }
+}
+
+pub fn share_replays(
+    courier: &Courier,
+    login: &Login,
+    folder: &Path,
+    replays_dir: &Path,
+) -> Result<Shared> {
+    let scan = history::load(folder)?;
+    let Some(mut sent) = history::submission(folder, &login.server) else {
+        return Ok(Shared::default());
+    };
+    let mut upload = |id: &str, row: usize, bytes: &[u8]| {
+        let call = Call::Replay {
+            id: id.to_owned(),
+            row,
+            bytes: bytes.to_vec(),
+        };
+        match courier(login, call)? {
+            Reply::Replayed(sha256) => Ok(sha256),
+            _ => Err(ApiError::Server(
+                "the server gave an unexpected answer".into(),
+            )),
+        }
+    };
+    let outcomes = replays::send_queued(&mut upload, &mut sent, &scan, replays_dir);
+    let shared = Shared {
+        lines: outcomes
+            .iter()
+            .map(|outcome| replays::describe(outcome, &scan))
+            .collect(),
+        sent: outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Outcome::Sent { .. }))
+            .count(),
+        waiting: outcomes.iter().find_map(|outcome| match outcome {
+            Outcome::Waiting { error } => Some(error.to_string()),
+            _ => None,
+        }),
+    };
+    if let Some(mut current) =
+        history::submission(folder, &login.server).filter(|current| current.id == sent.id)
+    {
+        current.replays = sent.replays;
+        current.queued = sent.queued;
+        history::remember(folder, &current)?;
+    }
+    Ok(shared)
 }
 
 pub fn label(sent: &Sent) -> String {

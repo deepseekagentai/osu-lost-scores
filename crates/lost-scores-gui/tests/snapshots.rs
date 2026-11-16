@@ -627,6 +627,17 @@ fn render_results_snapshots() {
     state.set_logged_in(false);
     state.set_own_keys(true);
     draw(&surface, &dir.join("35-results-own-keys.png"));
+    state.set_own_keys(false);
+    state.set_logged_in(true);
+    state.set_replays_in_top(12);
+    state.set_offer_shown(true);
+    draw(&surface, &dir.join("36-replays-offer.png"));
+    state.set_offer_shown(false);
+    results.table.borrow_mut().set_replays(&[(3, 3), (4, 4)]);
+    results.present(&state, &scan, Tab::Lost);
+    state.set_sent_state("Published, unverified".into());
+    state.set_sent_public(true);
+    draw(&surface, &dir.join("37-replays-chips.png"));
 }
 
 fn mods_scan() -> SavedScan {

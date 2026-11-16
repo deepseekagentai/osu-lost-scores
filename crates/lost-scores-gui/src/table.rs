@@ -106,6 +106,7 @@ pub struct Item {
     pub beatmap_id: Option<u32>,
     pub detail: Detail,
     pub fresh: bool,
+    pub replay: i32,
     artist_key: String,
     title_key: String,
     version_key: String,
@@ -188,6 +189,7 @@ impl Item {
             beatmap_id,
             detail,
             fresh: false,
+            replay: 0,
             artist_key: artist.to_lowercase(),
             title_key: title.to_lowercase(),
             version_key: version.to_lowercase(),
@@ -357,6 +359,18 @@ impl Table {
             self.include_all = include_all;
             self.rebuild_lost();
         }
+    }
+
+    pub fn set_replays(&mut self, states: &[(usize, i32)]) {
+        for item in &mut self.lost_pool {
+            item.replay = 0;
+        }
+        for &(row, state) in states {
+            if let Some(item) = self.lost_pool.get_mut(row) {
+                item.replay = state;
+            }
+        }
+        self.rebuild_lost();
     }
 
     fn rebuild_lost(&mut self) {

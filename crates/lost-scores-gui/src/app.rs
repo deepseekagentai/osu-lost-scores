@@ -17,7 +17,7 @@ use lost_scores_app::session::{self as stored, Session as Login};
 use lost_scores_app::setup::Settings;
 use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::updates::latest_release;
-use lost_scores_app::{cache, history, keys, setup, submission};
+use lost_scores_app::{cache, history, keys, replays, setup, submission};
 use osu_api::{ApiError, Credentials, Http, Server, UserKey};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
@@ -93,6 +93,10 @@ struct Session {
     offered: RefCell<Option<PathBuf>>,
     declined: RefCell<Option<PathBuf>>,
     publish_next: Cell<bool>,
+    replays_next: Cell<bool>,
+    replaying: Cell<bool>,
+    top_rows: RefCell<Vec<usize>>,
+    marks: RefCell<Vec<(usize, i32)>>,
     images_view: Cell<bool>,
     picked_images: Cell<bool>,
     picture_tops: RefCell<Vec<f32>>,
@@ -182,6 +186,10 @@ impl Session {
             offered: RefCell::new(None),
             declined: RefCell::new(None),
             publish_next: Cell::new(false),
+            replays_next: Cell::new(false),
+            replaying: Cell::new(false),
+            top_rows: RefCell::new(Vec::new()),
+            marks: RefCell::new(Vec::new()),
             images_view: Cell::new(true),
             picked_images: Cell::new(true),
             picture_tops: RefCell::new(Vec::new()),
@@ -532,6 +540,8 @@ impl Session {
         let session = self.clone();
         state.on_publish_offer(move || session.publish_offer());
         let session = self.clone();
+        state.on_share_replays(move || session.share_top_replays());
+        let session = self.clone();
         state.on_dismiss_offer(move || session.dismiss_offer());
         let session = self.clone();
         state.on_cancel_unsend(move || {
@@ -672,6 +682,8 @@ impl Session {
         table.set_include_all(self.window.global::<State>().get_include_all());
         *self.table.borrow_mut() = table;
         *self.folder.borrow_mut() = folder;
+        *self.top_rows.borrow_mut() = replays::in_top(scan);
+        self.marks.borrow_mut().clear();
         let state = self.window.global::<State>();
         self.relist(index);
         state.set_scan_date(when(scan.made_at, &zone).into());
@@ -684,6 +696,12 @@ impl Session {
         }
         self.show_sent();
         self.refresh_sent();
+        let waiting = self
+            .shown_sent()
+            .is_some_and(|sent| !sent.queued.is_empty());
+        if waiting && let Some(folder) = self.folder.borrow().clone() {
+            self.send_replays(&folder);
+        }
     }
 
     fn relist(&self, fallback: usize) {
@@ -842,6 +860,26 @@ impl Session {
         state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
         state.set_sent_public(sent.as_ref().is_some_and(send::published));
         state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
+        let top = self.top_rows.borrow().len();
+        state.set_replays_in_top(top as i32);
+        state.set_can_share_replays(
+            top > 0
+                && sent.as_ref().is_some_and(|sent| {
+                    send::published(sent) && sent.replays.is_empty() && sent.queued.is_empty()
+                }),
+        );
+        let marks: Vec<(usize, i32)> = sent
+            .iter()
+            .flat_map(|sent| {
+                let shared = sent.replays.keys().map(|&row| (row, 4));
+                shared.chain(sent.queued.iter().map(|&row| (row, 3)))
+            })
+            .collect();
+        if *self.marks.borrow() != marks {
+            self.table.borrow_mut().set_replays(&marks);
+            self.rows.refresh();
+            *self.marks.borrow_mut() = marks;
+        }
         let offered = self.offered.borrow().clone();
         state.set_offer_shown(
             sent.is_none()
@@ -872,12 +910,88 @@ impl Session {
     }
 
     fn publish_offer(&self) {
+        let state = self.window.global::<State>();
+        self.replays_next
+            .set(state.get_offer_with_replays() && !self.top_rows.borrow().is_empty());
         self.publish_next.set(true);
         self.submit_scan();
-        if self.window.global::<State>().get_sending() {
+        if state.get_sending() {
             self.dismiss_offer();
         } else {
             self.publish_next.set(false);
+            self.replays_next.set(false);
+        }
+    }
+
+    fn share_top_replays(&self) {
+        if let Some(folder) = self.folder.borrow().clone() {
+            self.queue_top_replays(&folder);
+        }
+    }
+
+    fn queue_top_replays(&self, folder: &Path) {
+        let Some(login) = self.sending_login() else {
+            return;
+        };
+        let Some(mut sent) = history::submission(folder, &login.server) else {
+            return;
+        };
+        let shown = self.folder.borrow().as_deref() == Some(folder);
+        let rows = if shown {
+            self.top_rows.borrow().clone()
+        } else {
+            history::load(folder)
+                .map(|scan| replays::in_top(&scan))
+                .unwrap_or_default()
+        };
+        let fresh: Vec<usize> = rows
+            .into_iter()
+            .filter(|row| !sent.replays.contains_key(row))
+            .collect();
+        sent.queued.extend(fresh);
+        match history::remember(folder, &sent) {
+            Ok(()) => self.send_replays(folder),
+            Err(error) => self.log(&format!("Could not keep the replays to share: {error:#}")),
+        }
+        if shown {
+            self.show_sent();
+        }
+    }
+
+    fn send_replays(&self, folder: &Path) {
+        let Some(login) = self.sending_login() else {
+            return;
+        };
+        if self.replaying.replace(true) {
+            return;
+        }
+        let dir = PathBuf::from(self.window.global::<State>().get_osu_dir().to_string())
+            .join("Data")
+            .join("r");
+        let courier = self.courier.borrow().clone();
+        let weak = self.weak.clone();
+        let folder = folder.to_path_buf();
+        thread::spawn(move || {
+            let result = send::share_replays(&courier, &login, &folder, &dir);
+            on_ui(&weak, move |app| app.replayed(&folder, result));
+        });
+    }
+
+    fn replayed(&self, folder: &Path, result: Result<send::Shared>) {
+        self.replaying.set(false);
+        match result {
+            Ok(shared) => {
+                for line in &shared.lines {
+                    self.log(line);
+                }
+                if let Some(text) = shared.summary() {
+                    self.toast(&text);
+                }
+            }
+            Err(error) => self.log(&format!("Could not share the replays: {error:#}")),
+        }
+        if self.folder.borrow().as_deref() == Some(folder) {
+            self.show_sent();
         }
     }
 
@@ -934,7 +1048,13 @@ impl Session {
         let before = history::submission(folder, &login.server);
         match result {
             Ok(Reply::Sent(answer)) => {
-                let sent = history::Sent::new(&answer, &login.server);
+                let sent = before
+                    .as_ref()
+                    .filter(|old| old.id == answer.id)
+                    .map_or_else(
+                        || history::Sent::new(&answer, &login.server),
+                        |old| old.answered(&answer),
+                    );
                 let done = send::done(before.as_ref(), &sent);
                 match history::remember(folder, &sent) {
                     Ok(()) if publish_next && !send::published(&sent) => {
@@ -944,6 +1064,9 @@ impl Session {
                     Ok(()) => {
                         self.log(&format!("{done}: {}", sent.id));
                         self.toast(done);
+                        if send::published(&sent) && self.replays_next.replace(false) {
+                            self.queue_top_replays(folder);
+                        }
                     }
                     Err(error) => {
                         self.send_failed(&format!("Could not keep the answer: {error:#}"))
@@ -955,7 +1078,7 @@ impl Session {
                 self.log("Deleted the scan from the Lost Scores server");
                 self.toast("Deleted from the server");
             }
-            Ok(Reply::Listed(_)) => {}
+            Ok(Reply::Listed(_) | Reply::Replayed(_)) => {}
             Err(error) => match error.downcast_ref::<ApiError>() {
                 Some(ApiError::LoginRequired) => {
                     self.login_expired();
@@ -3404,6 +3527,7 @@ mod tests {
                 Call::Unpublish(id) => format!("unpublish {id}"),
                 Call::Delete(id) => format!("delete {id}"),
                 Call::List => "list".to_owned(),
+                Call::Replay { id, row, .. } => format!("replay {id} {row}"),
             };
             sent.lock()
                 .unwrap()
@@ -3434,6 +3558,189 @@ mod tests {
             visibility: visibility.into(),
             status: status.into(),
         }
+    }
+
+    fn replay_bytes() -> Vec<u8> {
+        let mut out = vec![0];
+        out.extend(20210520i32.to_le_bytes());
+        for text in ["0b577cbe9bc774600d20cfa17c0aa94c", "Lemon", ""] {
+            if text.is_empty() {
+                out.push(0x00);
+            } else {
+                out.push(0x0b);
+                out.push(u8::try_from(text.len()).unwrap());
+                out.extend(text.as_bytes());
+            }
+        }
+        for count in [300u16, 20, 1, 0, 0, 2] {
+            out.extend(count.to_le_bytes());
+        }
+        out.extend(1_234_567u32.to_le_bytes());
+        out.extend(500u16.to_le_bytes());
+        out.push(0);
+        out.extend(72u32.to_le_bytes());
+        out.push(0x00);
+        out.extend(638_357_968_000_000_000i64.to_le_bytes());
+        out.extend(0i32.to_le_bytes());
+        out.extend(1i64.to_le_bytes());
+        out
+    }
+
+    fn replay_scan() -> lost_scores_app::history::SavedScan {
+        use lost_scores_app::rows::{Hits, LostRow, PotentialRow};
+        use lost_scores_core::grade::Grade;
+        use lost_scores_core::maps::MapStatus;
+        let hits = Hits {
+            n300: 300,
+            n100: 20,
+            n50: 1,
+            misses: 2,
+        };
+        let row = |file: &str, beatmap_id: u32, pp: f64| LostRow {
+            pp,
+            kept_pp: 150.0,
+            score: 1_234_567,
+            kept_score: 1_300_000,
+            mods: "HDDT".into(),
+            unix_time: 1_700_000_000,
+            played: "2023-11-14 22:13".into(),
+            status: MapStatus::Ranked,
+            beatmap_md5: "0b577cbe9bc774600d20cfa17c0aa94c".into(),
+            beatmap_id: Some(beatmap_id),
+            beatmapset_id: None,
+            artist: "A".into(),
+            title: format!("Map {beatmap_id}"),
+            version: "x".into(),
+            file: file.into(),
+            creator: "m".into(),
+            hits,
+            accuracy: 96.5,
+            grade: Grade::S,
+            max_combo: 500,
+        };
+        let place = |pp: f64, beatmap_id: u32| PotentialRow {
+            place: 1,
+            pp,
+            weight: 1.0,
+            weighted: pp,
+            lost: true,
+            beatmap_id,
+            beatmapset_id: None,
+            artist: "A".into(),
+            title: format!("Map {beatmap_id}"),
+            version: "x".into(),
+            creator: "m".into(),
+            mods: "HDDT".into(),
+            accuracy: 96.5,
+            unix_time: 1_700_000_000,
+            played: "2023-11-14 22:13".into(),
+            hits,
+            score: 1_234_567,
+            grade: Grade::S,
+            status: MapStatus::Ranked,
+            kept_pp: Some(150.0),
+        };
+        let mut scan = saved_scan();
+        scan.lost = vec![row("a.osr", 11, 321.5), row("b.osr", 12, 200.0)];
+        scan.potential = Some(PotentialResult {
+            current_pp: 1000.0,
+            potential_pp: 1100.0,
+            current_accuracy: 98.0,
+            potential_accuracy: 98.0,
+            global_rank: None,
+            lost_in_top: 2,
+            rows: vec![place(321.5, 11), place(200.0, 12)],
+            online: Vec::new(),
+        });
+        scan
+    }
+
+    fn shown_replay_scan(session: &Session, root: &Path, sent: Option<Sent>) -> PathBuf {
+        let scan = replay_scan();
+        let folder = history::save(root, &scan).unwrap();
+        for name in ["a.osr", "b.osr"] {
+            std::fs::write(root.join("osu/Data/r").join(name), replay_bytes()).unwrap();
+        }
+        if let Some(sent) = sent {
+            history::remember(&folder, &sent).unwrap();
+        }
+        session.show_scan(0, Some(folder.clone()), &scan);
+        folder
+    }
+
+    fn marks(session: &Session) -> Vec<i32> {
+        use slint::Model;
+        session.show_tab(Tab::Lost);
+        (0..session.rows.row_count())
+            .map(|i| session.rows.row_data(i).unwrap().replay)
+            .collect()
+    }
+
+    #[test]
+    fn publishing_from_the_offer_sends_the_replays_of_the_top() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_replay_scan(&session, root.path(), None);
+        session.offer(&folder, &replay_scan());
+        assert!(state.get_offer_shown());
+        assert_eq!(state.get_replays_in_top(), 2);
+        assert!(state.get_offer_with_replays());
+        state.invoke_publish_offer();
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        let sent = history::submission(&folder, &login().server).unwrap();
+        assert_eq!(sent.queued.into_iter().collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(calls(&received, 1), ["tok replay abc 0"]);
+    }
+
+    #[test]
+    fn a_shown_scan_marks_its_replays_and_sends_the_waiting_ones() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.replays.insert(0, "aa".into());
+        sent.queued.insert(1);
+        shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(marks(&session), [4, 3]);
+        assert!(!state.get_can_share_replays());
+        assert_eq!(calls(&received, 2), ["tok list", "tok replay abc 1"]);
+    }
+
+    #[test]
+    fn a_new_answer_keeps_the_replays_of_the_scan() {
+        let (_window, session, root) = keyless(650.0);
+        let _received = record_calls(&session);
+        let mut sent = Sent::new(&answer("private", "unverified"), &login().server);
+        sent.replays.insert(0, "aa".into());
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        let kept = history::submission(&folder, &login().server).unwrap();
+        assert_eq!(kept.visibility, "public");
+        assert_eq!(kept.replays.get(&0).map(String::as_str), Some("aa"));
+        assert!(kept.queued.is_empty());
+    }
+
+    #[test]
+    fn the_menu_shares_the_replays_of_the_top_when_none_went_yet() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let sent = Sent::new(&answer("public", "unverified"), &login().server);
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(calls(&received, 1), ["tok list"]);
+        assert!(state.get_can_share_replays());
+        state.invoke_share_replays();
+        let queued = history::submission(&folder, &login().server)
+            .unwrap()
+            .queued;
+        assert_eq!(queued.into_iter().collect::<Vec<_>>(), [0, 1]);
+        assert!(!state.get_can_share_replays());
+        assert_eq!(marks(&session), [3, 3]);
+        assert_eq!(calls(&received, 1), ["tok replay abc 0"]);
     }
 
     fn shown_scan(session: &Session, root: &Path, sent: Option<Submission>) -> PathBuf {

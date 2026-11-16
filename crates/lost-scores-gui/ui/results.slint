@@ -82,7 +82,9 @@ component DetailLine inherits Rectangle {
     property <length> gap: 12px;
     property <length> link-w: root.item.link != "" ? lprobe.preferred-width : 0px;
     property <length> chip-w: root.item.status != "" ? sprobe.preferred-width + 12px : 0px;
-    property <length> chip-part: root.chip-w > 0px ? root.chip-w + root.gap : 0px;
+    property <string> replay-text: root.item.replay == 4 ? "replay" : root.item.replay == 3 ? "replay soon" : "";
+    property <length> rchip-w: root.replay-text != "" ? rprobe.preferred-width + 12px : 0px;
+    property <length> chip-part: (root.chip-w > 0px ? root.chip-w + root.gap : 0px) + (root.rchip-w > 0px ? root.rchip-w + (root.chip-w > 0px ? 6px : root.gap) : 0px);
     property <length> v-pref: min(ver.preferred-width, 260px);
     property <length> v-min: min(root.v-pref, 110px);
     property <length> m-pref: root.item.creator != "" ? map.preferred-width : 0px;
@@ -175,6 +177,26 @@ component DetailLine inherits Rectangle {
         text: root.item.status;
         font-size: 11px;
         font-weight: 600;
+    }
+    rprobe := Text {
+        visible: false;
+        text: root.replay-text;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    if root.replay-text != "": Rectangle {
+        x: root.end-x + root.gap + root.link-part + (root.chip-w > 0px ? root.chip-w + 6px : 0px);
+        y: 0px;
+        width: root.rchip-w;
+        height: 16px;
+        border-radius: 4px;
+        background: #2f4a2a;
+        Text {
+            text: root.replay-text;
+            color: T.up;
+            font-size: 11px;
+            font-weight: 600;
+        }
     }
     if root.item.status != "": Rectangle {
         x: root.end-x + root.gap + root.link-part;
@@ -772,6 +794,38 @@ component OfferCard inherits Rectangle {
             color: T.ftext;
             font-size: 14.5px;
             wrap: word-wrap;
+        }
+        if State.replays-in-top > 0: HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 6px;
+                background: State.offer-with-replays ? T.acc2 : T.tog;
+                border-width: 1.5px;
+                border-color: State.offer-with-replays ? T.acc : T.togb;
+                if State.offer-with-replays: Image {
+                    x: 3px;
+                    y: 3px;
+                    width: 16px;
+                    height: 16px;
+                    source: @image-url("../assets/i-check.svg");
+                    colorize: #ffffff;
+                    image-fit: contain;
+                }
+                TouchArea {
+                    clicked => {
+                        State.offer-with-replays = !State.offer-with-replays;
+                    }
+                }
+            }
+            Text {
+                text: "Also share the replays of the \{State.replays-in-top} lost plays in your top";
+                color: T.ftext;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
         }
         HorizontalLayout {
             spacing: 10px;
@@ -1399,6 +1453,13 @@ export component ResultsPanel inherits Rectangle {
                     font-size: 13px;
                     font-weight: 600;
                     vertical-alignment: center;
+                }
+            }
+            if State.can-share-replays: MenuRow {
+                text: "Share the replays of my top";
+                clicked => {
+                    State.send-menu-open = false;
+                    State.share-replays();
                 }
             }
             MenuRow {

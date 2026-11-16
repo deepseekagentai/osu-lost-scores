@@ -141,6 +141,7 @@ pub fn row(item: &Item) -> ScoreRow {
         kept_tip: kept_tip.into(),
         lost,
         fresh: item.fresh,
+        replay: item.replay,
         status: chip.as_ref().map_or("", |chip| chip.text).into(),
         status_color: color(chip.as_ref().map_or(0, |chip| chip.background)),
         status_text: color(chip.as_ref().map_or(0, |chip| chip.ink)),
