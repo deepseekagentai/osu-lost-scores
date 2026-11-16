@@ -45,14 +45,16 @@ pub fn fill_with(
             Some(
                 indices
                     .into_iter()
-                    .map(|index| {
+                    .filter_map(|index| {
                         let header = &view[index].header;
+                        ticker.tick();
+                        if judged(header) != map.hit_objects.len() {
+                            return None;
+                        }
                         let attrs = by_mods
                             .entry(header.mods.bits())
                             .or_insert_with(|| difficulty(&map, header.mods));
-                        let pp = scored(Performance::new(attrs.clone()), header);
-                        ticker.tick();
-                        (index, pp)
+                        Some((index, scored(Performance::new(attrs.clone()), header)))
                     })
                     .collect(),
             )
@@ -70,6 +72,18 @@ pub fn fill_with(
         }
     }
     failed
+}
+
+fn judged(header: &ReplayHeader) -> usize {
+    [
+        header.count_300,
+        header.count_100,
+        header.count_50,
+        header.count_miss,
+    ]
+    .into_iter()
+    .map(usize::from)
+    .sum()
 }
 
 pub fn accuracy(header: &ReplayHeader) -> f64 {

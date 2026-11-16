@@ -51,6 +51,33 @@ fn fills_pp_for_replays_with_a_local_beatmap() {
 }
 
 #[test]
+fn a_play_that_stopped_before_the_end_gets_no_pp() {
+    let dir = osu_folder();
+    let stopped = Replay {
+        mode: 0,
+        player: "Lemon",
+        beatmap_md5: SAMPLE_MD5,
+        counts: [3, 0, 0, 0],
+        max_combo: 3,
+        mods: HD_DT,
+        ticks: TICKS + 2,
+    };
+    write(dir.path(), "Data/r/c.osr", &stopped.bytes());
+    let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
+    pp::fill(dir.path(), &mut report.replays);
+    let pp_of = |name: &str| {
+        report
+            .replays
+            .iter()
+            .find(|replay| replay.file_name == name)
+            .unwrap()
+            .pp
+    };
+    assert!(pp_of("a.osr").is_some());
+    assert_eq!(pp_of("c.osr"), None);
+}
+
+#[test]
 fn beatmap_that_cannot_be_read_counts_as_a_failure() {
     let dir = osu_folder();
     let mut report = scan(dir.path(), &dir.path().join("Songs"), &["Lemon".into()]).unwrap();
