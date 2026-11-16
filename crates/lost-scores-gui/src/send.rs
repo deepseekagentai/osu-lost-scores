@@ -154,7 +154,7 @@ pub fn offer(top: &PotentialResult) -> Option<String> {
     let lost = top.potential_pp - top.current_pp;
     (lost >= 0.5).then(|| {
         format!(
-            "ScoreV1 cost you {} pp: {} \u{2192} {} pp. Show it next to other players?",
+            "You lost {} pp ({} \u{2192} {} pp). Show it to other players?",
             thousands(lost),
             thousands(top.current_pp),
             thousands(top.potential_pp)

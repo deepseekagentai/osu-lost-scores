@@ -771,16 +771,16 @@ component OfferCard inherits Rectangle {
                 alignment: center;
                 Image {
                     source: @image-url("../assets/i-trend-down.svg");
-                    width: 22px;
-                    height: 22px;
+                    width: 26px;
+                    height: 26px;
                     image-fit: contain;
                     colorize: T.lost;
                 }
             }
             Text {
-                text: "Put this scan in the Hall of Fame";
+                text: "Hall of Fame";
                 color: #ffffff;
-                font-size: 18px;
+                font-size: 22px;
                 font-weight: 600;
                 vertical-alignment: center;
             }
@@ -788,56 +788,61 @@ component OfferCard inherits Rectangle {
         Text {
             text: State.offer-text;
             color: T.ftext;
-            font-size: 14.5px;
+            font-size: 17px;
             wrap: word-wrap;
-        }
-        if State.replays-in-top > 0: choice := Rectangle {
-            property <string> label: State.replays-in-top == 1 ? "Also share the replay of the lost play in your top" : "Also share the replays of the \{State.replays-in-top} lost plays in your top";
-            height: choice-row.preferred-height;
-            choice-row := HorizontalLayout {
-                spacing: 10px;
-                alignment: start;
-                Rectangle {
-                    width: 22px;
-                    height: 22px;
-                    border-radius: 6px;
-                    background: State.offer-with-replays ? T.acc2 : T.tog;
-                    border-width: 1.5px;
-                    border-color: State.offer-with-replays ? T.acc : T.togb;
-                    if State.offer-with-replays: Image {
-                        x: 3px;
-                        y: 3px;
-                        width: 16px;
-                        height: 16px;
-                        source: @image-url("../assets/i-check.svg");
-                        colorize: #ffffff;
-                        image-fit: contain;
-                    }
-                }
-                Text {
-                    text: choice.label;
-                    accessible-role: none;
-                    color: T.ftext;
-                    font-size: 14px;
-                    vertical-alignment: center;
-                }
-            }
-            TouchArea {
-                accessible-role: checkbox;
-                accessible-checked: State.offer-with-replays;
-                accessible-label: choice.label;
-                accessible-action-default => {
-                    State.offer-with-replays = !State.offer-with-replays;
-                }
-                mouse-cursor: pointer;
-                clicked => {
-                    State.offer-with-replays = !State.offer-with-replays;
-                }
-            }
         }
         HorizontalLayout {
             spacing: 10px;
-            alignment: end;
+            if State.replays-in-top > 0: VerticalLayout {
+                alignment: center;
+                choice := Rectangle {
+                    property <string> label: State.replays-in-top == 1 ? "Share the replay too" : "Share \{State.replays-in-top} replays too";
+                    width: choice-row.preferred-width;
+                    height: choice-row.preferred-height;
+                    choice-row := HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 22px;
+                            height: 22px;
+                            border-radius: 6px;
+                            background: State.offer-with-replays ? T.acc2 : T.tog;
+                            border-width: 1.5px;
+                            border-color: State.offer-with-replays ? T.acc : T.togb;
+                            if State.offer-with-replays: Image {
+                                x: 3px;
+                                y: 3px;
+                                width: 16px;
+                                height: 16px;
+                                source: @image-url("../assets/i-check.svg");
+                                colorize: #ffffff;
+                                image-fit: contain;
+                            }
+                        }
+                        Text {
+                            text: choice.label;
+                            accessible-role: none;
+                            color: T.ftext;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        accessible-role: checkbox;
+                        accessible-checked: State.offer-with-replays;
+                        accessible-label: choice.label;
+                        accessible-action-default => {
+                            State.offer-with-replays = !State.offer-with-replays;
+                        }
+                        mouse-cursor: pointer;
+                        clicked => {
+                            State.offer-with-replays = !State.offer-with-replays;
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
             SecondaryButton {
                 width: 110px;
                 height: 40px;

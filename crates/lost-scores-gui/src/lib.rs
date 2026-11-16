@@ -1034,7 +1034,7 @@ mod tests {
         state.set_replays_in_top(1);
         state.set_offer_with_replays(true);
         settle();
-        let label = "Also share the replay of the lost play in your top";
+        let label = "Share the replay too";
         let found: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].accessible_role(), Some(AccessibleRole::Checkbox));

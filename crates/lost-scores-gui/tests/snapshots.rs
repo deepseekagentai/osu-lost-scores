@@ -48,7 +48,7 @@ fn the_results_header_fits_one_row_in_the_narrowest_window() {
     state.set_show_results(true);
     state.set_has_images(true);
     state.set_images_shown(true);
-    state.set_sent_state("Published, unverified".into());
+    state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
     let september = jiff::civil::date(2026, 9, 30)
         .at(12, 0, 0, 0)
@@ -662,7 +662,7 @@ fn render_results_snapshots() {
     state.set_logged_in(true);
     state.set_own_keys(false);
     state.set_offer_text(
-        "ScoreV1 cost you 111 pp: 8,557 \u{2192} 8,668 pp. Show it next to other players?".into(),
+        "You lost 111 pp (8,557 \u{2192} 8,668 pp). Show it to other players?".into(),
     );
     state.set_offer_shown(true);
     state.set_images_shown(true);
@@ -687,7 +687,7 @@ fn render_results_snapshots() {
     state.set_scans_open(false);
     state.set_sent_state("Private".into());
     draw(&surface, &dir.join("30-results-private.png"));
-    state.set_sent_state("Published, unverified".into());
+    state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("31-results-published.png"));
     state.set_send_menu_x(288.0);
@@ -712,7 +712,7 @@ fn render_results_snapshots() {
     state.set_offer_shown(false);
     results.table.borrow_mut().set_replays(&[(3, 3), (4, 4)]);
     results.present(&state, &scan, Tab::Lost);
-    state.set_sent_state("Published, unverified".into());
+    state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("37-replays-chips.png"));
 }
@@ -989,7 +989,7 @@ fn render_switch_snapshots() {
     draw_sized(&surface, LOGICAL, &dir.join("switch3-images-650.png"));
     draw_sized(&surface, TWO_COLUMNS, &dir.join("switch3-images-1600.png"));
     state.set_scan_date("30 Sep 2026".into());
-    state.set_sent_state("Published, unverified".into());
+    state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
     state.set_catbox_label("Uploading 2 of 3".into());
     state.set_catbox_busy(true);

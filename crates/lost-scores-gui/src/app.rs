@@ -4092,7 +4092,7 @@ mod tests {
         assert!(state.get_offer_shown());
         assert_eq!(
             state.get_offer_text(),
-            "ScoreV1 cost you 111 pp: 8,557 \u{2192} 8,668 pp. Show it next to other players?"
+            "You lost 111 pp (8,557 \u{2192} 8,668 pp). Show it to other players?"
         );
         state.invoke_dismiss_offer();
         assert!(!state.get_offer_shown());
