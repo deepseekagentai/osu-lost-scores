@@ -174,6 +174,7 @@ pub fn foot(table: &Table, tab: Tab) -> ModelRc<FootItem> {
 pub struct RowsModel {
     table: Rc<RefCell<Table>>,
     tab: Cell<Tab>,
+    shown: RefCell<Option<Vec<usize>>>,
     notify: ModelNotify,
 }
 
@@ -182,13 +183,27 @@ impl RowsModel {
         Self {
             table,
             tab: Cell::new(Tab::Lost),
+            shown: RefCell::new(None),
             notify: ModelNotify::default(),
         }
     }
 
     pub fn show(&self, tab: Tab) {
         self.tab.set(tab);
+        *self.shown.borrow_mut() = None;
         self.notify.reset();
+    }
+
+    pub fn narrow(&self, rows: Option<Vec<usize>>) {
+        *self.shown.borrow_mut() = rows;
+        self.notify.reset();
+    }
+
+    pub fn source(&self, row: usize) -> Option<usize> {
+        match &*self.shown.borrow() {
+            Some(rows) => rows.get(row).copied(),
+            None => Some(row),
+        }
     }
 
     pub fn refresh(&self) {
@@ -200,15 +215,15 @@ impl Model for RowsModel {
     type Data = ScoreRow;
 
     fn row_count(&self) -> usize {
-        self.table.borrow().rows(self.tab.get()).len()
+        match &*self.shown.borrow() {
+            Some(rows) => rows.len(),
+            None => self.table.borrow().rows(self.tab.get()).len(),
+        }
     }
 
     fn row_data(&self, row_index: usize) -> Option<ScoreRow> {
-        self.table
-            .borrow()
-            .rows(self.tab.get())
-            .get(row_index)
-            .map(row)
+        let index = self.source(row_index)?;
+        self.table.borrow().rows(self.tab.get()).get(index).map(row)
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {

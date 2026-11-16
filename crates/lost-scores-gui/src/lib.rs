@@ -518,12 +518,10 @@ mod tests {
             assert_eq!(count(&window, "FootPair"), 1, "{width} tables");
             assert_eq!(count(&window, "Tab"), 3, "{width} tables");
             assert_eq!(count(&window, "SearchField"), 1, "{width} tables");
-            assert_eq!(count(&window, "SearchButtons"), 1, "{width} tables");
             assert!(count(&window, "HeaderCell") > 0, "{width} tables");
             state.set_images_shown(true);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
             assert_eq!(count(&window, "SearchField"), 0, "{width} images");
-            assert_eq!(count(&window, "SearchButtons"), 0, "{width} images");
             assert_eq!(count(&window, "HeaderCell"), 0, "{width} images");
             assert_eq!(count(&window, "FootPair"), 0, "{width} images");
             assert_eq!(count(&window, "Tab"), 0, "{width} images");
@@ -935,11 +933,12 @@ mod tests {
         state.set_has_results(true);
         state.set_show_results(true);
         state.set_search_text("camellia".into());
-        state.set_search_index(3);
+        state.set_search_open(true);
         settle();
 
         press(&window, Key::Escape);
         assert_eq!(state.get_search_text(), "");
+        assert!(!state.get_search_open());
         assert!(state.get_show_results());
         assert_eq!(*calls.borrow(), ["search-cleared"]);
 
@@ -954,6 +953,7 @@ mod tests {
         state.set_has_results(true);
         state.set_show_results(true);
         state.set_search_text("camellia".into());
+        state.set_search_open(true);
         settle();
         ElementHandle::find_by_element_type_name(&window, "TextInput")
             .next()
@@ -961,7 +961,29 @@ mod tests {
             .mock_single_click(PointerEventButton::Left);
         press(&window, Key::Escape);
         assert_eq!(state.get_search_text(), "");
+        assert!(!state.get_search_open());
         assert_eq!(*calls.borrow(), ["search-cleared"]);
+    }
+
+    #[test]
+    fn control_f_opens_the_search_over_the_results() {
+        let (window, _calls) = keyboard_window();
+        let state = window.global::<State>();
+        state.set_has_results(true);
+        state.set_show_results(true);
+        settle();
+        let control = SharedString::from(Key::Control);
+        window.window().dispatch_event(WindowEvent::KeyPressed {
+            text: control.clone(),
+        });
+        for event in [
+            WindowEvent::KeyPressed { text: "f".into() },
+            WindowEvent::KeyReleased { text: "f".into() },
+            WindowEvent::KeyReleased { text: control },
+        ] {
+            window.window().dispatch_event(event);
+        }
+        assert!(state.get_search_open());
     }
 
     #[test]

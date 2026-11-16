@@ -126,7 +126,7 @@ export global State {
     in-out property <length> picture-menu-y;
     in-out property <string> search-text;
     in-out property <string> search-label;
-    in-out property <int> search-index: -1;
+    in-out property <bool> search-open;
     in-out property <length> jump-y;
     in-out property <bool> jump-animated;
     in-out property <length> scroll-y;
@@ -173,7 +173,6 @@ export global State {
     callback set-tab(int);
     callback sort-by(int);
     callback search-changed(string);
-    callback search-step(int);
     callback select-scan(int);
     callback open-scan-folder();
     callback delete-scan(int);

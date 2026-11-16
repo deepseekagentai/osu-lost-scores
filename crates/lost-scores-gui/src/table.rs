@@ -325,13 +325,6 @@ pub fn tone(now: f64, potential: f64, decimals: i32) -> i32 {
     }
 }
 
-pub fn wrap(current: usize, total: usize, step: i32) -> usize {
-    if total == 0 {
-        return 0;
-    }
-    (current as i64 + i64::from(step)).rem_euclid(total as i64) as usize
-}
-
 impl Table {
     pub fn from_scan(scan: &SavedScan) -> Self {
         Self::in_zone(scan, &TimeZone::system())
@@ -656,7 +649,7 @@ mod tests {
     use lost_scores_core::grade::Grade;
     use lost_scores_core::maps::MapStatus;
 
-    use super::{Column, Tab, Table, anchor_index, tone, when, when_day, when_short, wrap};
+    use super::{Column, Tab, Table, anchor_index, tone, when, when_day, when_short};
 
     const SEPTEMBER_2024: i64 = 1_725_406_740;
 
@@ -880,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn search_ignores_case_and_wraps() {
+    fn search_ignores_case() {
         let table = table(vec![
             lost(100.0, 90.0, "Camellia", "Alpha", ""),
             lost(300.0, 90.0, "Other", "Beta", "HDDT"),
@@ -891,9 +884,6 @@ mod tests {
         assert_eq!(table.search(Tab::Lost, "3 september 2024"), [0, 1, 2]);
         assert!(table.search(Tab::Lost, "nothing").is_empty());
         assert!(table.search(Tab::Lost, "  ").is_empty());
-        assert_eq!(wrap(1, 2, 1), 0);
-        assert_eq!(wrap(0, 2, -1), 1);
-        assert_eq!(wrap(0, 0, 1), 0);
     }
 
     #[test]

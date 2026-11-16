@@ -35,7 +35,7 @@ use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_messag
 use crate::send::{self, Call, Courier, Reply};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
-use crate::table::{Column, Tab, Table, anchor_index, tone, when, wrap};
+use crate::table::{Column, Tab, Table, anchor_index, tone, when};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot, mods_width};
 use crate::worker::{self, Job, Message, Sink};
@@ -74,8 +74,6 @@ struct Session {
     rows: Rc<RowsModel>,
     tab: Cell<Tab>,
     query: RefCell<String>,
-    matches: RefCell<Vec<usize>>,
-    position: Cell<usize>,
     entries: RefCell<Vec<history::ScanEntry>>,
     folder: RefCell<Option<PathBuf>>,
     clipboard: RefCell<Clipboard>,
@@ -161,8 +159,6 @@ impl Session {
             table,
             tab: Cell::new(Tab::Lost),
             query: RefCell::new(String::new()),
-            matches: RefCell::new(Vec::new()),
-            position: Cell::new(0),
             entries: RefCell::new(Vec::new()),
             folder: RefCell::new(None),
             clipboard: RefCell::new(Clipboard::system()),
@@ -483,8 +479,6 @@ impl Session {
         state.on_sort_by(move |index| session.sort_by(Column::from_index(index)));
         let session = self.clone();
         state.on_search_changed(move |text| session.search_changed(&text));
-        let session = self.clone();
-        state.on_search_step(move |step| session.search_step(step));
         let session = self.clone();
         state.on_select_scan(move |index| session.select_scan(index as usize));
         let session = self.clone();
@@ -1432,30 +1426,11 @@ impl Session {
 
     fn sort_by(&self, column: Column) {
         let tab = self.tab.get();
-        let current = self
-            .matches
-            .borrow()
-            .get(self.position.get())
-            .and_then(|&row| self.table.borrow().rows(tab).get(row).cloned());
         self.table.borrow_mut().sort(tab, column);
         self.rows.refresh();
         self.show_sorting();
         self.rerun_search(false);
-        let position = current.and_then(|item| {
-            let table = self.table.borrow();
-            self.matches
-                .borrow()
-                .iter()
-                .position(|&row| table.rows(tab).get(row) == Some(&item))
-        });
-        match position {
-            Some(position) => {
-                self.position.set(position);
-                self.show_match(true);
-            }
-            None if self.matches.borrow().is_empty() => self.jump(0, false),
-            None => self.show_match(true),
-        }
+        self.jump(0, false);
     }
 
     fn jump(&self, row: i32, animated: bool) {
@@ -1476,42 +1451,25 @@ impl Session {
 
     fn rerun_search(&self, jump: bool) {
         let query = self.query.borrow().clone();
-        let found = self.table.borrow().search(self.tab.get(), &query);
-        self.position.set(0);
-        *self.matches.borrow_mut() = found;
-        self.show_match(jump);
-    }
-
-    fn search_step(&self, step: i32) {
-        let total = self.matches.borrow().len();
-        self.position.set(wrap(self.position.get(), total, step));
-        self.show_match(true);
-    }
-
-    fn show_match(&self, jump: bool) {
-        let state = self.window.global::<State>();
-        let matches = self.matches.borrow();
-        let label = if self.query.borrow().trim().is_empty() {
-            String::new()
-        } else if matches.is_empty() {
-            "0/0".to_owned()
-        } else {
-            format!("{}/{}", self.position.get() + 1, matches.len())
+        let found =
+            (!query.trim().is_empty()).then(|| self.table.borrow().search(self.tab.get(), &query));
+        let label = match &found {
+            None => String::new(),
+            Some(rows) if rows.is_empty() => "nothing found".to_owned(),
+            Some(rows) => format!("{} found", rows.len()),
         };
-        state.set_search_label(label.into());
-        match matches.get(self.position.get()) {
-            Some(&row) => {
-                state.set_search_index(row as i32);
-                if jump {
-                    self.jump(row as i32, true);
-                }
-            }
-            None => state.set_search_index(-1),
+        self.rows.narrow(found);
+        self.window.global::<State>().set_search_label(label.into());
+        if jump {
+            self.jump(0, false);
         }
     }
 
     fn copy_row(&self, index: usize) {
-        let text = self.table.borrow().copy_text(self.tab.get(), index);
+        let Some(source) = self.rows.source(index) else {
+            return;
+        };
+        let text = self.table.borrow().copy_text(self.tab.get(), source);
         self.put_on_clipboard(text, |app, result| match result {
             Ok(()) => app.toast("Copied to clipboard"),
             Err(error) => app.log(&format!("Could not copy the row: {error}")),
@@ -3674,6 +3632,44 @@ mod tests {
         (0..session.rows.row_count())
             .map(|i| session.rows.row_data(i).unwrap().replay)
             .collect()
+    }
+
+    fn titles(session: &Session) -> Vec<String> {
+        use slint::Model;
+        (0..session.rows.row_count())
+            .map(|i| session.rows.row_data(i).unwrap().title.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn searching_shows_only_the_matching_rows() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        shown_replay_scan(&session, root.path(), None);
+        session.show_tab(Tab::Lost);
+        session.search_changed("Map 12");
+        assert_eq!(titles(&session), ["Map 12"]);
+        assert_eq!(state.get_search_label(), "1 found");
+        assert_eq!(session.rows.source(0), Some(1));
+        session.search_changed("zzz");
+        assert!(titles(&session).is_empty());
+        assert_eq!(state.get_search_label(), "nothing found");
+        session.search_changed("");
+        assert_eq!(titles(&session), ["Map 11", "Map 12"]);
+        assert_eq!(state.get_search_label(), "");
+    }
+
+    #[test]
+    fn sorting_keeps_the_found_rows() {
+        let (_window, session, root) = keyless(650.0);
+        shown_replay_scan(&session, root.path(), None);
+        session.show_tab(Tab::Lost);
+        session.search_changed("Map 1");
+        assert_eq!(titles(&session), ["Map 11", "Map 12"]);
+        session.sort_by(crate::table::Column::Pp);
+        assert_eq!(titles(&session), ["Map 12", "Map 11"]);
+        session.search_changed("Map 11");
+        assert_eq!(titles(&session), ["Map 11"]);
     }
 
     #[test]

@@ -588,9 +588,6 @@ component SearchField inherits Rectangle {
         edited => {
             State.search-changed(self.text);
         }
-        accepted => {
-            State.search-step(1);
-        }
     }
     counter := Text {
         x: parent.width - self.width - 12px;
@@ -598,28 +595,6 @@ component SearchField inherits Rectangle {
         color: T.k;
         font-size: 13px;
         vertical-alignment: center;
-    }
-}
-
-component SearchButtons inherits HorizontalLayout {
-    spacing: 6px;
-    IconButton {
-        width: 62px;
-        height: 40px;
-        icon: @image-url("../assets/i-chev-up.svg");
-        tip: "Previous match";
-        clicked => {
-            State.search-step(-1);
-        }
-    }
-    IconButton {
-        width: 62px;
-        height: 40px;
-        icon: @image-url("../assets/i-chev-down.svg");
-        tip: "Next match";
-        clicked => {
-            State.search-step(1);
-        }
     }
 }
 
@@ -1202,9 +1177,6 @@ export component ResultsPanel inherits Rectangle {
                 max-width: 260px;
                 opacity: root.body-fade;
             }
-            if !root.view-images: SearchButtons {
-                opacity: root.body-fade;
-            }
             if State.has-results && root.view-images && State.has-images: CatboxButton {
                 opacity: root.body-fade;
             }
@@ -1233,9 +1205,6 @@ export component ResultsPanel inherits Rectangle {
                 spacing: 6px;
                 if !root.view-images: SearchField {
                     horizontal-stretch: 1;
-                    opacity: root.body-fade;
-                }
-                if !root.view-images: SearchButtons {
                     opacity: root.body-fade;
                 }
                 if State.has-results && !root.switch-up && root.view-images && State.has-images: CatboxButton {
@@ -1351,7 +1320,6 @@ export component ResultsPanel inherits Rectangle {
                         width: parent.width - 14px;
                         item: entry;
                         narrow: root.narrow;
-                        highlighted: i == State.search-index;
                         copy => {
                             State.copy-row(i);
                         }

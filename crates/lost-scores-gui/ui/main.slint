@@ -63,6 +63,10 @@ export component MainWindow inherits Window {
             self.focus();
         }
         key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "f" || event.text == "F") && State.has-results && (State.show-results || root.two-columns)) {
+                State.search-open = true;
+                return accept;
+            }
             if (event.text == Key.Escape) {
                 if (State.picture-menu-index >= 0) {
                     State.picture-menu-index = -1;
@@ -88,8 +92,9 @@ export component MainWindow inherits Window {
                     }
                 } else if (State.editing-name) {
                     State.editing-name = false;
-                } else if ((State.show-results || root.two-columns) && !State.images-shown && State.search-text != "") {
+                } else if ((State.show-results || root.two-columns) && !State.images-shown && (State.search-open || State.search-text != "")) {
                     State.search-text = "";
+                    State.search-open = false;
                     State.search-changed("");
                 } else if (State.show-results && !root.two-columns) {
                     State.back();

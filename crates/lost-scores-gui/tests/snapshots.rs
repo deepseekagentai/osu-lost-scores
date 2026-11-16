@@ -473,7 +473,7 @@ impl Results {
         let (column, descending) = self.table.borrow().sorting(tab);
         state.set_sort_column(column.index());
         state.set_sort_desc(descending);
-        state.set_search_index(-1);
+        state.set_search_open(false);
         state.set_search_label("".into());
     }
 }
@@ -518,8 +518,9 @@ fn render_results_snapshots() {
 
     results.present(&state, &scan, Tab::Lost);
     let found = results.table.borrow().search(Tab::Lost, "camellia");
-    state.set_search_label(format!("1/{}", found.len()).into());
-    state.set_search_index(found[0] as i32);
+    state.set_search_label(format!("{} found", found.len()).into());
+    state.set_search_open(true);
+    results.rows.narrow(Some(found));
     draw(&surface, &dir.join("14-results-search.png"));
 
     let unicode = fake_scan(true);
