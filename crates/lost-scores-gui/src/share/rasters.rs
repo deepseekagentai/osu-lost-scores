@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -24,6 +25,11 @@ const COVER_WIDTH: u32 = 900;
 const COVER_HEIGHT: u32 = 250;
 const COVER_QUALITY: u8 = 90;
 const LOCAL_CHUNK: usize = 32;
+const LOCAL_THREADS: usize = 8;
+const MAX_MAP_BYTES: u64 = 1024 * 1024;
+const MAX_BACKGROUND_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_BACKGROUND_SIDE: u32 = 8192;
+const MAX_BACKGROUND_ALLOC: u64 = 256 * 1024 * 1024;
 
 pub fn cover_url(set_id: u32) -> String {
     format!("{COVER_HOST}{set_id}/covers/cover.jpg")
@@ -214,12 +220,25 @@ pub fn covers(
     }
     if let Some(songs) = songs {
         let folders = set_folders(songs);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(LOCAL_THREADS)
+            .build()
+            .ok();
         let mut remote = Vec::new();
         for chunk in wanted.chunks(LOCAL_CHUNK) {
-            let made: Vec<(u32, Option<Vec<u8>>)> = chunk
-                .par_iter()
-                .map(|&set_id| (set_id, local_cover(&folders, set_id)))
-                .collect();
+            let cut = || -> Vec<(u32, Option<Vec<u8>>)> {
+                chunk
+                    .par_iter()
+                    .map(|&set_id| (set_id, local_cover(&folders, set_id)))
+                    .collect()
+            };
+            let made = match &pool {
+                Some(pool) => pool.install(cut),
+                None => chunk
+                    .iter()
+                    .map(|&set_id| (set_id, local_cover(&folders, set_id)))
+                    .collect(),
+            };
             for (set_id, bytes) in made {
                 match bytes {
                     Some(bytes) => {
@@ -285,13 +304,19 @@ fn set_folders(songs: &Path) -> HashMap<u32, Vec<PathBuf>> {
 fn local_cover(folders: &HashMap<u32, Vec<PathBuf>>, set_id: u32) -> Option<Vec<u8>> {
     folders.get(&set_id)?.iter().find_map(|folder| {
         let background = background_in(folder)?;
-        let picture = image::ImageReader::open(background)
+        if fs::metadata(&background).ok()?.len() > MAX_BACKGROUND_BYTES {
+            return None;
+        }
+        let mut reader = image::ImageReader::open(background)
             .ok()?
             .with_guessed_format()
-            .ok()?
-            .decode()
             .ok()?;
-        cut_cover(&picture)
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_BACKGROUND_SIDE);
+        limits.max_image_height = Some(MAX_BACKGROUND_SIDE);
+        limits.max_alloc = Some(MAX_BACKGROUND_ALLOC);
+        reader.limits(limits);
+        cut_cover(&reader.decode().ok()?)
     })
 }
 
@@ -310,20 +335,40 @@ fn background_in(folder: &Path) -> Option<PathBuf> {
         .collect();
     maps.sort();
     maps.into_iter().find_map(|map| {
-        let text = fs::read(map).ok()?;
+        let mut text = Vec::new();
+        File::open(map)
+            .ok()?
+            .take(MAX_MAP_BYTES)
+            .read_to_end(&mut text)
+            .ok()?;
         let name = background_name(&String::from_utf8_lossy(&text))?;
-        let wanted = folder.join(&name);
-        if wanted.is_file() {
-            return Some(wanted);
+        if !Path::new(&name)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        {
+            return None;
         }
-        files
-            .iter()
-            .find(|file| {
-                file.file_name()
-                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
-            })
-            .cloned()
+        let wanted = folder.join(&name);
+        let found = if wanted.is_file() {
+            wanted
+        } else {
+            files
+                .iter()
+                .find(|file| {
+                    file.file_name()
+                        .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
+                })
+                .cloned()?
+        };
+        inside(folder, &found).then_some(found)
     })
+}
+
+fn inside(folder: &Path, file: &Path) -> bool {
+    match (fs::canonicalize(folder), fs::canonicalize(file)) {
+        (Ok(folder), Ok(file)) => file.starts_with(folder),
+        _ => false,
+    }
 }
 
 pub(crate) fn background_name(map: &str) -> Option<String> {
@@ -521,6 +566,56 @@ mod tests {
         );
         assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
         assert!(found.found.contains_key(&321));
+    }
+
+    #[test]
+    fn a_background_outside_the_map_folder_is_never_read() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        fs::write(songs.path().join("private.png"), png(1920, 1080)).unwrap();
+        let outside = songs.path().join("private.png");
+        songs_with(
+            songs.path(),
+            "111 Artist - Title",
+            "0,0,\"../private.png\",0,0",
+            None,
+        );
+        songs_with(
+            songs.path(),
+            "222 Artist - Title",
+            &format!("0,0,\"{}\",0,0", outside.display()),
+            None,
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        covers(
+            &[111, 222],
+            cache.path(),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert_eq!(fetch.calls, [cover_url(111), cover_url(222)]);
+    }
+
+    #[test]
+    fn a_background_too_large_to_decode_safely_is_skipped() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "333 Artist - Title",
+            "0,0,\"wide.png\",0,0",
+            Some(("wide.png", png(20_000, 4))),
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        covers(
+            &[333],
+            cache.path(),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert_eq!(fetch.calls, [cover_url(333)]);
     }
 
     #[test]
