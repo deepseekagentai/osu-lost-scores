@@ -343,6 +343,10 @@ impl Session {
         let epoch = self.login_epoch.get();
         state.set_logging_in(true);
         state.set_status("Log in with osu! in the browser".into());
+        self.log(&format!(
+            "If the browser did not open, open this address in it: {}",
+            pending.url
+        ));
         self.launch("the browser", pending.url.clone().into());
         let weak = self.weak.clone();
         thread::spawn(move || {
@@ -2613,6 +2617,20 @@ mod tests {
         let path = setup::session_file().unwrap();
         assert_eq!(stored::load(&path), Some(login()));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_login_writes_its_address_in_the_log_for_a_browser_that_did_not_open() {
+        let (_window, session, _root) = nobody(650.0);
+        *session.opener.borrow_mut() = std::sync::Arc::new(|_| Ok(()));
+        session.log_in();
+        let lines: Vec<String> = (0..session.log.row_count())
+            .map(|i| session.log.row_data(i).unwrap().text.to_string())
+            .collect();
+        assert!(
+            lines.iter().any(|line| line.contains("/api/v1/auth/start")),
+            "{lines:?}"
+        );
     }
 
     #[test]
