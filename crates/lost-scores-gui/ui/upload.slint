@@ -51,6 +51,7 @@ export component UploadSheet inherits Rectangle {
                         }
                     }
                     Text {
+                        accessible-role: none;
                         text: "Don't ask again";
                         color: T.k;
                         font-size: 15px;
@@ -58,6 +59,13 @@ export component UploadSheet inherits Rectangle {
                     }
                 }
                 box := TouchArea {
+                    accessible-role: checkbox;
+                    accessible-label: "Don't ask again";
+                    accessible-checkable: true;
+                    accessible-checked: root.remember;
+                    accessible-action-default => {
+                        root.remember = !root.remember;
+                    }
                     mouse-cursor: pointer;
                     clicked => {
                         root.remember = !root.remember;

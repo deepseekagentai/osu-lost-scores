@@ -1023,6 +1023,169 @@ mod tests {
         settle();
     }
 
+    fn activate(window: &MainWindow, label: &str) {
+        activate_as(window, label, AccessibleRole::Button);
+    }
+
+    fn activate_as(window: &MainWindow, label: &str, role: AccessibleRole) {
+        let found: Vec<_> = ElementHandle::find_by_accessible_label(window, label).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{label}: {} elements carry this label",
+            found.len()
+        );
+        assert_eq!(found[0].accessible_role(), Some(role), "{label}");
+        found[0].invoke_accessible_default_action();
+        settle();
+    }
+
+    fn record_more(window: &MainWindow, calls: &Calls) {
+        let state = window.global::<State>();
+        let record = |name: &'static str| {
+            let calls = calls.clone();
+            move || calls.borrow_mut().push(name)
+        };
+        state.on_log_in(record("log-in"));
+        state.on_open_keys(record("open-keys"));
+        state.on_start_scan(record("start-scan"));
+        state.on_open_developer_site(record("open-developer-site"));
+        state.on_open_about(record("open-about"));
+        state.on_delete_older_scans(record("delete-older-scans"));
+        state.on_show_images(record("show-images"));
+        let tabs = calls.clone();
+        state.on_set_tab(move |tab| {
+            tabs.borrow_mut()
+                .push(["tab-0", "tab-1", "tab-2"][tab as usize])
+        });
+        let sorts = calls.clone();
+        state.on_sort_by(move |column| {
+            sorts.borrow_mut().push(if column == 1 {
+                "sort-mods"
+            } else {
+                "sort-other"
+            })
+        });
+        let scans = calls.clone();
+        state.on_select_scan(move |index| {
+            scans.borrow_mut().push(if index == 1 {
+                "select-scan-1"
+            } else {
+                "select-scan-other"
+            })
+        });
+        let toggles = calls.clone();
+        state.on_set_include_all(move |on| {
+            toggles.borrow_mut().push(if on {
+                "include-all-on"
+            } else {
+                "include-all-off"
+            })
+        });
+    }
+
+    #[test]
+    fn the_connect_and_footer_buttons_work_without_a_mouse() {
+        let (window, calls) = keyboard_window();
+        record_more(&window, &calls);
+        settle();
+        for label in [
+            "Log in with osu!",
+            "Use Custom API Keys",
+            "Developer Website",
+            "About",
+        ] {
+            activate(&window, label);
+        }
+        assert_eq!(
+            *calls.borrow(),
+            ["log-in", "open-keys", "open-developer-site", "open-about"]
+        );
+    }
+
+    #[test]
+    fn start_scan_and_the_settings_toggles_work_without_a_mouse() {
+        let (window, calls) = keyboard_window();
+        record_more(&window, &calls);
+        let state = window.global::<State>();
+        state.set_connected(true);
+        settle();
+        activate(&window, "Start Scan");
+        let toggle: Vec<_> =
+            ElementHandle::find_by_accessible_label(&window, "Include unranked and loved beatmaps")
+                .collect();
+        assert_eq!(toggle.len(), 1);
+        assert_eq!(toggle[0].accessible_role(), Some(AccessibleRole::Checkbox));
+        assert_eq!(toggle[0].accessible_checked(), Some(false));
+        toggle[0].invoke_accessible_default_action();
+        settle();
+        assert_eq!(*calls.borrow(), ["start-scan", "include-all-on"]);
+    }
+
+    #[test]
+    fn the_results_controls_work_without_a_mouse() {
+        let (window, calls) = results_window();
+        record_more(&window, &calls);
+        let state = window.global::<State>();
+        state.set_images_shown(false);
+        settle();
+        activate(&window, "Back");
+        for label in ["Online Top", "Potential Top", "Lost Scores"] {
+            activate_as(&window, label, AccessibleRole::Tab);
+        }
+        activate(&window, "Sort by Mods");
+        state.set_scans(ModelRc::new(VecModel::from(vec![
+            SharedString::from("3 September 2024 \u{b7} 23:39"),
+            SharedString::from("28 August 2024 \u{b7} 18:02"),
+        ])));
+        state.set_scans_open(true);
+        settle();
+        activate(&window, "28 August 2024 \u{b7} 18:02");
+        state.set_scans_open(true);
+        settle();
+        activate(&window, "Delete older scans");
+        state.set_scans_open(true);
+        settle();
+        activate(&window, "Open the scan folder");
+        assert_eq!(
+            *calls.borrow(),
+            [
+                "back",
+                "tab-1",
+                "tab-2",
+                "tab-0",
+                "sort-mods",
+                "select-scan-1",
+                "delete-older-scans",
+                "open-scan-folder"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_catbox_warning_works_without_a_mouse() {
+        let (window, calls) = results_window();
+        let state = window.global::<State>();
+        state.set_upload_confirm_open(true);
+        settle();
+        let remember: Vec<_> =
+            ElementHandle::find_by_accessible_label(&window, "Don't ask again").collect();
+        assert_eq!(remember.len(), 1);
+        assert_eq!(
+            remember[0].accessible_role(),
+            Some(AccessibleRole::Checkbox)
+        );
+        assert_eq!(remember[0].accessible_checked(), Some(false));
+        remember[0].invoke_accessible_default_action();
+        settle();
+        assert_eq!(remember[0].accessible_checked(), Some(true));
+        activate(&window, "Upload");
+        state.set_upload_confirm_open(true);
+        settle();
+        activate(&window, "Cancel");
+        assert_eq!(*calls.borrow(), ["confirm-upload", "cancel-upload"]);
+    }
+
     #[test]
     fn an_unsent_scans_share_menu_publishes_or_keeps_it_private() {
         let (window, calls) = results_window();

@@ -1,7 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, IconButton, PrimaryButton, SecondaryButton, Stat, Toggle, ScoresBox } from "widgets.slint";
-import { TipArea } from "widgets.slint";
+import { HoverBox, IconButton, PrimaryButton, SecondaryButton, Stat, Toggle, ScoresBox, HintArea } from "widgets.slint";
 
 component StatValue inherits HorizontalLayout {
     in property <string> now;
@@ -156,7 +155,7 @@ component Profile inherits HorizontalLayout {
                     vertical-alignment: center;
                     overflow: elide;
                 }
-                if !State.editing-name: TipArea {
+                if !State.editing-name: HintArea {
                     tip: State.user-name;
                     anchor: parent.absolute-position;
                     anchor-height: parent.height;

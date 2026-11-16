@@ -1,6 +1,6 @@
 import { T, Tip } from "theme.slint";
 
-export component TipArea inherits TouchArea {
+export component HintArea inherits TouchArea {
     in property <string> tip;
     in property <Point> anchor;
     in property <length> anchor-height;
@@ -30,6 +30,13 @@ export component TipArea inherits TouchArea {
             Tip.y = root.anchor.y + root.anchor-height + 6px;
             Tip.text = root.tip;
         }
+    }
+}
+
+export component TipArea inherits HintArea {
+    accessible-role: none;
+    accessible-action-default => {
+        root.clicked();
     }
 }
 
@@ -121,6 +128,10 @@ export component Toggle inherits Rectangle {
     border-color: root.on ? (root.enabled && ta.has-hover ? #ffffff : T.acc) : (root.enabled && ta.has-hover ? T.acc : T.togb);
     animate border-color { duration: 150ms; }
     ta := TipArea {
+        accessible-role: checkbox;
+        accessible-label: root.tip;
+        accessible-checkable: true;
+        accessible-checked: root.on;
         tip: root.tip;
         anchor: root.absolute-position;
         anchor-height: root.height;
@@ -165,12 +176,15 @@ export component PrimaryButton inherits Rectangle {
         animate border-color { duration: 150ms; }
     }
     Text {
+        accessible-role: none;
         text: root.text;
         color: #ffffff;
         font-size: 21px;
         font-weight: 600;
     }
     ta := TipArea {
+        accessible-role: button;
+        accessible-label: root.text;
         tip: root.tip;
         anchor: root.absolute-position;
         anchor-height: root.height;
@@ -197,12 +211,15 @@ export component SecondaryButton inherits Rectangle {
     border-color: root.enabled && ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     Text {
+        accessible-role: none;
         text: root.text;
         color: #ffffff;
         font-size: root.text-size;
         font-weight: 600;
     }
     ta := TipArea {
+        accessible-role: button;
+        accessible-label: root.text;
         tip: root.tip;
         anchor: root.absolute-position;
         anchor-height: root.height;
@@ -272,6 +289,8 @@ export component ScoresBox inherits Rectangle {
     border-color: root.editing || root.hovered ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     box := TipArea {
+        accessible-role: button;
+        accessible-label: "Scores to show: " + root.value;
         tip: "Edit number of scores to display";
         anchor: root.absolute-position;
         anchor-height: root.height;
@@ -364,6 +383,7 @@ export component Link inherits Rectangle {
     width: label.preferred-width;
     height: label.preferred-height + 3px;
     label := Text {
+        accessible-role: none;
         y: 0;
         text: root.text;
         color: ta.has-hover ? T.acc : T.link;
@@ -375,6 +395,11 @@ export component Link inherits Rectangle {
         background: ta.has-hover ? T.acc : T.link;
     }
     ta := TouchArea {
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => {
+            root.clicked();
+        }
         mouse-cursor: pointer;
         clicked => {
             root.clicked();

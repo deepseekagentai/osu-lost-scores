@@ -1,7 +1,7 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { T } from "theme.slint";
 import { State, ScoreRow, FootItem, Preview } from "state.slint";
-import { IconButton, PrimaryButton, SecondaryButton, TipArea } from "widgets.slint";
+import { IconButton, PrimaryButton, SecondaryButton, TipArea, HintArea } from "widgets.slint";
 
 component Hit inherits HorizontalLayout {
     in property <string> label;
@@ -150,6 +150,7 @@ component DetailLine inherits Rectangle {
         width: root.link-w;
         height: root.height;
         bid := Text {
+            accessible-role: none;
             y: 0;
             text: root.item.link;
             color: T.bid;
@@ -161,6 +162,11 @@ component DetailLine inherits Rectangle {
             background: #6b6380;
         }
         TouchArea {
+            accessible-role: button;
+            accessible-label: "Open " + root.item.link + " on osu!";
+            accessible-action-default => {
+                root.open-link();
+            }
             mouse-cursor: pointer;
             clicked => {
                 root.open-link();
@@ -386,7 +392,7 @@ component RowView inherits Rectangle {
                     }
                 }
             }
-            if root.item.kept-tip != "": TipArea {
+            if root.item.kept-tip != "": HintArea {
                 tip: root.item.kept-tip;
                 anchor: parent.absolute-position;
                 anchor-height: parent.height;
@@ -408,8 +414,12 @@ component Tab inherits VerticalLayout {
     callback clicked;
     accessible-role: tab;
     accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
     spacing: 7px;
     Text {
+        accessible-role: none;
         text: root.text;
         color: root.active || ta.has-hover ? #ffffff : T.k;
         font-size: 16px;
@@ -435,6 +445,11 @@ component HeaderCell inherits Rectangle {
     property <bool> active: State.sort-column == root.column;
     height: 24px;
     ta := TouchArea {
+        accessible-role: button;
+        accessible-label: "Sort by " + root.text;
+        accessible-action-default => {
+            State.sort-by(root.column);
+        }
         mouse-cursor: pointer;
         clicked => {
             State.sort-by(root.column);
@@ -444,12 +459,14 @@ component HeaderCell inherits Rectangle {
         alignment: root.place;
         spacing: 4px;
         Text {
+            accessible-role: none;
             text: root.text;
             color: root.active || ta.has-hover ? #ffffff : T.k;
             font-size: 12.5px;
             vertical-alignment: center;
         }
         if root.active: Text {
+            accessible-role: none;
             text: State.sort-desc ? "▼" : "▲";
             color: T.acc;
             font-size: 10px;
@@ -519,6 +536,9 @@ component ScanSelector inherits Rectangle {
     ta := TouchArea {
         accessible-role: button;
         accessible-label: "Scans";
+        accessible-action-default => {
+            State.scans-open = !State.scans-open;
+        }
         mouse-cursor: pointer;
         clicked => {
             State.scans-open = !State.scans-open;
@@ -892,6 +912,7 @@ component CatboxButton inherits VerticalLayout {
                 }
             }
             Text {
+                accessible-role: none;
                 text: State.catbox-label != "" ? State.catbox-label : "catbox";
                 color: State.catbox-busy ? T.k : #ffffff;
                 font-size: 14px;
@@ -900,6 +921,8 @@ component CatboxButton inherits VerticalLayout {
             }
         }
         ta := TipArea {
+            accessible-role: AccessibleRole.button;
+            accessible-label: State.catbox-label != "" ? State.catbox-label : "catbox";
             tip: State.catbox-error != "" ? State.catbox-error : "Upload all pictures to catbox.moe for public links";
             anchor: button.absolute-position;
             anchor-height: button.height;
@@ -969,6 +992,7 @@ component MenuRow inherits Rectangle {
     border-radius: 6px;
     background: ta.has-hover ? T.btn : transparent;
     Text {
+        accessible-role: none;
         x: 12px;
         text: root.text;
         color: #ffffff;
@@ -976,6 +1000,11 @@ component MenuRow inherits Rectangle {
         vertical-alignment: center;
     }
     ta := TouchArea {
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => {
+            root.clicked();
+        }
         mouse-cursor: pointer;
         clicked => {
             root.clicked();
@@ -1541,6 +1570,7 @@ export component ResultsPanel inherits Rectangle {
                         border-radius: 6px;
                         background: ta.has-hover || row.trash-over ? T.btn : transparent;
                         Text {
+                            accessible-role: none;
                             x: 10px;
                             text: label;
                             color: i == State.scan-selected ? T.acc : #ffffff;
@@ -1549,6 +1579,11 @@ export component ResultsPanel inherits Rectangle {
                             vertical-alignment: center;
                         }
                         ta := TouchArea {
+                            accessible-role: button;
+                            accessible-label: label;
+                            accessible-action-default => {
+                                State.select-scan(i);
+                            }
                             mouse-cursor: pointer;
                             clicked => {
                                 State.select-scan(i);
@@ -1595,6 +1630,7 @@ export component ResultsPanel inherits Rectangle {
                         }
                     }
                     Text {
+                        accessible-role: none;
                         text: "Delete older scans";
                         color: older-ta.has-hover ? #ff6666 : T.k;
                         font-size: 12.5px;
@@ -1602,6 +1638,11 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
                 older-ta := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "Delete older scans";
+                    accessible-action-default => {
+                        State.delete-older-scans();
+                    }
                     mouse-cursor: pointer;
                     clicked => {
                         State.delete-older-scans();
@@ -1637,6 +1678,7 @@ export component ResultsPanel inherits Rectangle {
                         }
                     }
                     Text {
+                        accessible-role: none;
                         text: "Open the scan folder";
                         color: #ffffff;
                         font-size: 13px;
@@ -1644,6 +1686,12 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
                 folder-ta := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "Open the scan folder";
+                    accessible-action-default => {
+                        State.scans-open = false;
+                        State.open-scan-folder();
+                    }
                     mouse-cursor: pointer;
                     clicked => {
                         State.scans-open = false;

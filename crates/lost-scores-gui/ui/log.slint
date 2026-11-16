@@ -1,6 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, TipArea } from "widgets.slint";
+import { HoverBox, HintArea } from "widgets.slint";
 
 component LogLine inherits HorizontalLayout {
     in property <string> time;
@@ -35,7 +35,7 @@ export component LastLogLine inherits Rectangle {
         horizontal-alignment: center;
         overflow: elide;
     }
-    TipArea {
+    HintArea {
         tip: root.message;
         anchor: root.absolute-position;
         anchor-height: root.height;

@@ -23,7 +23,7 @@ lost-scores-core = { path = "../lost-scores-core" }
 open = "5.4.5"
 osu-api = { path = "../osu-api" }
 rfd = "0.18.0"
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "compat-1-2", "backend-winit-wayland", "backend-winit-x11"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "compat-1-2", "backend-winit-wayland", "backend-winit-x11", "accessibility"] }
 trash = "5.3.0"
 ureq = "3.5.2"
 
