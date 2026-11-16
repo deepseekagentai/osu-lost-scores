@@ -283,6 +283,14 @@ mod tests {
                 .push(format!("DELETE {url} bearer={token}"));
             self.next()
         }
+
+        fn put(&mut self, url: &str, _: &[u8], token: &str) -> Result<Response, ApiError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(format!("PUT {url} bearer={token}"));
+            self.next()
+        }
     }
 
     fn map(id: u32) -> String {

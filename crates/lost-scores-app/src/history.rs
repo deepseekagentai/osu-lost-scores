@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -39,6 +40,10 @@ pub struct Sent {
     pub visibility: String,
     pub status: String,
     pub server: String,
+    #[serde(default)]
+    pub replays: BTreeMap<usize, String>,
+    #[serde(default)]
+    pub queued: BTreeSet<usize>,
 }
 
 impl Sent {
@@ -48,6 +53,16 @@ impl Sent {
             visibility: answer.visibility.clone(),
             status: answer.status.clone(),
             server: server.trim_end_matches('/').to_owned(),
+            replays: BTreeMap::new(),
+            queued: BTreeSet::new(),
+        }
+    }
+
+    pub fn answered(&self, answer: &Submission) -> Self {
+        Self {
+            visibility: answer.visibility.clone(),
+            status: answer.status.clone(),
+            ..self.clone()
         }
     }
 }
@@ -303,6 +318,37 @@ mod tests {
             lost_ranked: 9,
             potential: None,
         }
+    }
+
+    #[test]
+    fn a_submission_saved_before_replays_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = save(dir.path(), &scan(1_700_000_000)).unwrap();
+        std::fs::write(
+            folder.join("submission.json"),
+            r#"{"id":"abc","visibility":"private","status":"unverified","server":"https://api.test"}"#,
+        )
+        .unwrap();
+        let sent = submission(&folder, "https://api.test").unwrap();
+        assert!(sent.replays.is_empty() && sent.queued.is_empty());
+    }
+
+    #[test]
+    fn a_new_answer_keeps_the_sent_and_queued_replays() {
+        let answer = |visibility: &str| Submission {
+            id: "abc".into(),
+            visibility: visibility.into(),
+            status: "unverified".into(),
+        };
+        let mut sent = Sent::new(&answer("private"), "https://api.test");
+        sent.replays.insert(0, "ab".into());
+        sent.queued.insert(1);
+        let published = sent.answered(&answer("public"));
+        assert_eq!(published.visibility, "public");
+        assert_eq!(
+            (published.replays, published.queued),
+            (sent.replays, sent.queued)
+        );
     }
 
     #[test]

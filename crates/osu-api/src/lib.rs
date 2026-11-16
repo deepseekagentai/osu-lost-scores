@@ -11,6 +11,7 @@ const FILE_URL: &str = "https://osu.ppy.sh/osu";
 const BATCH: usize = 50;
 const HOUR: u64 = 3600;
 const MAX_SUBMISSION: usize = 2 * 1024 * 1024;
+pub const MAX_REPLAY: usize = 4 * 1024 * 1024;
 pub const SERVER_URL: &str = "https://lost.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub trait Transport {
     fn get(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
     fn post_json(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError>;
     fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError>;
+    fn put(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +87,23 @@ pub enum ApiError {
     TooBig { bytes: usize },
     #[error("the Lost Scores server refused this scan")]
     BadScan,
+    #[error("the Lost Scores server says this file is not a whole osu!standard replay")]
+    NotAReplay,
+    #[error("this replay is not the lost play it was chosen for")]
+    ReplayMismatch,
+    #[error("this replay was played under a name that is not yours")]
+    NotYourReplay,
+    #[error("this replay is already attached to another play of the scan")]
+    ReplayUsed,
+    #[error("your replays on the Lost Scores server have reached 100 MB")]
+    ReplayQuota,
+    #[error("the Lost Scores server takes no new replays right now; they will go out later")]
+    ReplaysPaused { retry_after: u64 },
+    #[error(
+        "this replay is too big to share ({:.1} MB; the server takes 4 MB)",
+        megabytes(.bytes)
+    )]
+    ReplayTooBig { bytes: usize },
     #[error("the Lost Scores server answered {status} for {url}")]
     ServerStatus { status: u16, url: String },
     #[error("unexpected answer from the Lost Scores server for {url}")]
@@ -468,6 +487,38 @@ impl<T: Transport> Server<T> {
         self.show(id, "unpublish")
     }
 
+    pub fn upload_replay(
+        &mut self,
+        id: &str,
+        row: usize,
+        replay: &[u8],
+    ) -> Result<String, ApiError> {
+        if replay.len() > MAX_REPLAY {
+            return Err(ApiError::ReplayTooBig {
+                bytes: replay.len(),
+            });
+        }
+        let url = format!(
+            "{}/api/v1/submissions/{}/replays/{row}",
+            self.base,
+            encode(id)
+        );
+        let response = self
+            .transport
+            .put(&url, replay, &self.session)
+            .map_err(unreached)?;
+        if !(200..=299).contains(&response.status) {
+            return Err(match refusal(&url, response) {
+                ApiError::Status { status: 413, .. } => ApiError::ReplayTooBig {
+                    bytes: replay.len(),
+                },
+                ApiError::Status { status, url } => ApiError::ServerStatus { status, url },
+                other => other,
+            });
+        }
+        from_server::<Attached>(&url, &response.body).map(|attached| attached.sha256)
+    }
+
     pub fn delete_submission(&mut self, id: &str) -> Result<(), ApiError> {
         let url = format!("{}/api/v1/submissions/{}", self.base, encode(id));
         let response = self
@@ -601,6 +652,14 @@ fn refusal(url: &str, response: Response) -> ApiError {
                 .unwrap_or(60),
         },
         (503, Some("busy_today")) => ApiError::BusyToday,
+        (503, Some("replays_paused")) => ApiError::ReplaysPaused {
+            retry_after: told.retry_after.or(response.retry_after).unwrap_or(HOUR),
+        },
+        (400, Some("not_a_replay")) => ApiError::NotAReplay,
+        (400, Some("replay_mismatch")) => ApiError::ReplayMismatch,
+        (400, Some("replay_player")) => ApiError::NotYourReplay,
+        (409, Some("replay_used")) => ApiError::ReplayUsed,
+        (409, Some("quota")) => ApiError::ReplayQuota,
         (401, Some("login_required")) => ApiError::LoginRequired,
         (403, Some("not_your_scan")) => ApiError::NotYourScan,
         (409, Some("no_potential_top")) => ApiError::NoPotentialTop,
@@ -615,6 +674,11 @@ fn refusal(url: &str, response: Response) -> ApiError {
 #[derive(Deserialize)]
 struct Token {
     access_token: String,
+}
+
+#[derive(Deserialize)]
+struct Attached {
+    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -686,6 +750,15 @@ impl Transport for Http {
     fn delete(&mut self, url: &str, token: &str) -> Result<Response, ApiError> {
         let request = self.agent.delete(url).header("Accept", "application/json");
         read(bearer(request, token).call().map_err(network)?)
+    }
+
+    fn put(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
+        let request = self
+            .agent
+            .put(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/octet-stream");
+        read(bearer(request, token).send(body).map_err(network)?)
     }
 }
 
@@ -801,6 +874,12 @@ mod tests {
             self.requests.push(format!("DELETE {url} bearer={token}"));
             Ok(self.answers.pop_front().expect("no scripted answer"))
         }
+
+        fn put(&mut self, url: &str, body: &[u8], token: &str) -> Result<Response, ApiError> {
+            self.requests
+                .push(format!("PUT {url} bearer={token} {} bytes", body.len()));
+            Ok(self.answers.pop_front().expect("no scripted answer"))
+        }
     }
 
     fn server(fake: Fake) -> Server<Fake> {
@@ -823,6 +902,10 @@ mod tests {
         }
 
         fn delete(&mut self, _: &str, _: &str) -> Result<Response, ApiError> {
+            Err(ApiError::Network("refused".into()))
+        }
+
+        fn put(&mut self, _: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
             Err(ApiError::Network("refused".into()))
         }
     }
@@ -1112,6 +1195,62 @@ mod tests {
             api.delete_submission("abc"),
             Err(ApiError::NotOnServer)
         ));
+    }
+
+    #[test]
+    fn a_replay_is_put_for_its_row_and_answers_its_hash() {
+        let fake = Fake::default().answer(200, r#"{"sha256":"ab12"}"#);
+        let mut api = server(fake).with_session("tok");
+        assert_eq!(api.upload_replay("abc", 3, b"osr!").unwrap(), "ab12");
+        assert_eq!(
+            api.transport.requests,
+            ["PUT https://api.test/api/v1/submissions/abc/replays/3 bearer=tok 4 bytes"]
+        );
+    }
+
+    #[test]
+    fn the_servers_reasons_for_refusing_a_replay_are_kept() {
+        let fake = Fake::default()
+            .answer(400, r#"{"error":"not_a_replay"}"#)
+            .answer(400, r#"{"error":"replay_mismatch"}"#)
+            .answer(400, r#"{"error":"replay_player"}"#)
+            .answer(409, r#"{"error":"replay_used"}"#)
+            .answer(409, r#"{"error":"quota"}"#)
+            .answer(503, r#"{"error":"replays_paused","retry_after":3600}"#)
+            .answer(413, r#"{"error":"too_big"}"#)
+            .answer(404, r#"{"error":"not_found"}"#);
+        let mut api = server(fake).with_session("tok");
+        let mut next = || api.upload_replay("abc", 0, b"osr!").unwrap_err();
+        assert!(matches!(next(), ApiError::NotAReplay));
+        assert!(matches!(next(), ApiError::ReplayMismatch));
+        assert!(matches!(next(), ApiError::NotYourReplay));
+        assert!(matches!(next(), ApiError::ReplayUsed));
+        assert!(matches!(next(), ApiError::ReplayQuota));
+        let paused = next();
+        assert!(matches!(
+            paused,
+            ApiError::ReplaysPaused { retry_after: 3600 }
+        ));
+        assert_eq!(
+            paused.to_string(),
+            "the Lost Scores server takes no new replays right now; they will go out later"
+        );
+        assert!(matches!(next(), ApiError::ReplayTooBig { bytes: 4 }));
+        assert!(matches!(next(), ApiError::NotOnServer));
+    }
+
+    #[test]
+    fn a_replay_too_big_for_the_server_is_not_sent() {
+        let mut api = server(Fake::default()).with_session("tok");
+        let error = api
+            .upload_replay("abc", 0, &vec![0; 4 * 1024 * 1024 + 1])
+            .unwrap_err();
+        assert!(matches!(error, ApiError::ReplayTooBig { .. }));
+        assert_eq!(
+            error.to_string(),
+            "this replay is too big to share (4.0 MB; the server takes 4 MB)"
+        );
+        assert!(api.transport.requests.is_empty());
     }
 
     #[test]

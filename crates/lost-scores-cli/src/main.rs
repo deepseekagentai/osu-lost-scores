@@ -16,6 +16,7 @@ use lost_scores_app::keys;
 use lost_scores_app::login;
 use lost_scores_app::online::{Online, USER_AGENT};
 use lost_scores_app::pipeline::{self, Api, Event};
+use lost_scores_app::replays;
 use lost_scores_app::rows;
 use lost_scores_app::session::{self, Session};
 use lost_scores_app::setup;
@@ -112,6 +113,8 @@ enum Command {
     Submit {
         #[arg(long, help = "Also publish it to the Hall of Fame")]
         publish: bool,
+        #[arg(long, help = "Also share the replays of the lost plays")]
+        replays: bool,
         #[command(flatten)]
         source: Source,
     },
@@ -245,8 +248,19 @@ fn run(cli: Cli) -> Result<()> {
             ),
             Some(source),
         ),
-        Some(Command::Submit { publish, source }) => (
-            submit(source, *publish, &notes, &mut timings, &mut events),
+        Some(Command::Submit {
+            publish,
+            replays,
+            source,
+        }) => (
+            submit(
+                source,
+                *publish,
+                *replays,
+                &notes,
+                &mut timings,
+                &mut events,
+            ),
             Some(source),
         ),
         Some(Command::Login { keys }) => (if *keys { save_keys() } else { log_in() }, None),
@@ -491,6 +505,7 @@ fn show_potential(
 fn submit(
     source: &Source,
     publish: bool,
+    share_replays: bool,
     notes: &Notes,
     timings: &mut Timings,
     events: &mut dyn FnMut(Event),
@@ -543,15 +558,31 @@ fn submit(
     let folder = history::save(&scans_dir, &scan)?;
     let mut server = Server::new(Http::new(USER_AGENT), &base).with_session(&session.token);
     let mut sent = server.submit(&submission::body(&scan)?)?;
-    history::remember(&folder, &Sent::new(&sent, server.base()))?;
+    let mut record = Sent::new(&sent, server.base());
+    history::remember(&folder, &record)?;
     if publish {
         let id = sent.id.clone();
         sent = server
             .publish(&id)
             .with_context(|| format!("scan {id} was sent but stays private"))?;
-        history::remember(&folder, &Sent::new(&sent, server.base()))?;
+        record = record.answered(&sent);
+        history::remember(&folder, &record)?;
     }
     println!("sent scan {}: {}", sent.id, state(&sent));
+    if share_replays {
+        record.queued.extend(0..scan.lost.len());
+        let replays_dir = read.osu_dir.join("Data").join("r");
+        for outcome in replays::send_queued(&mut server, &mut record, &scan, &replays_dir) {
+            eprintln!("{}", replays::describe(&outcome, &scan));
+        }
+        history::remember(&folder, &record)?;
+        if !record.queued.is_empty() {
+            eprintln!(
+                "{} replays wait; the window sends them once the server takes replays again",
+                record.queued.len()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -773,6 +804,10 @@ mod tests {
 
         fn delete(&mut self, url: &str, _: &str) -> Result<Response, ApiError> {
             panic!("unexpected DELETE {url}")
+        }
+
+        fn put(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {
+            panic!("unexpected PUT {url}")
         }
 
         fn post_json(&mut self, url: &str, _: &[u8], _: &str) -> Result<Response, ApiError> {

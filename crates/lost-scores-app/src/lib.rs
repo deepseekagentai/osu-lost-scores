@@ -6,6 +6,7 @@ pub mod keys;
 pub mod login;
 pub mod online;
 pub mod pipeline;
+pub mod replays;
 pub mod rows;
 pub mod session;
 pub mod setup;
