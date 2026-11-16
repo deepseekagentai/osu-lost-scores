@@ -44,6 +44,13 @@ impl Default for Settings {
     }
 }
 
+pub fn scores_to_show_typed(text: &str) -> Option<u16> {
+    let typed: i128 = text.trim().parse().ok()?;
+    let low = i128::from(*SCORES_TO_SHOW.start());
+    let high = i128::from(*SCORES_TO_SHOW.end());
+    u16::try_from(typed.clamp(low, high)).ok()
+}
+
 pub fn parse_scores_to_show(text: &str) -> Option<u16> {
     text.trim()
         .parse()
@@ -229,7 +236,7 @@ mod tests {
 
     use super::{
         Settings, UserConfig, load_settings, parse_scores_to_show, player, read_user_config,
-        save_settings, songs_dir,
+        save_settings, scores_to_show_typed, songs_dir,
     };
 
     #[test]
@@ -335,6 +342,22 @@ mod tests {
         assert!(
             !settings.include_all && !settings.check_missing && !settings.show_lost_in_top_image
         );
+    }
+
+    #[test]
+    fn typed_scores_to_show_snap_to_the_nearest_limit() {
+        for (text, expected) in [
+            ("251", Some(250)),
+            ("1000", Some(250)),
+            ("99999999999", Some(250)),
+            ("0", Some(1)),
+            ("-3", Some(1)),
+            (" 25 ", Some(25)),
+            ("abc", None),
+            ("", None),
+        ] {
+            assert_eq!(scores_to_show_typed(text), expected, "{text:?}");
+        }
     }
 
     #[test]

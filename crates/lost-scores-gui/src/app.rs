@@ -419,7 +419,7 @@ impl Session {
     }
 
     fn commit_scores(&self, text: &str) {
-        if let Some(count) = setup::parse_scores_to_show(text) {
+        if let Some(count) = setup::scores_to_show_typed(text) {
             self.window
                 .global::<State>()
                 .set_scores_to_show(i32::from(count));
@@ -2836,6 +2836,17 @@ mod tests {
     }
 
     #[test]
+    fn scores_to_show_typed_above_the_limit_becomes_the_limit() {
+        let _files = files();
+        let (window, session, _root) = nobody(650.0);
+        let state = window.global::<State>();
+        state.set_scores_pending("999".into());
+        session.commit_pending_scores();
+        assert_eq!(state.get_scores_to_show(), 250);
+        assert_eq!(session.settings.borrow().scores_to_show, 250);
+    }
+
+    #[test]
     fn start_scan_applies_the_pending_scores_to_show() {
         let (window, session, _root) = session(650.0);
         let state = window.global::<State>();
@@ -2854,7 +2865,7 @@ mod tests {
         let (window, session, _root) = session(650.0);
         let state = window.global::<State>();
         session.settings.borrow_mut().scores_to_show = 7;
-        state.set_scores_pending("999".into());
+        state.set_scores_pending("abc".into());
         let (job, _) = session.prepare_scan().unwrap();
         assert_eq!(job.share_count, 7);
         assert_eq!(state.get_scores_pending(), "");
