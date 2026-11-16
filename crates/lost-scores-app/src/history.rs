@@ -44,6 +44,8 @@ pub struct Sent {
     pub replays: BTreeMap<usize, String>,
     #[serde(default)]
     pub queued: BTreeSet<usize>,
+    #[serde(default)]
+    pub retry_at: Option<i64>,
 }
 
 impl Sent {
@@ -55,6 +57,7 @@ impl Sent {
             server: server.trim_end_matches('/').to_owned(),
             replays: BTreeMap::new(),
             queued: BTreeSet::new(),
+            retry_at: None,
         }
     }
 

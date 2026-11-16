@@ -12,6 +12,8 @@ const BATCH: usize = 50;
 const HOUR: u64 = 3600;
 const MAX_SUBMISSION: usize = 2 * 1024 * 1024;
 pub const MAX_REPLAY: usize = 4 * 1024 * 1024;
+const UPLOAD_BASE: Duration = Duration::from_secs(30);
+const SLOWEST_UPLOAD_BYTES_PER_SECOND: usize = 32 * 1024;
 pub const SERVER_URL: &str = "https://lost.lemon4ik.kz";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +82,8 @@ pub enum ApiError {
     NoPotentialTop,
     #[error("this scan is no longer on the Lost Scores server")]
     NotOnServer,
+    #[error("the Lost Scores server has no such play in this scan")]
+    NoSuchPlay,
     #[error(
         "this scan is too big to send ({:.1} MB; the server takes 2 MB)",
         megabytes(.bytes)
@@ -95,7 +99,9 @@ pub enum ApiError {
     NotYourReplay,
     #[error("this replay is already attached to another play of the scan")]
     ReplayUsed,
-    #[error("your replays on the Lost Scores server have reached 100 MB")]
+    #[error(
+        "your replays on the Lost Scores server have reached their limit (100 MB, 1000 new a month); they will go out later"
+    )]
     ReplayQuota,
     #[error("the Lost Scores server takes no new replays right now; they will go out later")]
     ReplaysPaused { retry_after: u64 },
@@ -664,6 +670,7 @@ fn refusal(url: &str, response: Response) -> ApiError {
         (403, Some("not_your_scan")) => ApiError::NotYourScan,
         (409, Some("no_potential_top")) => ApiError::NoPotentialTop,
         (404, Some("not_found")) => ApiError::NotOnServer,
+        (404, Some("no_such_play")) => ApiError::NoSuchPlay,
         (status, _) => ApiError::Status {
             status,
             url: url.into(),
@@ -705,8 +712,13 @@ pub fn encode(text: &str) -> String {
         .collect()
 }
 
+#[derive(Clone)]
 pub struct Http {
     agent: ureq::Agent,
+}
+
+pub fn upload_timeout(bytes: usize) -> Duration {
+    UPLOAD_BASE + Duration::from_secs((bytes / SLOWEST_UPLOAD_BYTES_PER_SECOND) as u64)
 }
 
 impl Http {
@@ -756,6 +768,9 @@ impl Transport for Http {
         let request = self
             .agent
             .put(url)
+            .config()
+            .timeout_global(Some(upload_timeout(body.len())))
+            .build()
             .header("Accept", "application/json")
             .header("Content-Type", "application/octet-stream");
         read(bearer(request, token).send(body).map_err(network)?)
@@ -829,7 +844,7 @@ mod tests {
     use super::{
         ApiError, Client, Credentials, Login, Response, Score, ScoreBeatmap, ScoreBeatmapset,
         ScoreStatistics, Server, Submission, SubmissionInfo, Transport, User, UserKey,
-        UserStatistics, unix_time,
+        UserStatistics, unix_time, upload_timeout,
     };
 
     #[derive(Default)]
@@ -1218,7 +1233,8 @@ mod tests {
             .answer(409, r#"{"error":"quota"}"#)
             .answer(503, r#"{"error":"replays_paused","retry_after":3600}"#)
             .answer(413, r#"{"error":"too_big"}"#)
-            .answer(404, r#"{"error":"not_found"}"#);
+            .answer(404, r#"{"error":"not_found"}"#)
+            .answer(404, r#"{"error":"no_such_play"}"#);
         let mut api = server(fake).with_session("tok");
         let mut next = || api.upload_replay("abc", 0, b"osr!").unwrap_err();
         assert!(matches!(next(), ApiError::NotAReplay));
@@ -1237,6 +1253,13 @@ mod tests {
         );
         assert!(matches!(next(), ApiError::ReplayTooBig { bytes: 4 }));
         assert!(matches!(next(), ApiError::NotOnServer));
+        assert!(matches!(next(), ApiError::NoSuchPlay));
+    }
+
+    #[test]
+    fn a_bigger_replay_gets_more_time_to_upload() {
+        assert_eq!(upload_timeout(0), Duration::from_secs(30));
+        assert_eq!(upload_timeout(4 * 1024 * 1024), Duration::from_secs(158));
     }
 
     #[test]

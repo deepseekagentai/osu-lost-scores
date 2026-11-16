@@ -690,7 +690,9 @@ fn render_results_snapshots() {
     state.set_sent_state("Published, unverified".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("31-results-published.png"));
-    click(&window, 500.0, 45.0);
+    state.set_send_menu_x(288.0);
+    state.set_send_menu_y(72.0);
+    state.set_send_menu_open(true);
     draw(&surface, &dir.join("32-results-send-menu.png"));
     state.set_send_menu_open(false);
     draw_sized(&surface, WIDE, &dir.join("33-results-published-wide.png"));
@@ -713,6 +715,15 @@ fn render_results_snapshots() {
     state.set_sent_state("Published, unverified".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("37-replays-chips.png"));
+    state.set_replays_waiting(1);
+    state.set_can_share_replays(true);
+    state.set_send_menu_x(288.0);
+    state.set_send_menu_y(72.0);
+    state.set_send_menu_open(true);
+    draw(&surface, &dir.join("40-replays-cancel.png"));
+    state.set_send_menu_open(false);
+    state.set_replays_waiting(0);
+    state.set_can_share_replays(false);
 }
 
 fn mods_scan() -> SavedScan {
@@ -1059,18 +1070,4 @@ fn render_fade_snapshots() {
             .save(dir.join(name))
             .unwrap();
     }
-}
-
-fn click(window: &MainWindow, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
-    let button = slint::platform::PointerEventButton::Left;
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
 }

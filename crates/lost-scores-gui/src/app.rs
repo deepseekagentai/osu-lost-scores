@@ -11,7 +11,7 @@ use anyhow::Result;
 use jiff::tz::TimeZone;
 use lost_scores_app::login::{self as loopback, LoginError};
 use lost_scores_app::online::{Online, Player, USER_AGENT};
-use lost_scores_app::pipeline::{PotentialResult, Source};
+use lost_scores_app::pipeline::{self, PotentialResult, Source};
 use lost_scores_app::rows::thousands;
 use lost_scores_app::session::{self as stored, Session as Login};
 use lost_scores_app::setup::Settings;
@@ -92,7 +92,8 @@ struct Session {
     declined: RefCell<Option<PathBuf>>,
     publish_next: Cell<bool>,
     replays_next: RefCell<Option<PathBuf>>,
-    replaying: Cell<bool>,
+    replays_running: RefCell<Option<(PathBuf, Arc<AtomicBool>)>>,
+    replays_turned_away: RefCell<Vec<PathBuf>>,
     top_rows: RefCell<Vec<usize>>,
     marks: RefCell<Vec<(usize, i32)>>,
     images_view: Cell<bool>,
@@ -183,7 +184,8 @@ impl Session {
             declined: RefCell::new(None),
             publish_next: Cell::new(false),
             replays_next: RefCell::new(None),
-            replaying: Cell::new(false),
+            replays_running: RefCell::new(None),
+            replays_turned_away: RefCell::new(Vec::new()),
             top_rows: RefCell::new(Vec::new()),
             marks: RefCell::new(Vec::new()),
             images_view: Cell::new(true),
@@ -536,6 +538,8 @@ impl Session {
         let session = self.clone();
         state.on_share_replays(move || session.share_top_replays());
         let session = self.clone();
+        state.on_withdraw_replays(move || session.withdraw_replays());
+        let session = self.clone();
         state.on_dismiss_offer(move || session.dismiss_offer());
         let session = self.clone();
         state.on_cancel_unsend(move || {
@@ -856,6 +860,7 @@ impl Session {
         state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
         let top = self.top_rows.borrow().clone();
         state.set_replays_in_top(top.len() as i32);
+        state.set_replays_waiting(sent.as_ref().map_or(0, |sent| sent.queued.len()) as i32);
         state.set_can_share_replays(sent.as_ref().is_some_and(|sent| {
             send::published(sent)
                 && top
@@ -957,21 +962,84 @@ impl Session {
             return;
         };
         let osu_dir = self.window.global::<State>().get_osu_dir().to_string();
-        if osu_dir.is_empty() || self.replaying.replace(true) {
+        if osu_dir.is_empty() {
             return;
         }
+        if self.replays_running.borrow().is_some() {
+            let mut turned_away = self.replays_turned_away.borrow_mut();
+            if !turned_away.iter().any(|waiting| waiting == folder) {
+                turned_away.push(folder.to_path_buf());
+            }
+            return;
+        }
+        let Some(id) = history::submission(folder, &login.server).map(|sent| sent.id) else {
+            return;
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.replays_running.borrow_mut() = Some((folder.to_path_buf(), stop.clone()));
         let dir = PathBuf::from(osu_dir).join("Data").join("r");
         let courier = self.courier.borrow().clone();
         let weak = self.weak.clone();
         let folder = folder.to_path_buf();
+        let now = pipeline::unix_now();
         thread::spawn(move || {
-            let result = send::share_replays(&courier, &login, &folder, &dir);
+            let mut report = |change: &replays::Change| {
+                let (folder, id, change) = (folder.clone(), id.clone(), change.clone());
+                on_ui(&weak, move |app| app.replay_changed(&folder, &id, &change));
+                !stop.load(Ordering::Relaxed)
+            };
+            let result = send::share_replays(&courier, &login, &folder, &dir, now, &mut report);
             on_ui(&weak, move |app| app.replayed(&folder, result));
         });
     }
 
+    fn replay_changed(&self, folder: &Path, id: &str, change: &replays::Change) {
+        let Some(login) = self.sending_login() else {
+            return;
+        };
+        let Some(mut sent) =
+            history::submission(folder, &login.server).filter(|sent| sent.id == id)
+        else {
+            return;
+        };
+        replays::apply(&mut sent, change);
+        if let Err(error) = history::remember(folder, &sent) {
+            self.log(&format!("Could not keep the shared replays: {error:#}"));
+            return;
+        }
+        if self.folder.borrow().as_deref() == Some(folder) {
+            self.show_sent();
+        }
+    }
+
+    fn withdraw_replays(&self) {
+        let folder = self.folder.borrow().clone();
+        let (Some(login), Some(folder)) = (self.sending_login(), folder) else {
+            return;
+        };
+        let Some(mut sent) = history::submission(&folder, &login.server) else {
+            return;
+        };
+        if let Some((running, stop)) = &*self.replays_running.borrow()
+            && *running == folder
+        {
+            stop.store(true, Ordering::Relaxed);
+        }
+        self.replays_turned_away
+            .borrow_mut()
+            .retain(|waiting| *waiting != folder);
+        let count = sent.queued.len();
+        sent.queued.clear();
+        sent.retry_at = None;
+        match history::remember(&folder, &sent) {
+            Ok(()) => self.log(&format!("Cancelled {count} waiting replays")),
+            Err(error) => self.log(&format!("Could not cancel the waiting replays: {error:#}")),
+        }
+        self.show_sent();
+    }
+
     fn replayed(&self, folder: &Path, result: Result<send::Shared>) {
-        self.replaying.set(false);
+        self.replays_running.borrow_mut().take();
         match result {
             Ok(shared) => {
                 for line in &shared.lines {
@@ -985,6 +1053,13 @@ impl Session {
         }
         if self.folder.borrow().as_deref() == Some(folder) {
             self.show_sent();
+        }
+        let next = {
+            let mut turned_away = self.replays_turned_away.borrow_mut();
+            (!turned_away.is_empty()).then(|| turned_away.remove(0))
+        };
+        if let Some(next) = next {
+            self.send_replays(&next);
         }
     }
 
@@ -3811,6 +3886,69 @@ mod tests {
         assert_eq!(queued.into_iter().collect::<Vec<_>>(), [1]);
         assert!(!state.get_can_share_replays());
         assert_eq!(calls(&received, 1), ["tok replay abc 1"]);
+    }
+
+    #[test]
+    fn a_replay_that_went_out_is_marked_at_once() {
+        use lost_scores_app::replays::Change;
+        let (_window, session, root) = keyless(650.0);
+        let _received = record_calls(&session);
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.queued.extend([0, 1]);
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        session.replay_changed(
+            &folder,
+            "abc",
+            &Change::Shared {
+                row: 0,
+                sha256: "aa".into(),
+            },
+        );
+        let kept = history::submission(&folder, &login().server).unwrap();
+        assert_eq!(kept.replays.get(&0).map(String::as_str), Some("aa"));
+        assert_eq!(kept.queued.into_iter().collect::<Vec<_>>(), [1]);
+        assert_eq!(marks(&session), [4, 3]);
+        session.replay_changed(&folder, "another", &Change::Dropped { row: 1 });
+        let kept = history::submission(&folder, &login().server).unwrap();
+        assert_eq!(kept.queued.into_iter().collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn a_share_turned_away_while_another_runs_starts_when_it_ends() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let (_window, session, root) = keyless(650.0);
+        let received = record_calls(&session);
+        let other = root.path().join("other");
+        *session.replays_running.borrow_mut() =
+            Some((other.clone(), Arc::new(AtomicBool::new(false))));
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.queued.insert(0);
+        shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(calls(&received, 1), ["tok list"]);
+        session.replayed(&other, Ok(crate::send::Shared::default()));
+        assert_eq!(calls(&received, 1), ["tok replay abc 0"]);
+    }
+
+    #[test]
+    fn the_waiting_replays_can_be_cancelled_and_a_running_share_stops() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let _received = record_calls(&session);
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.queued.extend([0, 1]);
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(state.get_replays_waiting(), 2);
+        let stop = Arc::new(AtomicBool::new(false));
+        *session.replays_running.borrow_mut() = Some((folder.clone(), stop.clone()));
+        state.invoke_withdraw_replays();
+        assert!(stop.load(Ordering::Relaxed));
+        let kept = history::submission(&folder, &login().server).unwrap();
+        assert!(kept.queued.is_empty());
+        assert_eq!(state.get_replays_waiting(), 0);
+        assert_eq!(marks(&session), [0, 0]);
     }
 
     fn shown_scan(session: &Session, root: &Path, sent: Option<Submission>) -> PathBuf {

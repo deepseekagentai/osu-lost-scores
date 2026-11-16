@@ -37,7 +37,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use i_slint_backend_testing::ElementHandle;
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
     use slint::platform::{Key, PointerEventButton, WindowEvent};
     use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, VecModel};
 
@@ -1024,6 +1024,27 @@ mod tests {
         click_label(&window, "Open the scan folder");
         assert!(!state.get_scans_open());
         assert_eq!(*calls.borrow(), ["open-scan-folder"]);
+    }
+
+    #[test]
+    fn the_replay_box_on_the_card_reads_as_a_checkbox_and_toggles_from_its_text() {
+        let (window, _calls) = results_window();
+        let state = window.global::<State>();
+        state.set_offer_shown(true);
+        state.set_replays_in_top(1);
+        state.set_offer_with_replays(true);
+        settle();
+        let label = "Also share the replay of the lost play in your top";
+        let found: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].accessible_role(), Some(AccessibleRole::Checkbox));
+        assert_eq!(found[0].accessible_checked(), Some(true));
+        found[0].mock_single_click(PointerEventButton::Left);
+        settle();
+        assert!(!state.get_offer_with_replays());
+        found[0].invoke_accessible_default_action();
+        settle();
+        assert!(state.get_offer_with_replays());
     }
 
     #[test]

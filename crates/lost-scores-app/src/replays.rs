@@ -4,16 +4,68 @@ use std::path::{Path, PathBuf};
 use osu_api::{ApiError, MAX_REPLAY};
 use osu_formats::ReplayHeader;
 
-use crate::history::{SavedScan, Sent};
+use crate::history::{self, SavedScan, Sent};
 use crate::rows::printable;
+
+const QUOTA_WAIT_S: i64 = 3600;
 
 #[derive(Debug)]
 pub enum Outcome {
-    Sent { row: usize },
+    Sent { row: usize, sha256: String },
     Unreadable { row: usize, reason: String },
     Refused { row: usize, error: ApiError },
     Waiting { error: ApiError },
     NoFolder { dir: PathBuf },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Shared { row: usize, sha256: String },
+    Dropped { row: usize },
+    Gone,
+    Later { at: Option<i64> },
+}
+
+pub fn apply(sent: &mut Sent, change: &Change) {
+    match change {
+        Change::Shared { row, sha256 } => {
+            sent.queued.remove(row);
+            sent.replays.insert(*row, sha256.clone());
+            sent.retry_at = None;
+        }
+        Change::Dropped { row } => {
+            sent.queued.remove(row);
+        }
+        Change::Gone => sent.queued.clear(),
+        Change::Later { at } => sent.retry_at = *at,
+    }
+}
+
+fn pause_of(error: &ApiError) -> Option<i64> {
+    match error {
+        ApiError::ReplaysPaused { retry_after } => i64::try_from(*retry_after).ok(),
+        ApiError::ReplayQuota => Some(QUOTA_WAIT_S),
+        _ => None,
+    }
+}
+
+fn change_of(outcome: &Outcome, now: i64) -> Option<Change> {
+    match outcome {
+        Outcome::Sent { row, sha256 } => Some(Change::Shared {
+            row: *row,
+            sha256: sha256.clone(),
+        }),
+        Outcome::Unreadable { row, .. } => Some(Change::Dropped { row: *row }),
+        Outcome::Refused {
+            error: ApiError::NotOnServer,
+            ..
+        } => Some(Change::Gone),
+        Outcome::Refused { row, .. } => Some(Change::Dropped { row: *row }),
+        Outcome::Waiting { error } => Some(Change::Later {
+            at: pause_of(error).map(|wait| now + wait),
+        }),
+        Outcome::NoFolder { .. } => None,
+    }
 }
 
 fn waits(error: &ApiError) -> bool {
@@ -71,51 +123,90 @@ pub fn send_queued(
     sent: &mut Sent,
     scan: &SavedScan,
     replays_dir: &Path,
+    now: i64,
+    report: &mut dyn FnMut(&Outcome, Option<&Change>) -> bool,
 ) -> Vec<Outcome> {
-    if !sent.queued.is_empty() && !replays_dir.is_dir() {
-        return vec![Outcome::NoFolder {
+    if sent.queued.is_empty() || sent.retry_at.is_some_and(|at| at > now) {
+        return Vec::new();
+    }
+    if !replays_dir.is_dir() {
+        let outcome = Outcome::NoFolder {
             dir: replays_dir.to_path_buf(),
-        }];
+        };
+        report(&outcome, None);
+        return vec![outcome];
     }
     let mut outcomes = Vec::new();
     for row in sent.queued.clone() {
-        let Some(lost) = scan.lost.get(row) else {
-            sent.queued.remove(&row);
-            continue;
+        let outcome = match scan.lost.get(row) {
+            None => Outcome::Unreadable {
+                row,
+                reason: "the scan has no such play".into(),
+            },
+            Some(lost) => match readable(&replays_dir.join(&lost.file)) {
+                Err(reason) => Outcome::Unreadable { row, reason },
+                Ok(bytes) => match upload(&sent.id, row, &bytes) {
+                    Ok(sha256) => Outcome::Sent { row, sha256 },
+                    Err(error) if waits(&error) => Outcome::Waiting { error },
+                    Err(error) => Outcome::Refused { row, error },
+                },
+            },
         };
-        let bytes = match readable(&replays_dir.join(&lost.file)) {
-            Ok(bytes) => bytes,
-            Err(reason) => {
-                sent.queued.remove(&row);
-                outcomes.push(Outcome::Unreadable { row, reason });
-                continue;
-            }
-        };
-        match upload(&sent.id, row, &bytes) {
-            Ok(sha256) => {
-                sent.queued.remove(&row);
-                sent.replays.insert(row, sha256);
-                outcomes.push(Outcome::Sent { row });
-            }
-            Err(error) if waits(&error) => {
-                outcomes.push(Outcome::Waiting { error });
-                break;
-            }
-            Err(ApiError::NotOnServer) => {
-                sent.queued.clear();
-                outcomes.push(Outcome::Refused {
-                    row,
+        let last = matches!(
+            outcome,
+            Outcome::Waiting { .. }
+                | Outcome::Refused {
                     error: ApiError::NotOnServer,
-                });
-                break;
-            }
-            Err(error) => {
-                sent.queued.remove(&row);
-                outcomes.push(Outcome::Refused { row, error });
-            }
+                    ..
+                }
+        );
+        let change = change_of(&outcome, now);
+        if let Some(change) = &change {
+            apply(sent, change);
+        }
+        let go_on = report(&outcome, change.as_ref());
+        outcomes.push(outcome);
+        if last || !go_on {
+            break;
         }
     }
     outcomes
+}
+
+pub fn send_and_keep(
+    upload: &mut Upload<'_>,
+    folder: &Path,
+    record: &mut Sent,
+    scan: &SavedScan,
+    replays_dir: &Path,
+    now: i64,
+    told: &mut dyn FnMut(&Outcome),
+) -> anyhow::Result<()> {
+    history::remember(folder, record)?;
+    let mut kept = record.clone();
+    let mut failure = None;
+    send_queued(
+        upload,
+        record,
+        scan,
+        replays_dir,
+        now,
+        &mut |outcome, change| {
+            told(outcome);
+            let Some(change) = change else {
+                return true;
+            };
+            apply(&mut kept, change);
+            match history::remember(folder, &kept) {
+                Ok(()) => true,
+                Err(error) => {
+                    failure = Some(error);
+                    false
+                }
+            }
+        },
+    );
+    failure.map_or(Ok(()), Err)
 }
 
 pub fn describe(outcome: &Outcome, scan: &SavedScan) -> String {
@@ -133,7 +224,7 @@ pub fn describe(outcome: &Outcome, scan: &SavedScan) -> String {
         )
     };
     match outcome {
-        Outcome::Sent { row } => format!("sent the replay of {}", play(*row)),
+        Outcome::Sent { row, .. } => format!("sent the replay of {}", play(*row)),
         Outcome::Unreadable { row, reason } => {
             format!("kept back the replay of {}: {reason}", play(*row))
         }
@@ -157,14 +248,18 @@ mod tests {
     use lost_scores_core::maps::MapStatus;
     use osu_api::{ApiError, Submission};
 
-    use super::{Outcome, describe, in_top, send_queued};
-    use crate::history::{SavedScan, Sent, VERSION};
+    use super::{Change, Outcome, apply, describe, in_top, send_and_keep, send_queued};
+    use crate::history::{self, SavedScan, Sent, VERSION};
     use crate::pipeline::PotentialResult;
     use crate::rows::{Hits, LostRow, PotentialRow};
+
+    const NOW: i64 = 1_800_000_000;
 
     struct Uploads {
         answers: VecDeque<Result<String, ApiError>>,
         calls: Vec<String>,
+        changes: Vec<Change>,
+        order: Vec<String>,
     }
 
     impl Uploads {
@@ -175,19 +270,54 @@ mod tests {
                     .map(|answer| answer.map(str::to_owned))
                     .collect(),
                 calls: Vec::new(),
+                changes: Vec::new(),
+                order: Vec::new(),
             }
         }
 
         fn send(&mut self, record: &mut Sent, saved: &SavedScan, dir: &Path) -> Vec<Outcome> {
-            send_queued(
+            self.send_at(record, saved, dir, NOW)
+        }
+
+        fn send_at(
+            &mut self,
+            record: &mut Sent,
+            saved: &SavedScan,
+            dir: &Path,
+            now: i64,
+        ) -> Vec<Outcome> {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let answers = &mut self.answers;
+            let mut changes = Vec::new();
+            let outcomes = send_queued(
                 &mut |id: &str, row: usize, bytes: &[u8]| {
-                    self.calls.push(format!("{id} {row} {}", bytes.len()));
-                    self.answers.pop_front().expect("no scripted answer")
+                    calls
+                        .borrow_mut()
+                        .push(format!("{id} {row} {}", bytes.len()));
+                    answers.pop_front().expect("no scripted answer")
                 },
                 record,
                 saved,
                 dir,
-            )
+                now,
+                &mut |_: &Outcome, change: Option<&Change>| {
+                    if let Some(change) = change {
+                        calls.borrow_mut().push(format!("change {change:?}"));
+                        changes.push(change.clone());
+                    }
+                    true
+                },
+            );
+            for call in calls.into_inner() {
+                if call.starts_with("change ") {
+                    self.order.push(call);
+                } else {
+                    self.order.push(call.clone());
+                    self.calls.push(call);
+                }
+            }
+            self.changes.extend(changes);
+            outcomes
         }
     }
 
@@ -283,7 +413,10 @@ mod tests {
     fn each_outcome_is_told_with_its_play() {
         let saved = scan(&["a.osr"]);
         let told = [
-            Outcome::Sent { row: 0 },
+            Outcome::Sent {
+                row: 0,
+                sha256: "aa".into(),
+            },
             Outcome::Unreadable {
                 row: 0,
                 reason: "a.osr: replay ends too early".into(),
@@ -319,7 +452,7 @@ mod tests {
         let outcomes = uploads.send(&mut record, &scan(&["a.osr", "b.osr"]), dir.path());
         assert!(matches!(
             outcomes[..],
-            [Outcome::Sent { row: 0 }, Outcome::Sent { row: 1 }]
+            [Outcome::Sent { row: 0, .. }, Outcome::Sent { row: 1, .. }]
         ));
         assert_eq!(
             record.replays.into_iter().collect::<Vec<_>>(),
@@ -354,7 +487,7 @@ mod tests {
         assert!(matches!(
             outcomes[..],
             [
-                Outcome::Sent { row: 0 },
+                Outcome::Sent { row: 0, .. },
                 Outcome::Waiting {
                     error: ApiError::ReplaysPaused { retry_after: 3600 }
                 }
@@ -362,7 +495,7 @@ mod tests {
         ));
         assert_eq!(record.queued.iter().copied().collect::<Vec<_>>(), [1, 2]);
         let mut later = Uploads::new(vec![Ok("bb"), Ok("cc")]);
-        later.send(&mut record, &saved, dir.path());
+        later.send_at(&mut record, &saved, dir.path(), NOW + 3600);
         assert!(record.queued.is_empty());
         assert_eq!(record.replays.len(), 3);
     }
@@ -409,6 +542,138 @@ mod tests {
                 missing.display()
             )
         );
+    }
+
+    #[test]
+    fn a_play_the_server_does_not_hold_drops_only_its_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        files(dir.path(), &[("a.osr", replay()), ("b.osr", replay())]);
+        let mut uploads = Uploads::new(vec![Err(ApiError::NoSuchPlay), Ok("bb")]);
+        let mut record = sent(&[0, 1]);
+        let outcomes = uploads.send(&mut record, &scan(&["a.osr", "b.osr"]), dir.path());
+        assert!(matches!(
+            outcomes[..],
+            [
+                Outcome::Refused {
+                    row: 0,
+                    error: ApiError::NoSuchPlay
+                },
+                Outcome::Sent { row: 1, .. }
+            ]
+        ));
+        assert!(record.queued.is_empty());
+        assert_eq!(record.replays.keys().copied().collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn a_paused_server_is_not_asked_again_before_it_said() {
+        let dir = tempfile::tempdir().unwrap();
+        files(dir.path(), &[("a.osr", replay())]);
+        let mut uploads = Uploads::new(vec![
+            Err(ApiError::ReplaysPaused { retry_after: 600 }),
+            Ok("aa"),
+        ]);
+        let mut record = sent(&[0]);
+        let saved = scan(&["a.osr"]);
+        uploads.send_at(&mut record, &saved, dir.path(), NOW);
+        assert_eq!(record.retry_at, Some(NOW + 600));
+        assert!(
+            uploads
+                .send_at(&mut record, &saved, dir.path(), NOW + 300)
+                .is_empty()
+        );
+        assert_eq!(uploads.calls.len(), 1);
+        uploads.send_at(&mut record, &saved, dir.path(), NOW + 601);
+        assert_eq!(uploads.calls.len(), 2);
+        assert_eq!(record.retry_at, None);
+        assert!(record.queued.is_empty());
+    }
+
+    #[test]
+    fn each_change_is_reported_as_soon_as_its_replay_is_done() {
+        let dir = tempfile::tempdir().unwrap();
+        files(dir.path(), &[("a.osr", replay()), ("c.osr", replay())]);
+        let mut uploads = Uploads::new(vec![Ok("aa"), Err(ApiError::ReplayMismatch)]);
+        let mut record = sent(&[0, 1, 2]);
+        uploads.send(&mut record, &scan(&["a.osr", "b.osr", "c.osr"]), dir.path());
+        let size = replay().len();
+        assert_eq!(
+            uploads.order,
+            [
+                format!("abc 0 {size}"),
+                format!(
+                    "change {:?}",
+                    Change::Shared {
+                        row: 0,
+                        sha256: "aa".into()
+                    }
+                ),
+                format!("change {:?}", Change::Dropped { row: 1 }),
+                format!("abc 2 {size}"),
+                format!("change {:?}", Change::Dropped { row: 2 }),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_queue_is_kept_on_disk_before_and_after_each_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let scans = tempfile::tempdir().unwrap();
+        files(dir.path(), &[("a.osr", replay()), ("b.osr", replay())]);
+        let saved = scan(&["a.osr", "b.osr"]);
+        let folder = history::save(scans.path(), &saved).unwrap();
+        let mut record = sent(&[0, 1]);
+        let mut seen = Vec::new();
+        let mut upload = |_: &str, row: usize, _: &[u8]| {
+            let kept = history::submission(&folder, "https://api.test").unwrap();
+            seen.push((
+                row,
+                kept.queued.iter().copied().collect::<Vec<_>>(),
+                kept.replays.keys().copied().collect::<Vec<_>>(),
+            ));
+            if row == 0 {
+                Ok("aa".to_owned())
+            } else {
+                Err(ApiError::ReplaysPaused { retry_after: 60 })
+            }
+        };
+        let mut told = Vec::new();
+        send_and_keep(
+            &mut upload,
+            &folder,
+            &mut record,
+            &saved,
+            dir.path(),
+            NOW,
+            &mut |outcome| told.push(describe(outcome, &saved)),
+        )
+        .unwrap();
+        assert_eq!(seen, [(0, vec![0, 1], vec![]), (1, vec![1], vec![0])]);
+        let kept = history::submission(&folder, "https://api.test").unwrap();
+        assert_eq!(kept.queued.iter().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(kept.retry_at, Some(NOW + 60));
+        assert_eq!(told.len(), 2);
+    }
+
+    #[test]
+    fn a_change_moves_a_play_out_of_the_queue() {
+        let mut record = sent(&[0, 1, 2]);
+        record.retry_at = Some(NOW);
+        apply(
+            &mut record,
+            &Change::Shared {
+                row: 0,
+                sha256: "aa".into(),
+            },
+        );
+        apply(&mut record, &Change::Dropped { row: 1 });
+        assert_eq!(record.queued.iter().copied().collect::<Vec<_>>(), [2]);
+        assert_eq!(record.replays.get(&0).map(String::as_str), Some("aa"));
+        assert_eq!(record.retry_at, None);
+        apply(&mut record, &Change::Later { at: Some(NOW + 60) });
+        assert_eq!(record.retry_at, Some(NOW + 60));
+        apply(&mut record, &Change::Gone);
+        assert!(record.queued.is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use anyhow::Result;
 use lost_scores_app::history::{self, Sent};
 use lost_scores_app::online::USER_AGENT;
 use lost_scores_app::pipeline::PotentialResult;
-use lost_scores_app::replays::{self, Outcome};
+use lost_scores_app::replays::{self, Change, Outcome};
 use lost_scores_app::rows::thousands;
 use lost_scores_app::session::Session as Login;
 use osu_api::{ApiError, Http, Server, Submission, SubmissionInfo};
@@ -75,6 +75,8 @@ pub fn share_replays(
     login: &Login,
     folder: &Path,
     replays_dir: &Path,
+    now: i64,
+    report: &mut dyn FnMut(&Change) -> bool,
 ) -> Result<Shared> {
     let scan = history::load(folder)?;
     let Some(mut sent) = history::submission(folder, &login.server) else {
@@ -93,8 +95,15 @@ pub fn share_replays(
             )),
         }
     };
-    let outcomes = replays::send_queued(&mut upload, &mut sent, &scan, replays_dir);
-    let shared = Shared {
+    let outcomes = replays::send_queued(
+        &mut upload,
+        &mut sent,
+        &scan,
+        replays_dir,
+        now,
+        &mut |_, change| change.is_none_or(&mut *report),
+    );
+    Ok(Shared {
         lines: outcomes
             .iter()
             .map(|outcome| replays::describe(outcome, &scan))
@@ -107,15 +116,7 @@ pub fn share_replays(
             Outcome::Waiting { error } => Some(error.to_string()),
             _ => None,
         }),
-    };
-    if let Some(mut current) =
-        history::submission(folder, &login.server).filter(|current| current.id == sent.id)
-    {
-        current.replays = sent.replays;
-        current.queued = sent.queued;
-        history::remember(folder, &current)?;
-    }
-    Ok(shared)
+    })
 }
 
 pub fn label(sent: &Sent) -> String {

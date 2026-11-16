@@ -11,7 +11,7 @@ use std::thread;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use lost_scores_app::history::{self, Sent};
+use lost_scores_app::history::{self, SavedScan, Sent};
 use lost_scores_app::keys;
 use lost_scores_app::login;
 use lost_scores_app::online::{Online, USER_AGENT};
@@ -133,6 +133,11 @@ enum Command {
     },
     #[command(about = "Log out of osu! and delete the saved osu! OAuth keys")]
     Logout,
+    #[command(about = "Send the replays that wait for your sent scans")]
+    Replays {
+        #[command(flatten)]
+        source: Source,
+    },
     #[command(
         about = "Dump every replay of the player with its beatmap and pp as JSON, for checks"
     )]
@@ -268,6 +273,7 @@ fn run(cli: Cli) -> Result<()> {
         ),
         Some(Command::Login { keys }) => (if *keys { save_keys() } else { log_in() }, None),
         Some(Command::Logout) => (logout(), None),
+        Some(Command::Replays { source }) => (send_waiting_replays(source), Some(source)),
         None => (
             show_lost(&cli.source, &cli.view, &notes, &mut timings, &mut events),
             Some(&cli.source),
@@ -575,17 +581,65 @@ fn submit(
     if share_replays {
         record.queued.extend(replays::in_top(&scan));
         let replays_dir = read.osu_dir.join("Data").join("r");
-        let mut upload = |id: &str, row: usize, bytes: &[u8]| server.upload_replay(id, row, bytes);
-        for outcome in replays::send_queued(&mut upload, &mut record, &scan, &replays_dir) {
-            eprintln!("{}", replays::describe(&outcome, &scan));
-        }
-        history::remember(&folder, &record)?;
+        send_replays(&mut server, &folder, &mut record, &scan, &replays_dir)?;
         if !record.queued.is_empty() {
             eprintln!(
-                "{} replays wait; the window sends them once the server takes replays again",
+                "{} replays wait; `lost-scores replays` or the window sends them later",
                 record.queued.len()
             );
         }
+    }
+    Ok(())
+}
+
+fn send_replays(
+    server: &mut Server<Http>,
+    folder: &Path,
+    record: &mut Sent,
+    scan: &SavedScan,
+    replays_dir: &Path,
+) -> Result<()> {
+    let mut upload = |id: &str, row: usize, bytes: &[u8]| server.upload_replay(id, row, bytes);
+    replays::send_and_keep(
+        &mut upload,
+        folder,
+        record,
+        scan,
+        replays_dir,
+        pipeline::unix_now(),
+        &mut |outcome| eprintln!("{}", replays::describe(outcome, scan)),
+    )
+}
+
+fn send_waiting_replays(source: &Source) -> Result<()> {
+    ensure!(
+        !source.offline,
+        "sending replays needs the Lost Scores server: {OFFLINE_HINT}"
+    );
+    let base = source.server.clone().unwrap_or_else(shared::server_url);
+    let session = saved_session()
+        .filter(|session| session.server == base.trim_end_matches('/'))
+        .with_context(|| format!("sending replays needs your osu! login: {LOGIN_HINT}"))?;
+    let scans_dir = history::scans_dir().context("cannot find a folder for the scans")?;
+    let replays_dir = setup::resolve_osu_dir(source.osu_dir.as_deref())?
+        .join("Data")
+        .join("r");
+    let mut server = Server::new(Http::new(USER_AGENT), &base).with_session(&session.token);
+    let mut waiting = 0;
+    for entry in history::list(&scans_dir) {
+        let Some(mut record) = history::submission(&entry.folder, server.base()) else {
+            continue;
+        };
+        if record.queued.is_empty() {
+            continue;
+        }
+        let scan = history::load(&entry.folder)?;
+        send_replays(&mut server, &entry.folder, &mut record, &scan, &replays_dir)?;
+        waiting += record.queued.len();
+    }
+    match waiting {
+        0 => println!("no replays wait"),
+        count => println!("{count} replays still wait; run this again later"),
     }
     Ok(())
 }

@@ -153,6 +153,29 @@ fn submit_without_a_session_says_to_log_in() {
     );
 }
 
+fn replays(home: &Path) -> Output {
+    let osu = osu_folder(home);
+    lost_scores(home, &["replays", "--osu-dir", osu.to_str().unwrap()])
+}
+
+#[test]
+fn replays_without_a_session_says_to_log_in() {
+    let home = tempfile::tempdir().unwrap();
+    let output = replays(home.path());
+    let log = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(log.contains("run `lost-scores login` first"), "{log}");
+}
+
+#[test]
+fn replays_with_nothing_waiting_says_so() {
+    let home = tempfile::tempdir().unwrap();
+    save_session(home.path(), "http://127.0.0.1:9");
+    let output = replays(home.path());
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout).trim(), "no replays wait");
+}
+
 #[test]
 fn submit_offline_says_to_drop_offline() {
     let home = tempfile::tempdir().unwrap();
