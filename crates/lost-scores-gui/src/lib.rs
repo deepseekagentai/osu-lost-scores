@@ -245,6 +245,32 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_with_one_scan_keeps_the_folder_row_right_below_it() {
+        i_slint_backend_testing::init_no_event_loop();
+        let window = MainWindow::new().unwrap();
+        window.show().unwrap();
+        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        let label = "15 November 2026 · 10:00";
+        let state = window.global::<State>();
+        state.set_scans(ModelRc::new(VecModel::from(vec![SharedString::from(
+            label,
+        )])));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_scans_open(true);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+
+        let middle = |label: &str| {
+            let element = ElementHandle::find_by_accessible_label(&window, label)
+                .next()
+                .unwrap();
+            element.absolute_position().y + element.size().height / 2.0
+        };
+        let gap = middle("Open the scan folder") - middle(label);
+        assert!((gap - 41.0).abs() < 1.0, "gap {gap}");
+    }
+
+    #[test]
     fn start_scan_sees_the_text_still_being_typed_in_scores_to_show() {
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
