@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use osu_api::{ApiError, MAX_REPLAY};
 use osu_formats::ReplayHeader;
@@ -13,6 +13,7 @@ pub enum Outcome {
     Unreadable { row: usize, reason: String },
     Refused { row: usize, error: ApiError },
     Waiting { error: ApiError },
+    NoFolder { dir: PathBuf },
 }
 
 fn waits(error: &ApiError) -> bool {
@@ -71,6 +72,11 @@ pub fn send_queued(
     scan: &SavedScan,
     replays_dir: &Path,
 ) -> Vec<Outcome> {
+    if !sent.queued.is_empty() && !replays_dir.is_dir() {
+        return vec![Outcome::NoFolder {
+            dir: replays_dir.to_path_buf(),
+        }];
+    }
     let mut outcomes = Vec::new();
     for row in sent.queued.clone() {
         let Some(lost) = scan.lost.get(row) else {
@@ -135,6 +141,9 @@ pub fn describe(outcome: &Outcome, scan: &SavedScan) -> String {
             format!("the server refused the replay of {}: {error}", play(*row))
         }
         Outcome::Waiting { error } => error.to_string(),
+        Outcome::NoFolder { dir } => {
+            format!("kept the replays queued: {} is not there", dir.display())
+        }
     }
 }
 
@@ -380,6 +389,26 @@ mod tests {
         ));
         assert!(record.queued.is_empty() && record.replays.is_empty());
         assert!(uploads.calls.is_empty());
+    }
+
+    #[test]
+    fn the_queue_waits_while_the_replays_folder_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("Data").join("r");
+        let mut uploads = Uploads::new(Vec::new());
+        let mut record = sent(&[0, 1]);
+        let saved = scan(&["a.osr", "b.osr"]);
+        let outcomes = uploads.send(&mut record, &saved, &missing);
+        assert!(matches!(outcomes[..], [Outcome::NoFolder { .. }]));
+        assert_eq!(record.queued.iter().copied().collect::<Vec<_>>(), [0, 1]);
+        assert!(uploads.calls.is_empty());
+        assert_eq!(
+            describe(&outcomes[0], &saved),
+            format!(
+                "kept the replays queued: {} is not there",
+                missing.display()
+            )
+        );
     }
 
     #[test]

@@ -91,7 +91,7 @@ struct Session {
     offered: RefCell<Option<PathBuf>>,
     declined: RefCell<Option<PathBuf>>,
     publish_next: Cell<bool>,
-    replays_next: Cell<bool>,
+    replays_next: RefCell<Option<PathBuf>>,
     replaying: Cell<bool>,
     top_rows: RefCell<Vec<usize>>,
     marks: RefCell<Vec<(usize, i32)>>,
@@ -182,7 +182,7 @@ impl Session {
             offered: RefCell::new(None),
             declined: RefCell::new(None),
             publish_next: Cell::new(false),
-            replays_next: Cell::new(false),
+            replays_next: RefCell::new(None),
             replaying: Cell::new(false),
             top_rows: RefCell::new(Vec::new()),
             marks: RefCell::new(Vec::new()),
@@ -854,14 +854,14 @@ impl Session {
         state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
         state.set_sent_public(sent.as_ref().is_some_and(send::published));
         state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
-        let top = self.top_rows.borrow().len();
-        state.set_replays_in_top(top as i32);
-        state.set_can_share_replays(
-            top > 0
-                && sent.as_ref().is_some_and(|sent| {
-                    send::published(sent) && sent.replays.is_empty() && sent.queued.is_empty()
-                }),
-        );
+        let top = self.top_rows.borrow().clone();
+        state.set_replays_in_top(top.len() as i32);
+        state.set_can_share_replays(sent.as_ref().is_some_and(|sent| {
+            send::published(sent)
+                && top
+                    .iter()
+                    .any(|row| !sent.replays.contains_key(row) && !sent.queued.contains(row))
+        }));
         let marks: Vec<(usize, i32)> = sent
             .iter()
             .flat_map(|sent| {
@@ -905,15 +905,15 @@ impl Session {
 
     fn publish_offer(&self) {
         let state = self.window.global::<State>();
-        self.replays_next
-            .set(state.get_offer_with_replays() && !self.top_rows.borrow().is_empty());
+        let wanted = state.get_offer_with_replays() && !self.top_rows.borrow().is_empty();
+        *self.replays_next.borrow_mut() = self.folder.borrow().clone().filter(|_| wanted);
         self.publish_next.set(true);
         self.submit_scan();
         if state.get_sending() {
             self.dismiss_offer();
         } else {
             self.publish_next.set(false);
-            self.replays_next.set(false);
+            self.replays_next.borrow_mut().take();
         }
     }
 
@@ -956,12 +956,11 @@ impl Session {
         let Some(login) = self.sending_login() else {
             return;
         };
-        if self.replaying.replace(true) {
+        let osu_dir = self.window.global::<State>().get_osu_dir().to_string();
+        if osu_dir.is_empty() || self.replaying.replace(true) {
             return;
         }
-        let dir = PathBuf::from(self.window.global::<State>().get_osu_dir().to_string())
-            .join("Data")
-            .join("r");
+        let dir = PathBuf::from(osu_dir).join("Data").join("r");
         let courier = self.courier.borrow().clone();
         let weak = self.weak.clone();
         let folder = folder.to_path_buf();
@@ -1034,6 +1033,7 @@ impl Session {
 
     fn answered(&self, folder: &Path, result: Result<Reply>) {
         self.window.global::<State>().set_sending(false);
+        let replays = self.replays_next.borrow_mut().take().as_deref() == Some(folder);
         let publish_next =
             self.publish_next.replace(false) && self.folder.borrow().as_deref() == Some(folder);
         let Some(login) = self.sending_login() else {
@@ -1053,12 +1053,15 @@ impl Session {
                 match history::remember(folder, &sent) {
                     Ok(()) if publish_next && !send::published(&sent) => {
                         self.log(&format!("{done}: {}", sent.id));
+                        if replays {
+                            *self.replays_next.borrow_mut() = Some(folder.to_path_buf());
+                        }
                         self.send_about(Call::Publish);
                     }
                     Ok(()) => {
                         self.log(&format!("{done}: {}", sent.id));
                         self.toast(done);
-                        if send::published(&sent) && self.replays_next.replace(false) {
+                        if send::published(&sent) && replays {
                             self.queue_top_replays(folder);
                         }
                     }
@@ -3750,6 +3753,64 @@ mod tests {
         assert!(!state.get_can_share_replays());
         assert_eq!(marks(&session), [3, 3]);
         assert_eq!(calls(&received, 1), ["tok replay abc 0"]);
+    }
+
+    #[test]
+    fn a_refused_publish_from_the_offer_shares_nothing_later() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_replay_scan(&session, root.path(), None);
+        session.offer(&folder, &replay_scan());
+        state.invoke_publish_offer();
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Err(ApiError::TooSoon { retry_after: 60 }.into()));
+        let private = Sent::new(&answer("private", "unverified"), &login().server);
+        history::remember(&folder, &private).unwrap();
+        state.invoke_publish_scan();
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        let sent = history::submission(&folder, &login().server).unwrap();
+        assert!(sent.queued.is_empty());
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn waiting_replays_stay_queued_while_the_osu_folder_is_unknown() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        state.set_osu_dir("".into());
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.queued.extend([0, 1]);
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(calls(&received, 1), ["tok list"]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let kept = history::submission(&folder, &login().server).unwrap();
+        assert_eq!(kept.queued.into_iter().collect::<Vec<_>>(), [0, 1]);
+    }
+
+    #[test]
+    fn the_menu_shares_the_top_replays_that_went_nowhere() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.replays.insert(0, "aa".into());
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        assert_eq!(calls(&received, 1), ["tok list"]);
+        assert!(state.get_can_share_replays());
+        state.invoke_share_replays();
+        let queued = history::submission(&folder, &login().server)
+            .unwrap()
+            .queued;
+        assert_eq!(queued.into_iter().collect::<Vec<_>>(), [1]);
+        assert!(!state.get_can_share_replays());
+        assert_eq!(calls(&received, 1), ["tok replay abc 1"]);
     }
 
     fn shown_scan(session: &Session, root: &Path, sent: Option<Submission>) -> PathBuf {
