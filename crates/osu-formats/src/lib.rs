@@ -1,4 +1,5 @@
 mod beatmap;
+mod lzma;
 mod mods;
 mod replay;
 

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{Mods, utf8_ignoring_invalid};
+use crate::{Mods, lzma, utf8_ignoring_invalid};
 
 const TICKS_AT_UNIX_EPOCH: i64 = 621_355_968_000_000_000;
 const TICKS_PER_SECOND: i64 = 10_000_000;
@@ -8,6 +8,7 @@ const LONG_ID_VERSION: i32 = 20_140_721;
 const INT_ID_VERSION: i32 = 20_121_008;
 const TARGET_PRACTICE: u32 = 1 << 23;
 const OSU_MODE: u8 = 0;
+const MAX_FRAMES_TEXT: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayHeader {
@@ -43,6 +44,12 @@ pub enum ReplayError {
     FramesLength(i32),
     #[error("replay has {0} bytes after its end")]
     TrailingBytes(usize),
+    #[error("replay hashes are not 32 hex digits")]
+    Hash,
+    #[error("replay life bar is not pairs of time and life")]
+    LifeBar,
+    #[error("replay frames are not a whole LZMA stream of cursor frames")]
+    Frames,
 }
 
 impl ReplayHeader {
@@ -52,13 +59,13 @@ impl ReplayHeader {
 
     pub fn check(data: &[u8]) -> Result<Self, ReplayError> {
         let mut r = Reader::new(data, true);
-        let header = Self::read(&mut r)?;
+        let (header, life) = Self::read_with_life(&mut r)?;
         if header.mode != OSU_MODE {
             return Err(ReplayError::OtherMode(header.mode));
         }
         let frames = r.i32()?;
         let len = usize::try_from(frames).map_err(|_| ReplayError::FramesLength(frames))?;
-        r.take(len).map_err(|_| ReplayError::FramesLength(frames))?;
+        let stream = r.take(len).map_err(|_| ReplayError::FramesLength(frames))?;
         if header.version >= LONG_ID_VERSION {
             r.i64()?;
         } else if header.version >= INT_ID_VERSION {
@@ -68,33 +75,66 @@ impl ReplayHeader {
             r.take(8)?;
         }
         match r.left() {
-            0 => Ok(header),
-            left => Err(ReplayError::TrailingBytes(left)),
+            0 => {}
+            left => return Err(ReplayError::TrailingBytes(left)),
         }
+        if !hex_hash(&header.beatmap_md5) || !hex_hash(&header.replay_md5) {
+            return Err(ReplayError::Hash);
+        }
+        if !life_pairs(life.as_bytes()) {
+            return Err(ReplayError::LifeBar);
+        }
+        if !lzma::alone(stream, MAX_FRAMES_TEXT).is_some_and(|text| cursor_frames(&text)) {
+            return Err(ReplayError::Frames);
+        }
+        Ok(header)
     }
 
     fn read(r: &mut Reader) -> Result<Self, ReplayError> {
-        Ok(Self {
-            mode: r.u8()?,
-            version: r.i32()?,
-            beatmap_md5: r.string()?,
-            player_name: r.string()?,
-            replay_md5: r.string()?,
-            count_300: r.u16()?,
-            count_100: r.u16()?,
-            count_50: r.u16()?,
-            count_geki: r.u16()?,
-            count_katu: r.u16()?,
-            count_miss: r.u16()?,
-            score: r.u32()?,
-            max_combo: r.u16()?,
-            perfect: r.u8()? == 1,
-            mods: Mods::from_bits(r.u32()?),
-            timestamp_ticks: {
-                let _life_bar_graph = r.string()?;
-                r.i64()?
+        Self::read_with_life(r).map(|(header, _)| header)
+    }
+
+    fn read_with_life(r: &mut Reader) -> Result<(Self, String), ReplayError> {
+        let mode = r.u8()?;
+        let version = r.i32()?;
+        let beatmap_md5 = r.string()?;
+        let player_name = r.string()?;
+        let replay_md5 = r.string()?;
+        let [
+            count_300,
+            count_100,
+            count_50,
+            count_geki,
+            count_katu,
+            count_miss,
+        ] = [r.u16()?, r.u16()?, r.u16()?, r.u16()?, r.u16()?, r.u16()?];
+        let score = r.u32()?;
+        let max_combo = r.u16()?;
+        let perfect = r.u8()? == 1;
+        let mods = Mods::from_bits(r.u32()?);
+        let life = r.string()?;
+        let timestamp_ticks = r.i64()?;
+        Ok((
+            Self {
+                mode,
+                version,
+                beatmap_md5,
+                player_name,
+                replay_md5,
+                count_300,
+                count_100,
+                count_50,
+                count_geki,
+                count_katu,
+                count_miss,
+                score,
+                max_combo,
+                perfect,
+                mods,
+                timestamp_ticks,
             },
-        })
+            life,
+        ))
     }
 
     pub fn unix_time(&self) -> i64 {
@@ -102,6 +142,87 @@ impl ReplayHeader {
             .saturating_sub(TICKS_AT_UNIX_EPOCH)
             .div_euclid(TICKS_PER_SECOND)
     }
+}
+
+fn hex_hash(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+struct Scan<'a> {
+    text: &'a [u8],
+    at: usize,
+}
+
+impl Scan<'_> {
+    fn eat(&mut self, byte: u8) -> bool {
+        let hit = self.text.get(self.at) == Some(&byte);
+        if hit {
+            self.at += 1;
+        }
+        hit
+    }
+
+    fn digits(&mut self) -> bool {
+        let start = self.at;
+        while self.text.get(self.at).is_some_and(u8::is_ascii_digit) {
+            self.at += 1;
+        }
+        self.at > start
+    }
+
+    fn whole(&mut self) -> bool {
+        self.eat(b'-');
+        self.digits()
+    }
+
+    fn number(&mut self) -> bool {
+        if !self.whole() || (self.eat(b'.') && !self.digits()) {
+            return false;
+        }
+        if self.eat(b'E') || self.eat(b'e') {
+            if !self.eat(b'+') {
+                self.eat(b'-');
+            }
+            return self.digits();
+        }
+        true
+    }
+
+    fn done(&self) -> bool {
+        self.at >= self.text.len()
+    }
+}
+
+fn cursor_frames(text: &[u8]) -> bool {
+    let mut scan = Scan { text, at: 0 };
+    let mut frames = 0;
+    while !scan.done() {
+        let frame = scan.whole()
+            && scan.eat(b'|')
+            && scan.number()
+            && scan.eat(b'|')
+            && scan.number()
+            && scan.eat(b'|')
+            && scan.whole();
+        if !frame || (!scan.done() && !scan.eat(b',')) {
+            return false;
+        }
+        frames += 1;
+    }
+    frames > 0
+}
+
+fn life_pairs(text: &[u8]) -> bool {
+    let mut scan = Scan { text, at: 0 };
+    while !scan.done() {
+        if !(scan.whole() && scan.eat(b'|') && scan.number() && scan.eat(b',')) {
+            return false;
+        }
+    }
+    true
 }
 
 struct Reader<'a> {
@@ -241,6 +362,137 @@ mod tests {
         }
     }
 
+    fn text(value: &str) -> Vec<u8> {
+        if value.is_empty() {
+            return vec![0x00];
+        }
+        let mut out = vec![0x0b];
+        let mut len = value.len();
+        loop {
+            let byte = u8::try_from(len & 0x7f).unwrap();
+            len >>= 7;
+            out.push(if len == 0 { byte } else { byte | 0x80 });
+            if len == 0 {
+                break;
+            }
+        }
+        out.extend(value.as_bytes());
+        out
+    }
+
+    fn with_frames(frames: &[u8]) -> Vec<u8> {
+        Whole {
+            frames_len: i32::try_from(frames.len()).unwrap(),
+            frames: frames.to_vec(),
+            ..Whole::default()
+        }
+        .bytes()
+    }
+
+    #[test]
+    fn the_frames_are_a_whole_lzma_stream_of_cursor_frames() {
+        let mut known = FRAMES.to_vec();
+        known[5..13].copy_from_slice(&72u64.to_le_bytes());
+        for frames in [FRAMES, LAST_WITHOUT_COMMA, &known] {
+            assert!(ReplayHeader::check(&with_frames(frames)).is_ok());
+        }
+    }
+
+    #[test]
+    fn frames_that_are_not_lzma_or_not_cursor_frames_are_refused() {
+        let mut zip = vec![0x50, 0x4b, 0x03, 0x04];
+        zip.extend([0; 40]);
+        for frames in [&zip[..], HTML, BAD_NUMBER, EMPTY] {
+            assert_eq!(
+                ReplayHeader::check(&with_frames(frames)),
+                Err(ReplayError::Frames)
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_that_would_unpack_past_the_limit_is_refused() {
+        let mut huge = FRAMES.to_vec();
+        huge[5..13].copy_from_slice(&(1u64 << 32).to_le_bytes());
+        for frames in [BOMB, &huge] {
+            assert_eq!(
+                ReplayHeader::check(&with_frames(frames)),
+                Err(ReplayError::Frames)
+            );
+        }
+    }
+
+    #[test]
+    fn anything_after_the_stream_a_cut_stream_or_bad_properties_are_refused() {
+        let mut after = FRAMES.to_vec();
+        after.extend([0x50, 0x4b, 0x05, 0x06]);
+        let cut = &FRAMES[..FRAMES.len() - 3];
+        let mut properties = FRAMES.to_vec();
+        properties[0] = 225;
+        for frames in [&after[..], cut, &properties] {
+            assert_eq!(
+                ReplayHeader::check(&with_frames(frames)),
+                Err(ReplayError::Frames)
+            );
+        }
+    }
+
+    #[test]
+    fn broken_streams_are_refused_without_panicking() {
+        for at in 0..FRAMES.len() {
+            for bit in 0..8 {
+                let mut frames = FRAMES.to_vec();
+                frames[at] ^= 1 << bit;
+                let _ = ReplayHeader::check(&with_frames(&frames));
+            }
+            assert!(ReplayHeader::check(&with_frames(&FRAMES[..at])).is_err());
+        }
+    }
+
+    #[test]
+    fn the_life_bar_holds_only_time_and_life_pairs() {
+        for life in ["-120|1,0|0.98,4000|1E-05,", ""] {
+            let whole = Whole {
+                life: life.into(),
+                ..Whole::default()
+            };
+            assert!(ReplayHeader::check(&whole.bytes()).is_ok(), "{life}");
+        }
+        for life in ["%PDF-1.4 %\u{e2}\u{e3} 1 0 obj", "0|1,abc|0.5,", "0|1"] {
+            let whole = Whole {
+                life: life.into(),
+                ..Whole::default()
+            };
+            assert_eq!(
+                ReplayHeader::check(&whole.bytes()),
+                Err(ReplayError::LifeBar),
+                "{life}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_hashes_are_32_lowercase_hex_digits() {
+        for (beatmap_md5, replay_md5) in [
+            (
+                "0123456789abcdef0123456789abcdef",
+                format!("{:<32}", "%PDF-1.4"),
+            ),
+            ("0123456789abcdef0123456789abcdef", "F".repeat(32)),
+            (
+                "0123456789abcdef0123456789abcde",
+                "fedcba9876543210fedcba9876543210".into(),
+            ),
+        ] {
+            let whole = Whole {
+                beatmap_md5: beatmap_md5.into(),
+                replay_md5,
+                ..Whole::default()
+            };
+            assert_eq!(ReplayHeader::check(&whole.bytes()), Err(ReplayError::Hash));
+        }
+    }
+
     fn short_string(text: &str) -> Vec<u8> {
         let mut out = vec![0x0b, u8::try_from(text.len()).unwrap()];
         out.extend(text.as_bytes());
@@ -251,9 +503,19 @@ mod tests {
         ReplayHeader::parse(&sample.bytes()).unwrap()
     }
 
+    const FRAMES: &[u8] = include_bytes!("../testdata/frames.lzma");
+    const LAST_WITHOUT_COMMA: &[u8] = include_bytes!("../testdata/last-without-comma.lzma");
+    const HTML: &[u8] = include_bytes!("../testdata/html.lzma");
+    const BAD_NUMBER: &[u8] = include_bytes!("../testdata/bad-number.lzma");
+    const EMPTY: &[u8] = include_bytes!("../testdata/empty.lzma");
+    const BOMB: &[u8] = include_bytes!("../testdata/bomb.lzma");
+
     struct Whole {
         mode: u8,
         version: i32,
+        beatmap_md5: String,
+        replay_md5: String,
+        life: String,
         player: Vec<u8>,
         mods: u32,
         frames_len: i32,
@@ -268,10 +530,13 @@ mod tests {
             Self {
                 mode: 0,
                 version: 20210520,
+                beatmap_md5: "0123456789abcdef0123456789abcdef".into(),
+                replay_md5: "fedcba9876543210fedcba9876543210".into(),
+                life: "0|1,".into(),
                 player: short_string("Lemon"),
                 mods: 72,
-                frames_len: 5,
-                frames: vec![1, 2, 3, 4, 5],
+                frames_len: i32::try_from(FRAMES.len()).unwrap(),
+                frames: FRAMES.to_vec(),
                 online: 3_456_789_012i64.to_le_bytes().to_vec(),
                 accuracy: None,
                 tail: Vec::new(),
@@ -283,9 +548,9 @@ mod tests {
         fn bytes(&self) -> Vec<u8> {
             let mut out = vec![self.mode];
             out.extend(self.version.to_le_bytes());
-            out.extend(short_string("0123456789abcdef0123456789abcdef"));
+            out.extend(text(&self.beatmap_md5));
             out.extend(&self.player);
-            out.extend(short_string("fedcba9876543210fedcba9876543210"));
+            out.extend(text(&self.replay_md5));
             for count in [557u16, 160, 64, 12, 34, 125] {
                 out.extend(count.to_le_bytes());
             }
@@ -293,7 +558,7 @@ mod tests {
             out.extend(106u16.to_le_bytes());
             out.push(1);
             out.extend(self.mods.to_le_bytes());
-            out.extend(short_string("0|1,"));
+            out.extend(text(&self.life));
             out.extend(TICKS_2024_10_28_11_17_00.to_le_bytes());
             out.extend(self.frames_len.to_le_bytes());
             out.extend(&self.frames);

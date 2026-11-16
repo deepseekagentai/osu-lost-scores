@@ -369,7 +369,11 @@ mod tests {
     fn replay() -> Vec<u8> {
         let mut out = vec![0];
         out.extend(20210520i32.to_le_bytes());
-        for text in ["0b577cbe9bc774600d20cfa17c0aa94c", "Lemon", ""] {
+        for text in [
+            "0b577cbe9bc774600d20cfa17c0aa94c",
+            "Lemon",
+            "fedcba9876543210fedcba9876543210",
+        ] {
             if text.is_empty() {
                 out.push(0x00);
             } else {
@@ -387,7 +391,9 @@ mod tests {
         out.extend(72u32.to_le_bytes());
         out.push(0x00);
         out.extend(638_357_968_000_000_000i64.to_le_bytes());
-        out.extend(0i32.to_le_bytes());
+        let frames = include_bytes!("../../osu-formats/testdata/frames.lzma");
+        out.extend(i32::try_from(frames.len()).unwrap().to_le_bytes());
+        out.extend(frames);
         out.extend(1i64.to_le_bytes());
         out
     }
