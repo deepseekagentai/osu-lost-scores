@@ -4,6 +4,10 @@ use crate::{Mods, utf8_ignoring_invalid};
 
 const TICKS_AT_UNIX_EPOCH: i64 = 621_355_968_000_000_000;
 const TICKS_PER_SECOND: i64 = 10_000_000;
+const LONG_ID_VERSION: i32 = 20_140_721;
+const INT_ID_VERSION: i32 = 20_121_008;
+const TARGET_PRACTICE: u32 = 1 << 23;
+const OSU_MODE: u8 = 0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayHeader {
@@ -27,15 +31,49 @@ pub struct ReplayHeader {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ReplayError {
-    #[error("replay ends before its header is complete")]
+    #[error("replay ends too early")]
     Truncated,
     #[error("unexpected string marker {marker:#04x} at byte {offset}")]
     InvalidString { marker: u8, offset: usize },
+    #[error("text at byte {offset} is not UTF-8")]
+    InvalidText { offset: usize },
+    #[error("replay is for mode {0}, not osu!standard")]
+    OtherMode(u8),
+    #[error("replay frames claim {0} bytes that the file does not hold")]
+    FramesLength(i32),
+    #[error("replay has {0} bytes after its end")]
+    TrailingBytes(usize),
 }
 
 impl ReplayHeader {
     pub fn parse(data: &[u8]) -> Result<Self, ReplayError> {
-        let mut r = Reader { data, pos: 0 };
+        Self::read(&mut Reader::new(data, false))
+    }
+
+    pub fn check(data: &[u8]) -> Result<Self, ReplayError> {
+        let mut r = Reader::new(data, true);
+        let header = Self::read(&mut r)?;
+        if header.mode != OSU_MODE {
+            return Err(ReplayError::OtherMode(header.mode));
+        }
+        let frames = r.i32()?;
+        let len = usize::try_from(frames).map_err(|_| ReplayError::FramesLength(frames))?;
+        r.take(len).map_err(|_| ReplayError::FramesLength(frames))?;
+        if header.version >= LONG_ID_VERSION {
+            r.i64()?;
+        } else if header.version >= INT_ID_VERSION {
+            r.i32()?;
+        }
+        if header.mods.bits() & TARGET_PRACTICE != 0 {
+            r.take(8)?;
+        }
+        match r.left() {
+            0 => Ok(header),
+            left => Err(ReplayError::TrailingBytes(left)),
+        }
+    }
+
+    fn read(r: &mut Reader) -> Result<Self, ReplayError> {
         Ok(Self {
             mode: r.u8()?,
             version: r.i32()?,
@@ -69,9 +107,22 @@ impl ReplayHeader {
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
+    strict: bool,
 }
 
 impl<'a> Reader<'a> {
+    fn new(data: &'a [u8], strict: bool) -> Self {
+        Self {
+            data,
+            pos: 0,
+            strict,
+        }
+    }
+
+    fn left(&self) -> usize {
+        self.data.len() - self.pos
+    }
+
     fn take(&mut self, len: usize) -> Result<&'a [u8], ReplayError> {
         let end = self
             .pos
@@ -127,7 +178,15 @@ impl<'a> Reader<'a> {
             0x00 => Ok(String::new()),
             0x0b => {
                 let len = usize::try_from(self.uleb128()?).map_err(|_| ReplayError::Truncated)?;
-                Ok(utf8_ignoring_invalid(self.take(len)?))
+                let at = self.pos;
+                let bytes = self.take(len)?;
+                if self.strict {
+                    std::str::from_utf8(bytes)
+                        .map(str::to_owned)
+                        .map_err(|_| ReplayError::InvalidText { offset: at })
+                } else {
+                    Ok(utf8_ignoring_invalid(bytes))
+                }
             }
             marker => Err(ReplayError::InvalidString { marker, offset }),
         }
@@ -190,6 +249,177 @@ mod tests {
 
     fn parse(sample: Sample) -> ReplayHeader {
         ReplayHeader::parse(&sample.bytes()).unwrap()
+    }
+
+    struct Whole {
+        mode: u8,
+        version: i32,
+        player: Vec<u8>,
+        mods: u32,
+        frames_len: i32,
+        frames: Vec<u8>,
+        online: Vec<u8>,
+        accuracy: Option<f64>,
+        tail: Vec<u8>,
+    }
+
+    impl Default for Whole {
+        fn default() -> Self {
+            Self {
+                mode: 0,
+                version: 20210520,
+                player: short_string("Lemon"),
+                mods: 72,
+                frames_len: 5,
+                frames: vec![1, 2, 3, 4, 5],
+                online: 3_456_789_012i64.to_le_bytes().to_vec(),
+                accuracy: None,
+                tail: Vec::new(),
+            }
+        }
+    }
+
+    impl Whole {
+        fn bytes(&self) -> Vec<u8> {
+            let mut out = vec![self.mode];
+            out.extend(self.version.to_le_bytes());
+            out.extend(short_string("0123456789abcdef0123456789abcdef"));
+            out.extend(&self.player);
+            out.extend(short_string("fedcba9876543210fedcba9876543210"));
+            for count in [557u16, 160, 64, 12, 34, 125] {
+                out.extend(count.to_le_bytes());
+            }
+            out.extend(447406u32.to_le_bytes());
+            out.extend(106u16.to_le_bytes());
+            out.push(1);
+            out.extend(self.mods.to_le_bytes());
+            out.extend(short_string("0|1,"));
+            out.extend(TICKS_2024_10_28_11_17_00.to_le_bytes());
+            out.extend(self.frames_len.to_le_bytes());
+            out.extend(&self.frames);
+            out.extend(&self.online);
+            if let Some(accuracy) = self.accuracy {
+                out.extend(accuracy.to_le_bytes());
+            }
+            out.extend(&self.tail);
+            out
+        }
+    }
+
+    #[test]
+    fn a_whole_replay_is_checked_field_by_field() {
+        let header = ReplayHeader::check(&Whole::default().bytes()).unwrap();
+        assert_eq!(
+            (
+                header.mode,
+                header.score,
+                header.mods,
+                header.player_name.as_str()
+            ),
+            (0, 447406, Mods::from_bits(72), "Lemon")
+        );
+    }
+
+    #[test]
+    fn anything_after_the_online_id_is_refused() {
+        for tail in [vec![0], vec![1; 8]] {
+            let len = tail.len();
+            let whole = Whole {
+                tail,
+                ..Whole::default()
+            };
+            assert_eq!(
+                ReplayHeader::check(&whole.bytes()),
+                Err(ReplayError::TrailingBytes(len))
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_file_or_a_frames_length_past_the_end_is_refused() {
+        let whole = Whole::default().bytes();
+        for cut in [0, 1, 10, 40, whole.len() - 9, whole.len() - 1] {
+            assert!(ReplayHeader::check(&whole[..cut]).is_err(), "{cut}");
+        }
+        for frames_len in [6, 100_000, -1] {
+            let whole = Whole {
+                frames_len,
+                ..Whole::default()
+            };
+            assert!(ReplayHeader::check(&whole.bytes()).is_err(), "{frames_len}");
+        }
+        let backwards = Whole {
+            frames_len: -8,
+            frames: Vec::new(),
+            online: Vec::new(),
+            ..Whole::default()
+        };
+        assert_eq!(
+            ReplayHeader::check(&backwards.bytes()),
+            Err(ReplayError::FramesLength(-8))
+        );
+    }
+
+    #[test]
+    fn a_string_without_its_marker_or_with_broken_text_is_refused() {
+        let mut no_marker = Whole::default().bytes();
+        no_marker[5] = 0x0c;
+        assert!(matches!(
+            ReplayHeader::check(&no_marker),
+            Err(ReplayError::InvalidString { marker: 0x0c, .. })
+        ));
+        let broken = Whole {
+            player: vec![0x0b, 2, 0xff, 0x61],
+            ..Whole::default()
+        }
+        .bytes();
+        assert!(matches!(
+            ReplayHeader::check(&broken),
+            Err(ReplayError::InvalidText { .. })
+        ));
+        assert!(ReplayHeader::parse(&broken).is_ok());
+    }
+
+    #[test]
+    fn a_replay_of_another_mode_is_refused() {
+        for mode in [1, 2, 3] {
+            let whole = Whole {
+                mode,
+                ..Whole::default()
+            };
+            assert_eq!(
+                ReplayHeader::check(&whole.bytes()),
+                Err(ReplayError::OtherMode(mode))
+            );
+        }
+    }
+
+    #[test]
+    fn older_and_target_practice_replays_keep_their_own_endings() {
+        let older = Whole {
+            version: 20130101,
+            online: 123_456i32.to_le_bytes().to_vec(),
+            ..Whole::default()
+        };
+        assert!(ReplayHeader::check(&older.bytes()).is_ok());
+        let oldest = Whole {
+            version: 20110101,
+            online: Vec::new(),
+            ..Whole::default()
+        };
+        assert!(ReplayHeader::check(&oldest.bytes()).is_ok());
+        let target = 1 << 23;
+        let practice = Whole {
+            mods: target,
+            accuracy: Some(0.98),
+            ..Whole::default()
+        };
+        assert!(ReplayHeader::check(&practice.bytes()).is_ok());
+        let no_accuracy = Whole {
+            mods: target,
+            ..Whole::default()
+        };
+        assert!(ReplayHeader::check(&no_accuracy.bytes()).is_err());
     }
 
     #[test]
