@@ -1,6 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { PrimaryButton, SecondaryButton, IconButton } from "widgets.slint";
+import { PrimaryButton, SecondaryButton, GhostIconButton } from "widgets.slint";
 
 component Label inherits HorizontalLayout {
     in property <string> text;
@@ -85,7 +85,7 @@ component TextField inherits Rectangle {
         }
         if root.secret: VerticalLayout {
             alignment: center;
-            IconButton {
+            GhostIconButton {
                 width: 28px;
                 height: 28px;
                 icon: root.reveal ? @image-url("../assets/i-eye-slash.svg") : @image-url("../assets/i-eye.svg");

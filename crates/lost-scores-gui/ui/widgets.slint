@@ -84,6 +84,8 @@ export component GhostIconButton inherits Rectangle {
     opacity: root.enabled ? 1 : 0.45;
     animate background { duration: 150ms; }
     ta := TipArea {
+        accessible-role: button;
+        accessible-label: root.tip;
         tip: root.tip;
         anchor: root.absolute-position;
         anchor-height: root.height;
