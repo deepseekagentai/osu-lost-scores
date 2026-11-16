@@ -162,7 +162,7 @@ mod tests {
         assert!(!bars.is_empty(), "no scrollbar found");
         let popup_bar = bars.iter().copied().fold(f32::MIN, f32::max);
         let crosses: Vec<_> =
-            ElementHandle::find_by_accessible_label(&window, "Move to trash").collect();
+            ElementHandle::find_by_accessible_label(&window, "Delete this scan").collect();
         assert!(!crosses.is_empty());
         for cross in crosses {
             let right = cross.absolute_position().x + cross.size().width;
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn only_older_scans_have_a_trash_button() {
+    fn only_older_scans_have_a_delete_button() {
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
         window.show().unwrap();
@@ -199,7 +199,7 @@ mod tests {
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
 
         let buttons: Vec<_> =
-            ElementHandle::find_by_accessible_label(&window, "Move to trash").collect();
+            ElementHandle::find_by_accessible_label(&window, "Delete this scan").collect();
         assert_eq!(buttons.len(), 2);
         buttons[1].mock_single_click(PointerEventButton::Left);
         assert_eq!(deleted.get(), 2);

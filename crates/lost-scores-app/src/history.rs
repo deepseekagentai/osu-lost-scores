@@ -154,7 +154,7 @@ pub fn size(folder: &Path) -> u64 {
 pub fn remove(
     dir: &Path,
     folders: &[PathBuf],
-    to_trash: impl FnOnce(&[PathBuf]) -> Result<()>,
+    delete: impl FnOnce(&[PathBuf]) -> Result<()>,
 ) -> Result<()> {
     for folder in folders {
         let inside = folder.parent() == Some(dir)
@@ -168,7 +168,7 @@ pub fn remove(
             ));
         }
     }
-    to_trash(folders)
+    delete(folders)
 }
 
 pub fn load(folder: &Path) -> Result<SavedScan> {
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_hands_all_folders_to_the_trash_at_once() {
+    fn remove_hands_all_folders_over_at_once() {
         let dir = tempfile::tempdir().unwrap();
         let folders = two_scans(dir.path());
         let calls = Cell::new(0);
@@ -569,14 +569,14 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_trash_keeps_the_scans() {
+    fn a_failed_removal_keeps_the_scans() {
         let dir = tempfile::tempdir().unwrap();
         let folders = two_scans(dir.path());
         let error = remove(dir.path(), &folders, |_| {
-            Err(anyhow::anyhow!("this drive has no trash"))
+            Err(anyhow::anyhow!("the folder is in use"))
         })
         .unwrap_err();
-        assert_eq!(error.to_string(), "this drive has no trash");
+        assert_eq!(error.to_string(), "the folder is in use");
         assert!(
             folders
                 .iter()

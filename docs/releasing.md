@@ -26,7 +26,7 @@ On a Mac with Apple Silicon, with the zip downloaded from the draft or the test 
 - [ ] Text, icons and pictures stay sharp on the Retina screen and on an external monitor.
 - [ ] The folder button picks an osu! folder inside a Wine wrapper or a copied one; a real scan with your own keys.
 - [ ] Images mode: a click opens a picture in Preview; Copy image pastes into Telegram and Discord; catbox.
-- [ ] A cross on an older scan moves it to the Trash. Write down whether macOS asks to let the app control Finder.
+- [ ] A cross on an older scan deletes it after the confirmation, and its folder is gone from disk.
 - [ ] The command line from its zip in Terminal, after `xattr -d com.apple.quarantine lost-scores`.
 
 ## Windows check
@@ -52,10 +52,9 @@ On a real Windows 10 or 11 machine with osu!stable, with the exe downloaded from
 - [ ] Images mode: a click opens a picture in the default viewer; a right click, Copy image, pastes into Discord, Telegram and Paint (check the transparent corners).
 - [ ] catbox: the warning sheet before the first upload, the count on the button while uploading, and the links on the clipboard, one per line.
 
-### History and the trash
-- [ ] A cross on an older scan moves it to the Recycle Bin; restoring it from there brings it back into the list after a restart.
-- [ ] "Delete older scans" while a PNG of one of them is open in another program: the list must match what is left on disk.
-- [ ] A drive with the Recycle Bin turned off: what Windows does, a "delete permanently?" prompt, or the scan is skipped and reported.
+### History
+- [ ] A cross on an older scan deletes it after the confirmation, and its folder is gone from disk.
+- [ ] "Delete older scans" while a PNG of one of them is open in another program: the list must match what is left on disk, and the log names the folder that could not be deleted.
 
 ### Clean up
 - [ ] Clear cache removes the avatars and covers only.

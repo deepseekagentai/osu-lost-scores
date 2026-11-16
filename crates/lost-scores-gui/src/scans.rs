@@ -1,4 +1,7 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+
+use anyhow::Context;
 
 use lost_scores_app::history::{self, ScanEntry};
 
@@ -28,68 +31,21 @@ fn older_scans(count: usize) -> String {
 
 pub fn older_prompt(count: usize, bytes: u64) -> String {
     format!(
-        "Move {} ({}) to the trash? The newest scan stays.",
+        "Delete {} ({})? The newest scan stays. This can't be undone.",
         older_scans(count),
         size_text(bytes)
     )
 }
 
 pub fn older_done(count: usize) -> String {
-    format!("Moved {} to the trash", older_scans(count))
+    format!("Deleted {}", older_scans(count))
 }
 
-pub fn move_to_trash(folders: &[PathBuf]) -> Result<(), trash::Error> {
-    trash_context().delete_all(folders)
-}
-
-#[cfg(target_os = "macos")]
-fn trash_context() -> trash::TrashContext {
-    use trash::macos::{DeleteMethod, TrashContextExtMacos};
-    let mut context = trash::TrashContext::default();
-    context.set_delete_method(DeleteMethod::NsFileManager);
-    context
-}
-
-#[cfg(not(target_os = "macos"))]
-fn trash_context() -> trash::TrashContext {
-    trash::TrashContext::default()
-}
-
-pub fn trash_message(error: &trash::Error) -> String {
-    match error {
-        #[cfg(all(
-            unix,
-            not(target_os = "macos"),
-            not(target_os = "ios"),
-            not(target_os = "android")
-        ))]
-        trash::Error::FileSystem { path, source } => format!("{}: {source}", path.display()),
-        trash::Error::Os { code, description } if description.trim().is_empty() => {
-            format!("the system refused with error {code}")
-        }
-        trash::Error::Os { description, .. } => description.trim().to_owned(),
-        trash::Error::Unknown { description } if description.trim().is_empty() => {
-            "the trash failed for an unknown reason".to_owned()
-        }
-        trash::Error::Unknown { description } => description.trim().to_owned(),
-        trash::Error::TargetedRoot => "the root folder cannot be moved to the trash".to_owned(),
-        trash::Error::CouldNotAccess { target } => format!("cannot access {target}"),
-        trash::Error::CanonicalizePath { original } => {
-            format!("cannot resolve the path {}", original.display())
-        }
-        trash::Error::ConvertOsString { original } => {
-            format!(
-                "cannot read the name {} as text",
-                original.to_string_lossy()
-            )
-        }
-        trash::Error::RestoreCollision { path, .. } => {
-            format!("{} already exists", path.display())
-        }
-        trash::Error::RestoreTwins { path, .. } => {
-            format!("several items belong at {}", path.display())
-        }
+pub fn delete_folders(folders: &[PathBuf]) -> anyhow::Result<()> {
+    for folder in folders {
+        fs::remove_dir_all(folder).with_context(|| folder.display().to_string())?;
     }
+    Ok(())
 }
 
 pub struct Reread {
@@ -115,16 +71,24 @@ mod tests {
 
     use lost_scores_app::history::{self, ScanEntry};
 
-    use super::{older_done, older_prompt, reread, shown_after_delete, size_text, trash_message};
+    use super::{delete_folders, older_done, older_prompt, reread, shown_after_delete, size_text};
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn on_macos_the_trash_does_not_ask_finder() {
-        use trash::macos::{DeleteMethod, TrashContextExtMacos};
-        assert!(matches!(
-            super::trash_context().delete_method(),
-            DeleteMethod::NsFileManager
-        ));
+    fn deleting_scans_removes_their_folders_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let folders: Vec<_> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let folder = dir.path().join(name);
+                std::fs::create_dir_all(folder.join("images")).unwrap();
+                std::fs::write(folder.join("scan.json"), "{}").unwrap();
+                std::fs::write(folder.join("images").join("one.png"), [1, 2, 3]).unwrap();
+                folder
+            })
+            .collect();
+        delete_folders(&folders).unwrap();
+        assert!(folders.iter().all(|folder| !folder.exists()));
+        assert!(dir.path().exists());
     }
 
     #[test]
@@ -164,80 +128,14 @@ mod tests {
     fn one_older_scan_is_singular() {
         assert_eq!(
             older_prompt(1, 331_776),
-            "Move 1 older scan (0.3 MB) to the trash? The newest scan stays."
+            "Delete 1 older scan (0.3 MB)? The newest scan stays. This can't be undone."
         );
         assert_eq!(
             older_prompt(2, 650_000),
-            "Move 2 older scans (0.6 MB) to the trash? The newest scan stays."
+            "Delete 2 older scans (0.6 MB)? The newest scan stays. This can't be undone."
         );
-        assert_eq!(older_done(1), "Moved 1 older scan to the trash");
-        assert_eq!(older_done(3), "Moved 3 older scans to the trash");
-    }
-
-    #[test]
-    fn trash_errors_read_in_words() {
-        let os = trash::Error::Os {
-            code: 5,
-            description: "Access is denied.".into(),
-        };
-        assert_eq!(trash_message(&os), "Access is denied.");
-        let silent = trash::Error::Os {
-            code: 32,
-            description: " ".into(),
-        };
-        assert_eq!(trash_message(&silent), "the system refused with error 32");
-        let said = trash::Error::Unknown {
-            description: "no trash folder on this drive\n".into(),
-        };
-        assert_eq!(trash_message(&said), "no trash folder on this drive");
-        let unsaid = trash::Error::Unknown {
-            description: String::new(),
-        };
-        assert_eq!(
-            trash_message(&unsaid),
-            "the trash failed for an unknown reason"
-        );
-        assert_eq!(
-            trash_message(&trash::Error::TargetedRoot),
-            "the root folder cannot be moved to the trash"
-        );
-        let blocked = trash::Error::CouldNotAccess {
-            target: "/scans/2026-11-12_09-00-00Z".into(),
-        };
-        assert_eq!(
-            trash_message(&blocked),
-            "cannot access /scans/2026-11-12_09-00-00Z"
-        );
-        let lost = trash::Error::CanonicalizePath {
-            original: PathBuf::from("/scans/gone"),
-        };
-        assert_eq!(trash_message(&lost), "cannot resolve the path /scans/gone");
-        let named = trash::Error::ConvertOsString {
-            original: std::ffi::OsString::from("scan"),
-        };
-        assert_eq!(trash_message(&named), "cannot read the name scan as text");
-        let collision = trash::Error::RestoreCollision {
-            path: PathBuf::from("/scans/x"),
-            remaining_items: Vec::new(),
-        };
-        assert_eq!(trash_message(&collision), "/scans/x already exists");
-        let twins = trash::Error::RestoreTwins {
-            path: PathBuf::from("/scans/x"),
-            items: Vec::new(),
-        };
-        assert_eq!(trash_message(&twins), "several items belong at /scans/x");
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-            let error = trash::Error::FileSystem {
-                path: PathBuf::from("/scans/2026-11-12_09-00-00Z"),
-                source: denied,
-            };
-            assert_eq!(
-                trash_message(&error),
-                "/scans/2026-11-12_09-00-00Z: permission denied"
-            );
-        }
+        assert_eq!(older_done(1), "Deleted 1 older scan");
+        assert_eq!(older_done(3), "Deleted 3 older scans");
     }
 
     #[test]

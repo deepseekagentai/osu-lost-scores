@@ -60,7 +60,7 @@ Covers come from assets.ppy.sh and are cached; Clear cache removes them.
 
 Every finished scan is kept, and the scan list in the results view opens any earlier one. In a narrow window the results open by themselves when a scan ends.
 
-The cross next to an older scan, or "Delete older scans" at the bottom of the list, moves scans to the system trash after a confirmation, so you can restore them from there. The newest scan always stays.
+The cross next to an older scan, or "Delete older scans" at the bottom of the list, deletes scans for good after a confirmation. The newest scan always stays.
 
 ## Command line
 

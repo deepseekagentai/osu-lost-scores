@@ -31,7 +31,7 @@ use crate::log::{clock_now, split, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
-use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_message};
+use crate::scans::{delete_folders, older_done, older_prompt, reread};
 use crate::send::{self, Call, Courier, Reply};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
@@ -738,8 +738,8 @@ impl Session {
         };
         self.ask_delete(
             vec![entry.folder],
-            format!("Move the scan from {date} to the trash?{stays}"),
-            format!("Moved the scan from {date} to the trash"),
+            format!("Delete the scan from {date}? This can't be undone.{stays}"),
+            format!("Deleted the scan from {date}"),
         );
     }
 
@@ -796,14 +796,12 @@ impl Session {
         };
         let weak = self.weak.clone();
         thread::spawn(move || {
-            let result = history::remove(&dir, &removal.folders, |folders| {
-                move_to_trash(folders).map_err(|error| anyhow::anyhow!(trash_message(&error)))
-            });
+            let result = history::remove(&dir, &removal.folders, delete_folders);
             on_ui(&weak, move |app| {
                 match result {
                     Ok(()) => {
                         app.log(&removal.done);
-                        app.toast("Moved to the trash");
+                        app.toast("Deleted");
                     }
                     Err(error) => app.fail_removal(&format!("{error:#}")),
                 }
@@ -813,8 +811,8 @@ impl Session {
     }
 
     fn fail_removal(&self, reason: &str) {
-        self.log(&format!("Could not move the scans to the trash: {reason}"));
-        self.toast("Could not move to the trash: see the log");
+        self.log(&format!("Could not delete the scans: {reason}"));
+        self.toast("Could not delete: see the log");
     }
 
     fn reload_scans(self: &Rc<Self>, dir: &Path) {
@@ -4201,7 +4199,7 @@ mod tests {
     }
 
     #[test]
-    fn trashing_a_sent_scan_says_its_server_copy_stays() {
+    fn deleting_a_sent_scan_says_its_server_copy_stays() {
         let _files = files();
         let (window, session, _root) = keyless(650.0);
         let state = window.global::<State>();
@@ -4224,6 +4222,14 @@ mod tests {
             .unwrap();
         session.ask_delete_scan(index);
         assert!(state.get_delete_confirm_open());
+        assert!(
+            state
+                .get_delete_message()
+                .starts_with("Delete the scan from ")
+                && state.get_delete_message().contains("This can't be undone."),
+            "{}",
+            state.get_delete_message()
+        );
         assert!(
             state
                 .get_delete_message()
