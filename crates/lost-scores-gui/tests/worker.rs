@@ -565,6 +565,7 @@ fn a_panic_while_fetching_covers_is_logged_and_the_renderer_still_runs() {
         &job,
         &one_lost_play(),
         root.path(),
+        None,
         &mut events,
         &mut Panicking,
     );
@@ -628,6 +629,7 @@ fn a_cover_that_is_not_a_picture_is_reported_as_unusable() {
         &job,
         &one_lost_play(),
         root.path(),
+        None,
         &mut events,
         &mut NotAnImage,
     );

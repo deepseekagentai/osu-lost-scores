@@ -83,6 +83,7 @@ impl std::error::Error for PlayerLookup {}
 
 pub struct Read {
     pub osu_dir: PathBuf,
+    pub songs_dir: PathBuf,
     pub scan: Scan,
     pub pp_failed: usize,
     pub player: Option<Player>,
@@ -235,6 +236,7 @@ pub fn read(
     }
     Ok(Read {
         osu_dir,
+        songs_dir,
         scan,
         pp_failed,
         player: found_player,

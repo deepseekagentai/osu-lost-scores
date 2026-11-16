@@ -332,7 +332,7 @@ pub fn prepare(
     let mut covers_failed = 0;
     let mut strips = HashMap::new();
     if let Some(dir) = caches.covers.as_deref() {
-        let covers = rasters::covers(&set_ids, dir, fetch, &mut |_, _| {});
+        let covers = rasters::covers(&set_ids, dir, None, fetch, &mut |_, _| {});
         covers_failed = covers.failed;
         for (set, bytes) in covers.found {
             match rasters::cover_strip(&bytes) {

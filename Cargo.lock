@@ -2898,6 +2898,7 @@ dependencies = [
  "lost-scores-core",
  "open",
  "osu-api",
+ "rayon",
  "rfd",
  "slint",
  "slint-build",

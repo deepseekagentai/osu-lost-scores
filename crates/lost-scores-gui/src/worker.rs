@@ -170,7 +170,14 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         return Ok(Outcome::Closed);
     }
     proceed!();
-    create_images(job, &shown, &folder, &mut events, &mut HttpFetch::new());
+    create_images(
+        job,
+        &shown,
+        &folder,
+        Some(&read.songs_dir),
+        &mut events,
+        &mut HttpFetch::new(),
+    );
     proceed!();
     let finished = Completed {
         job,
@@ -239,7 +246,7 @@ fn refresh(
     let updated = pipeline::saved(&job.source, job.include_all, player, found, result);
     match history::replace(folder, &updated) {
         Ok(()) => {
-            create_images(job, &updated, folder, events, &mut HttpFetch::new());
+            create_images(job, &updated, folder, None, events, &mut HttpFetch::new());
             Ok(Some(Box::new(Finished {
                 scan: updated,
                 folder: folder.to_path_buf(),
@@ -277,6 +284,7 @@ pub fn create_images(
     job: &Job,
     scan: &SavedScan,
     folder: &Path,
+    songs: Option<&Path>,
     events: &mut dyn FnMut(Event),
     fetch: &mut dyn Fetch,
 ) {
@@ -295,7 +303,7 @@ pub fn create_images(
                     total,
                 });
             };
-            rasters::covers(&sets, &dir, fetch, &mut progress)
+            rasters::covers(&sets, &dir, songs, fetch, &mut progress)
         }));
         match attempt {
             Ok(fetched) if fetched.failed > 0 => events(Event::Log(format!(

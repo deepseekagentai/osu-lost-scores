@@ -1,13 +1,14 @@
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use image::RgbaImage;
+use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
+use image::{DynamicImage, RgbaImage};
 use lost_scores_core::files::write_atomic;
+use rayon::prelude::*;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use ureq::Error as UreqError;
 
@@ -19,6 +20,10 @@ pub(crate) const MAX_BYTES: u64 = 5_000_000;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 const COVER_HOST: &str = "https://assets.ppy.sh/beatmaps/";
+const COVER_WIDTH: u32 = 900;
+const COVER_HEIGHT: u32 = 250;
+const COVER_QUALITY: u8 = 90;
+const LOCAL_CHUNK: usize = 32;
 
 pub fn cover_url(set_id: u32) -> String {
     format!("{COVER_HOST}{set_id}/covers/cover.jpg")
@@ -178,6 +183,7 @@ pub struct Covers {
 pub fn covers(
     set_ids: &[u32],
     cache_dir: &Path,
+    songs: Option<&Path>,
     fetch: &mut dyn Fetch,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Covers {
@@ -186,29 +192,198 @@ pub fn covers(
         failed: 0,
     };
     let total = set_ids.len();
-    let mut offline = false;
-    for (index, &set_id) in set_ids.iter().enumerate() {
-        if let Entry::Vacant(slot) = covers.found.entry(set_id) {
-            let file = cache_dir.join(format!("{set_id}.jpg"));
-            let download = || {
-                if offline {
-                    bail!("the network is not answering");
+    let mut done = 0;
+    let mut wanted = Vec::new();
+    for &set_id in set_ids {
+        if covers.found.contains_key(&set_id) || wanted.contains(&set_id) {
+            done += 1;
+            progress(done, total);
+            continue;
+        }
+        let kept = fs::read(cover_file(cache_dir, set_id))
+            .ok()
+            .filter(|bytes| image::load_from_memory(bytes).is_ok());
+        match kept {
+            Some(bytes) => {
+                covers.found.insert(set_id, bytes);
+                done += 1;
+                progress(done, total);
+            }
+            None => wanted.push(set_id),
+        }
+    }
+    if let Some(songs) = songs {
+        let folders = set_folders(songs);
+        let mut remote = Vec::new();
+        for chunk in wanted.chunks(LOCAL_CHUNK) {
+            let made: Vec<(u32, Option<Vec<u8>>)> = chunk
+                .par_iter()
+                .map(|&set_id| (set_id, local_cover(&folders, set_id)))
+                .collect();
+            for (set_id, bytes) in made {
+                match bytes {
+                    Some(bytes) => {
+                        let _ = write_atomic(&cover_file(cache_dir, set_id), &bytes);
+                        covers.found.insert(set_id, bytes);
+                        done += 1;
+                        progress(done, total);
+                    }
+                    None => remote.push(set_id),
                 }
-                let answer = fetch.get(&cover_url(set_id));
-                offline = answer.is_err();
-                answer
-            };
-            match cached(Some(&file), download) {
-                Ok(Some(bytes)) => {
-                    slot.insert(bytes);
-                }
-                Ok(None) => {}
-                Err(_) => covers.failed += 1,
             }
         }
-        progress(index + 1, total);
+        wanted = remote;
+    }
+    let mut offline = false;
+    for set_id in wanted {
+        let file = cover_file(cache_dir, set_id);
+        let download = || {
+            if offline {
+                bail!("the network is not answering");
+            }
+            let answer = fetch.get(&cover_url(set_id));
+            offline = answer.is_err();
+            answer
+        };
+        match cached(Some(&file), download) {
+            Ok(Some(bytes)) => {
+                covers.found.insert(set_id, bytes);
+            }
+            Ok(None) => {}
+            Err(_) => covers.failed += 1,
+        }
+        done += 1;
+        progress(done, total);
     }
     covers
+}
+
+fn cover_file(cache_dir: &Path, set_id: u32) -> PathBuf {
+    cache_dir.join(format!("{set_id}.jpg"))
+}
+
+fn set_folders(songs: &Path) -> HashMap<u32, Vec<PathBuf>> {
+    let mut folders: HashMap<u32, Vec<PathBuf>> = HashMap::new();
+    let Ok(entries) = fs::read_dir(songs) else {
+        return folders;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let digits = name.len() - name.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let rest = &name[digits..];
+        if digits == 0 || !(rest.is_empty() || rest.starts_with([' ', '_'])) {
+            continue;
+        }
+        if let Ok(set_id) = name[..digits].parse() {
+            folders.entry(set_id).or_default().push(entry.path());
+        }
+    }
+    folders
+}
+
+fn local_cover(folders: &HashMap<u32, Vec<PathBuf>>, set_id: u32) -> Option<Vec<u8>> {
+    folders.get(&set_id)?.iter().find_map(|folder| {
+        let background = background_in(folder)?;
+        let picture = image::ImageReader::open(background)
+            .ok()?
+            .with_guessed_format()
+            .ok()?
+            .decode()
+            .ok()?;
+        cut_cover(&picture)
+    })
+}
+
+fn background_in(folder: &Path) -> Option<PathBuf> {
+    let files: Vec<PathBuf> = fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    let mut maps: Vec<&PathBuf> = files
+        .iter()
+        .filter(|file| {
+            file.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("osu"))
+        })
+        .collect();
+    maps.sort();
+    maps.into_iter().find_map(|map| {
+        let text = fs::read(map).ok()?;
+        let name = background_name(&String::from_utf8_lossy(&text))?;
+        let wanted = folder.join(&name);
+        if wanted.is_file() {
+            return Some(wanted);
+        }
+        files
+            .iter()
+            .find(|file| {
+                file.file_name()
+                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
+            })
+            .cloned()
+    })
+}
+
+pub(crate) fn background_name(map: &str) -> Option<String> {
+    let mut events = false;
+    for line in map.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            events = line.eq_ignore_ascii_case("[Events]");
+            continue;
+        }
+        if !events || line.starts_with("//") {
+            continue;
+        }
+        let mut fields = line.splitn(4, ',');
+        let kind = fields.next().unwrap_or_default().trim();
+        if !(kind == "0" || kind.eq_ignore_ascii_case("Background")) {
+            continue;
+        }
+        if fields.next().map(str::trim) != Some("0") {
+            continue;
+        }
+        let name = fields
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('"')
+            .trim();
+        if !name.is_empty() {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+fn cut_cover(picture: &DynamicImage) -> Option<Vec<u8>> {
+    let (width, height) = (picture.width(), picture.height());
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let (crop_width, crop_height) = if u64::from(width) * u64::from(COVER_HEIGHT)
+        > u64::from(height) * u64::from(COVER_WIDTH)
+    {
+        (height * COVER_WIDTH / COVER_HEIGHT, height)
+    } else {
+        (width, width * COVER_HEIGHT / COVER_WIDTH)
+    };
+    let cover = picture
+        .crop_imm(
+            (width - crop_width) / 2,
+            (height - crop_height) / 2,
+            crop_width.max(1),
+            crop_height.max(1),
+        )
+        .resize_exact(COVER_WIDTH, COVER_HEIGHT, FilterType::Triangle)
+        .to_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, COVER_QUALITY)
+        .encode_image(&cover)
+        .ok()?;
+    Some(bytes)
 }
 
 pub(crate) fn cached(
@@ -247,9 +422,128 @@ mod tests {
     use image::{ImageFormat, Rgb, RgbImage};
 
     use super::{
-        CachedCovers, Fetch, STRIP_HEIGHT, STRIP_WIDTH, cover_strip, cover_url, covers,
-        rounded_square,
+        CachedCovers, Fetch, STRIP_HEIGHT, STRIP_WIDTH, background_name, cover_strip, cover_url,
+        covers, rounded_square,
     };
+
+    fn songs_with(
+        dir: &std::path::Path,
+        folder: &str,
+        events: &str,
+        background: Option<(&str, Vec<u8>)>,
+    ) {
+        let folder = dir.join(folder);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("Artist - Title (Mapper) [Hard].osu"),
+            format!("osu file format v14\n\n[General]\nAudioFilename: audio.mp3\n\n[Events]\n{events}\n\n[TimingPoints]\n0,500,4,2,0,100,1,0\n"),
+        )
+        .unwrap();
+        if let Some((name, bytes)) = background {
+            fs::write(folder.join(name), bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_background_is_found_in_the_events_of_a_map() {
+        let map = |events: &str| {
+            format!("osu file format v14\n[General]\nMode: 0\n[Events]\n{events}\n[TimingPoints]\n")
+        };
+        assert_eq!(
+            background_name(&map("//Background and Video events\n0,0,\"bg.jpg\",0,0")).as_deref(),
+            Some("bg.jpg")
+        );
+        assert_eq!(
+            background_name(&map("0,0,bg 2.png")).as_deref(),
+            Some("bg 2.png")
+        );
+        assert_eq!(
+            background_name(&map("Background,0,\"wall.jpg\"")).as_deref(),
+            Some("wall.jpg")
+        );
+        assert_eq!(
+            background_name(&map("Video,0,\"clip.mp4\"\n0,0,\"bg.jpg\",0,0")).as_deref(),
+            Some("bg.jpg")
+        );
+        assert_eq!(
+            background_name(&map(
+                "//0,0,\"old.jpg\"\nSprite,Foreground,Centre,\"s.png\",320,240"
+            )),
+            None
+        );
+        assert_eq!(
+            background_name("osu file format v14\n[General]\n0,0,\"not-events.jpg\""),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cover_is_cut_from_the_local_background_without_the_network() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "123 Artist - Title",
+            "0,0,\"bg.png\",0,0",
+            Some(("bg.png", png(1920, 1080))),
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let found = covers(
+            &[123],
+            cache.path(),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
+        let cover = image::load_from_memory(&found.found[&123]).unwrap();
+        assert_eq!((cover.width(), cover.height()), (900, 250));
+        assert!(cache.path().join("123.jpg").is_file());
+    }
+
+    #[test]
+    fn a_background_named_like_another_format_still_gives_a_cover() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "321 Artist - Title",
+            "0,0,\"BG.jpg\",0,0",
+            Some(("BG.jpg", png(1366, 768))),
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let found = covers(
+            &[321],
+            cache.path(),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
+        assert!(found.found.contains_key(&321));
+    }
+
+    #[test]
+    fn a_set_without_a_local_background_is_downloaded() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "456 Artist - Title",
+            "0,0,\"gone.jpg\",0,0",
+            None,
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let found = covers(
+            &[456, 789],
+            cache.path(),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert_eq!(fetch.calls, [cover_url(456), cover_url(789)]);
+        assert_eq!(found.found.len(), 2);
+    }
 
     fn jpeg(width: u32, height: u32) -> Vec<u8> {
         let image = RgbImage::from_fn(width, height, |x, y| {
@@ -363,7 +657,7 @@ mod tests {
         fs::write(dir.path().join("7.jpg"), jpeg(20, 10)).unwrap();
         let mut fetch = Counting::new(jpeg(30, 15));
         let mut seen = Vec::new();
-        let found = covers(&[7, 8], dir.path(), &mut fetch, &mut |done, total| {
+        let found = covers(&[7, 8], dir.path(), None, &mut fetch, &mut |done, total| {
             seen.push((done, total))
         });
         assert_eq!(fetch.calls, vec![cover_url(8)]);
@@ -373,7 +667,7 @@ mod tests {
         assert_eq!(seen.last(), Some(&(2, 2)));
 
         let mut again = Counting::new(Vec::new());
-        let found = covers(&[7, 8], dir.path(), &mut again, &mut |_, _| {});
+        let found = covers(&[7, 8], dir.path(), None, &mut again, &mut |_, _| {});
         assert!(again.calls.is_empty());
         assert_eq!(found.found.len(), 2);
         assert_eq!(found.failed, 0);
@@ -385,7 +679,7 @@ mod tests {
         let mut fetch = Counting::new(jpeg(30, 15));
         fetch.missing.push(cover_url(1));
         fetch.failing.push(cover_url(2));
-        let found = covers(&[1, 2, 3], dir.path(), &mut fetch, &mut |_, _| {});
+        let found = covers(&[1, 2, 3], dir.path(), None, &mut fetch, &mut |_, _| {});
         assert!(found.found.is_empty());
         assert_eq!(found.failed, 2);
         assert!(!dir.path().join("1.jpg").exists());
@@ -399,7 +693,13 @@ mod tests {
         let mut fetch = Counting::new(jpeg(30, 15));
         fetch.failing.push(cover_url(2));
         fetch.missing.push(cover_url(1));
-        let found = covers(&[1, 2, 3, 4, 5], dir.path(), &mut fetch, &mut |_, _| {});
+        let found = covers(
+            &[1, 2, 3, 4, 5],
+            dir.path(),
+            None,
+            &mut fetch,
+            &mut |_, _| {},
+        );
         assert_eq!(fetch.calls, vec![cover_url(1), cover_url(2)]);
         assert_eq!(found.failed, 3);
         assert_eq!(found.found.keys().copied().collect::<Vec<_>>(), vec![4]);
@@ -411,7 +711,7 @@ mod tests {
         fs::write(dir.path().join("4.jpg"), jpeg(20, 10)).unwrap();
         let mut inner = Counting::new(jpeg(30, 15));
         let mut fetch = CachedCovers(&mut inner);
-        let found = covers(&[3, 4], dir.path(), &mut fetch, &mut |_, _| {});
+        let found = covers(&[3, 4], dir.path(), None, &mut fetch, &mut |_, _| {});
         assert_eq!(found.found.len(), 1);
         assert_eq!(found.failed, 0);
         let avatar = fetch.get("https://a.ppy.sh/7").unwrap();
