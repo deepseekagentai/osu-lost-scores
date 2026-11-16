@@ -854,6 +854,10 @@ impl Session {
         state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
         state.set_sent_public(sent.as_ref().is_some_and(send::published));
         state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
+        state.set_sent_blocked(
+            sent.as_ref()
+                .is_some_and(|sent| matches!(sent.status.as_str(), "hidden" | "rejected")),
+        );
         state.set_replays_in_top(self.top_rows.borrow().len() as i32);
         let marks: Vec<(usize, i32)> = sent
             .iter()
@@ -4042,6 +4046,32 @@ mod tests {
         session.listed(&folder, epoch, Ok(Reply::Listed(Vec::new())));
         assert_eq!(state.get_sent_state(), "");
         assert_eq!(history::submission(&folder, &login().server), None);
+    }
+
+    #[test]
+    fn a_scan_a_moderator_hid_or_rejected_is_marked_apart() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_scan(&session, root.path(), Some(answer("private", "unverified")));
+        calls(&received, 1);
+        let epoch = session.sent_epoch.get();
+        for (status, blocked) in [
+            ("hidden", true),
+            ("rejected", true),
+            ("verified", false),
+            ("unverified", false),
+        ] {
+            let listed = SubmissionInfo {
+                id: "abc".into(),
+                made_at: 1_794_649_471,
+                visibility: "public".into(),
+                status: status.into(),
+                lost_pp: Some(1.5),
+            };
+            session.listed(&folder, epoch, Ok(Reply::Listed(vec![listed])));
+            assert_eq!(state.get_sent_blocked(), blocked, "{status}");
+        }
     }
 
     #[test]

@@ -695,6 +695,13 @@ fn render_results_snapshots() {
     state.set_send_menu_open(true);
     draw(&surface, &dir.join("32-results-send-menu.png"));
     state.set_send_menu_open(false);
+    state.set_sent_state("Published \u{b7} hidden".into());
+    state.set_sent_blocked(true);
+    state.set_send_menu_open(true);
+    draw(&surface, &dir.join("41-results-hidden.png"));
+    state.set_send_menu_open(false);
+    state.set_sent_blocked(false);
+    state.set_sent_state("Published \u{b7} checking".into());
     draw_sized(&surface, WIDE, &dir.join("33-results-published-wide.png"));
     state.set_unsend_confirm_open(true);
     draw(&surface, &dir.join("34-unsend-confirm.png"));

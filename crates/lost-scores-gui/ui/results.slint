@@ -701,7 +701,7 @@ component SendMenuPill inherits Rectangle {
                 width: 8px;
                 height: 8px;
                 border-radius: 4px;
-                background: !State.sent-public ? T.k : (State.sent-verified ? T.up : T.acc);
+                background: !State.sent-public ? T.k : (State.sent-blocked ? T.down : (State.sent-verified ? T.up : T.acc));
             }
         }
         Text {
@@ -1432,7 +1432,7 @@ export component ResultsPanel inherits Rectangle {
                 Text {
                     x: 12px;
                     text: State.sent-state;
-                    color: !State.sent-public ? T.k : (State.sent-verified ? T.up : T.acc);
+                    color: !State.sent-public ? T.k : (State.sent-blocked ? T.down : (State.sent-verified ? T.up : T.acc));
                     font-size: 13px;
                     font-weight: 600;
                     vertical-alignment: center;
