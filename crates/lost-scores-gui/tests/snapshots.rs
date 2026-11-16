@@ -685,6 +685,12 @@ fn render_results_snapshots() {
     state.set_scans_open(true);
     draw(&surface, &dir.join("39-scan-menu.png"));
     state.set_scans_open(false);
+    state.set_scans(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "3 September 2024 \u{b7} 23:39",
+    )])));
+    state.set_scans_open(true);
+    draw(&surface, &dir.join("39b-scan-menu-one.png"));
+    state.set_scans_open(false);
     state.set_sent_state("Private".into());
     draw(&surface, &dir.join("30-results-private.png"));
     state.set_sent_state("Published \u{b7} checking".into());
@@ -1009,6 +1015,9 @@ fn render_switch_snapshots() {
     );
     state.set_catbox_label("catbox".into());
     state.set_catbox_busy(false);
+    state.set_upload_confirm_open(true);
+    draw_sized(&surface, LOGICAL, &dir.join("switch3-catbox-warning.png"));
+    state.set_upload_confirm_open(false);
     state.set_sent_state("".into());
     state.set_sent_public(false);
     state.set_scan_date("14 Nov 2026".into());
