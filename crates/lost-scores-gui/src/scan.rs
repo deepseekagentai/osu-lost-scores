@@ -107,7 +107,7 @@ pub fn status_text(step: Step, done: usize, total: usize) -> String {
         Step::OnlineTop => "Fetching your top plays...".to_owned(),
         Step::Potential => "Building the potential top...".to_owned(),
         Step::Covers => format!("Downloading covers: {done} of {total}"),
-        Step::Images => "Creating images...".to_owned(),
+        Step::Images => "Drawing pictures...".to_owned(),
     }
 }
 
@@ -297,7 +297,7 @@ mod tests {
             status_text(Step::Covers, 3, 12),
             "Downloading covers: 3 of 12"
         );
-        assert_eq!(status_text(Step::Images, 0, 1), "Creating images...");
+        assert_eq!(status_text(Step::Images, 0, 1), "Drawing pictures...");
     }
 
     #[test]
