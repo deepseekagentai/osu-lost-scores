@@ -1447,20 +1447,6 @@ export component ResultsPanel inherits Rectangle {
                     State.submit-scan();
                 }
             }
-            if State.replays-waiting > 0: MenuRow {
-                text: "Cancel the waiting replays";
-                clicked => {
-                    State.send-menu-open = false;
-                    State.withdraw-replays();
-                }
-            }
-            if State.can-share-replays: MenuRow {
-                text: "Share the replays of my top";
-                clicked => {
-                    State.send-menu-open = false;
-                    State.share-replays();
-                }
-            }
             if State.sent-state != "": MenuRow {
                 text: State.sent-public ? "Unpublish" : "Publish to the Hall of Fame";
                 clicked => {

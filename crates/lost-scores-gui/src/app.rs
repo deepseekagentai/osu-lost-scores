@@ -536,10 +536,6 @@ impl Session {
         let session = self.clone();
         state.on_publish_offer(move || session.publish_offer());
         let session = self.clone();
-        state.on_share_replays(move || session.share_top_replays());
-        let session = self.clone();
-        state.on_withdraw_replays(move || session.withdraw_replays());
-        let session = self.clone();
         state.on_dismiss_offer(move || session.dismiss_offer());
         let session = self.clone();
         state.on_cancel_unsend(move || {
@@ -858,15 +854,7 @@ impl Session {
         state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
         state.set_sent_public(sent.as_ref().is_some_and(send::published));
         state.set_sent_verified(sent.as_ref().is_some_and(|sent| sent.status == "verified"));
-        let top = self.top_rows.borrow().clone();
-        state.set_replays_in_top(top.len() as i32);
-        state.set_replays_waiting(sent.as_ref().map_or(0, |sent| sent.queued.len()) as i32);
-        state.set_can_share_replays(sent.as_ref().is_some_and(|sent| {
-            send::published(sent)
-                && top
-                    .iter()
-                    .any(|row| !sent.replays.contains_key(row) && !sent.queued.contains(row))
-        }));
+        state.set_replays_in_top(self.top_rows.borrow().len() as i32);
         let marks: Vec<(usize, i32)> = sent
             .iter()
             .flat_map(|sent| {
@@ -919,12 +907,6 @@ impl Session {
         } else {
             self.publish_next.set(false);
             self.replays_next.borrow_mut().take();
-        }
-    }
-
-    fn share_top_replays(&self) {
-        if let Some(folder) = self.folder.borrow().clone() {
-            self.queue_top_replays(&folder);
         }
     }
 
@@ -1012,30 +994,15 @@ impl Session {
         }
     }
 
-    fn withdraw_replays(&self) {
-        let folder = self.folder.borrow().clone();
-        let (Some(login), Some(folder)) = (self.sending_login(), folder) else {
-            return;
-        };
-        let Some(mut sent) = history::submission(&folder, &login.server) else {
-            return;
-        };
+    fn stop_share(&self, folder: &Path) {
         if let Some((running, stop)) = &*self.replays_running.borrow()
-            && *running == folder
+            && running == folder
         {
             stop.store(true, Ordering::Relaxed);
         }
         self.replays_turned_away
             .borrow_mut()
-            .retain(|waiting| *waiting != folder);
-        let count = sent.queued.len();
-        sent.queued.clear();
-        sent.retry_at = None;
-        match history::remember(&folder, &sent) {
-            Ok(()) => self.log(&format!("Cancelled {count} waiting replays")),
-            Err(error) => self.log(&format!("Could not cancel the waiting replays: {error:#}")),
-        }
-        self.show_sent();
+            .retain(|waiting| waiting != folder);
     }
 
     fn replayed(&self, folder: &Path, result: Result<send::Shared>) {
@@ -1117,13 +1084,18 @@ impl Session {
         let before = history::submission(folder, &login.server);
         match result {
             Ok(Reply::Sent(answer)) => {
-                let sent = before
+                let mut sent = before
                     .as_ref()
                     .filter(|old| old.id == answer.id)
                     .map_or_else(
                         || history::Sent::new(&answer, &login.server),
                         |old| old.answered(&answer),
                     );
+                if !send::published(&sent) {
+                    sent.queued.clear();
+                    sent.retry_at = None;
+                    self.stop_share(folder);
+                }
                 let done = send::done(before.as_ref(), &sent);
                 match history::remember(folder, &sent) {
                     Ok(()) if publish_next && !send::published(&sent) => {
@@ -1146,6 +1118,7 @@ impl Session {
                 }
             }
             Ok(Reply::Deleted) => {
+                self.stop_share(folder);
                 self.forget_sent(folder);
                 self.log("Deleted the scan from the Lost Scores server");
                 self.toast("Deleted from the server");
@@ -3785,15 +3758,13 @@ mod tests {
 
     #[test]
     fn a_shown_scan_marks_its_replays_and_sends_the_waiting_ones() {
-        let (window, session, root) = keyless(650.0);
-        let state = window.global::<State>();
+        let (_window, session, root) = keyless(650.0);
         let received = record_calls(&session);
         let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
         sent.replays.insert(0, "aa".into());
         sent.queued.insert(1);
         shown_replay_scan(&session, root.path(), Some(sent));
         assert_eq!(marks(&session), [4, 3]);
-        assert!(!state.get_can_share_replays());
         assert_eq!(calls(&received, 2), ["tok list", "tok replay abc 1"]);
     }
 
@@ -3809,25 +3780,6 @@ mod tests {
         assert_eq!(kept.visibility, "public");
         assert_eq!(kept.replays.get(&0).map(String::as_str), Some("aa"));
         assert!(kept.queued.is_empty());
-    }
-
-    #[test]
-    fn the_menu_shares_the_replays_of_the_top_when_none_went_yet() {
-        let (window, session, root) = keyless(650.0);
-        let state = window.global::<State>();
-        let received = record_calls(&session);
-        let sent = Sent::new(&answer("public", "unverified"), &login().server);
-        let folder = shown_replay_scan(&session, root.path(), Some(sent));
-        assert_eq!(calls(&received, 1), ["tok list"]);
-        assert!(state.get_can_share_replays());
-        state.invoke_share_replays();
-        let queued = history::submission(&folder, &login().server)
-            .unwrap()
-            .queued;
-        assert_eq!(queued.into_iter().collect::<Vec<_>>(), [0, 1]);
-        assert!(!state.get_can_share_replays());
-        assert_eq!(marks(&session), [3, 3]);
-        assert_eq!(calls(&received, 1), ["tok replay abc 0"]);
     }
 
     #[test]
@@ -3867,25 +3819,6 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let kept = history::submission(&folder, &login().server).unwrap();
         assert_eq!(kept.queued.into_iter().collect::<Vec<_>>(), [0, 1]);
-    }
-
-    #[test]
-    fn the_menu_shares_the_top_replays_that_went_nowhere() {
-        let (window, session, root) = keyless(650.0);
-        let state = window.global::<State>();
-        let received = record_calls(&session);
-        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
-        sent.replays.insert(0, "aa".into());
-        let folder = shown_replay_scan(&session, root.path(), Some(sent));
-        assert_eq!(calls(&received, 1), ["tok list"]);
-        assert!(state.get_can_share_replays());
-        state.invoke_share_replays();
-        let queued = history::submission(&folder, &login().server)
-            .unwrap()
-            .queued;
-        assert_eq!(queued.into_iter().collect::<Vec<_>>(), [1]);
-        assert!(!state.get_can_share_replays());
-        assert_eq!(calls(&received, 1), ["tok replay abc 1"]);
     }
 
     #[test]
@@ -3931,24 +3864,39 @@ mod tests {
     }
 
     #[test]
-    fn the_waiting_replays_can_be_cancelled_and_a_running_share_stops() {
+    fn unpublishing_stops_only_that_scans_replays() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
-        let (window, session, root) = keyless(650.0);
-        let state = window.global::<State>();
+        let (_window, session, root) = keyless(650.0);
         let _received = record_calls(&session);
         let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
         sent.queued.extend([0, 1]);
         let folder = shown_replay_scan(&session, root.path(), Some(sent));
-        assert_eq!(state.get_replays_waiting(), 2);
-        let stop = Arc::new(AtomicBool::new(false));
-        *session.replays_running.borrow_mut() = Some((folder.clone(), stop.clone()));
-        state.invoke_withdraw_replays();
-        assert!(stop.load(Ordering::Relaxed));
+        let other = Arc::new(AtomicBool::new(false));
+        *session.replays_running.borrow_mut() = Some((root.path().join("other"), other.clone()));
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
         let kept = history::submission(&folder, &login().server).unwrap();
         assert!(kept.queued.is_empty());
-        assert_eq!(state.get_replays_waiting(), 0);
-        assert_eq!(marks(&session), [0, 0]);
+        assert!(!other.load(Ordering::Relaxed));
+        let stop = Arc::new(AtomicBool::new(false));
+        *session.replays_running.borrow_mut() = Some((folder.clone(), stop.clone()));
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert!(stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn deleting_stops_that_scans_replays() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_window, session, root) = keyless(650.0);
+        let _received = record_calls(&session);
+        let mut sent = Sent::new(&answer("public", "unverified"), &login().server);
+        sent.queued.insert(0);
+        let folder = shown_replay_scan(&session, root.path(), Some(sent));
+        let stop = Arc::new(AtomicBool::new(false));
+        *session.replays_running.borrow_mut() = Some((folder.clone(), stop.clone()));
+        session.answered(&folder, Ok(Reply::Deleted));
+        assert!(stop.load(Ordering::Relaxed));
     }
 
     fn shown_scan(session: &Session, root: &Path, sent: Option<Submission>) -> PathBuf {
@@ -3992,7 +3940,7 @@ mod tests {
         state.invoke_publish_scan();
         assert_eq!(calls(&received, 2), ["tok list", "tok publish abc"]);
         session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
-        assert_eq!(state.get_sent_state(), "Published, unverified");
+        assert_eq!(state.get_sent_state(), "Published \u{b7} checking");
         assert!(state.get_sent_public());
         state.invoke_unpublish_scan();
         assert_eq!(calls(&received, 1), ["tok unpublish abc"]);
@@ -4088,9 +4036,9 @@ mod tests {
             lost_pp: Some(1.5),
         };
         session.listed(&folder, epoch, Ok(Reply::Listed(vec![listed])));
-        assert_eq!(state.get_sent_state(), "Published, verified");
+        assert_eq!(state.get_sent_state(), "Published \u{b7} verified");
         session.listed(&folder, epoch + 1, Ok(Reply::Listed(Vec::new())));
-        assert_eq!(state.get_sent_state(), "Published, verified");
+        assert_eq!(state.get_sent_state(), "Published \u{b7} verified");
         session.listed(&folder, epoch, Ok(Reply::Listed(Vec::new())));
         assert_eq!(state.get_sent_state(), "");
         assert_eq!(history::submission(&folder, &login().server), None);
@@ -4165,7 +4113,7 @@ mod tests {
         session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
         assert_eq!(calls(&received, 1), ["tok publish abc"]);
         session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
-        assert_eq!(state.get_sent_state(), "Published, unverified");
+        assert_eq!(state.get_sent_state(), "Published \u{b7} checking");
         assert!(!state.get_offer_shown());
     }
 

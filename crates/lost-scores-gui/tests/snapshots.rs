@@ -715,15 +715,6 @@ fn render_results_snapshots() {
     state.set_sent_state("Published, unverified".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("37-replays-chips.png"));
-    state.set_replays_waiting(1);
-    state.set_can_share_replays(true);
-    state.set_send_menu_x(288.0);
-    state.set_send_menu_y(72.0);
-    state.set_send_menu_open(true);
-    draw(&surface, &dir.join("40-replays-cancel.png"));
-    state.set_send_menu_open(false);
-    state.set_replays_waiting(0);
-    state.set_can_share_replays(false);
 }
 
 fn mods_scan() -> SavedScan {

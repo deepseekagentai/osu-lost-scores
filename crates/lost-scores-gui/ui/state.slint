@@ -56,10 +56,6 @@ export struct Preview {
 export global State {
     in-out property <int> replays-in-top;
     in-out property <bool> offer-with-replays: true;
-    in-out property <bool> can-share-replays;
-    callback share-replays();
-    in-out property <int> replays-waiting;
-    callback withdraw-replays();
     in-out property <string> osu-dir;
     in-out property <bool> busy;
     in-out property <string> status;

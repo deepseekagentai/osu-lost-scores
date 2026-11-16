@@ -120,10 +120,10 @@ pub fn share_replays(
 }
 
 pub fn label(sent: &Sent) -> String {
-    if published(sent) {
-        format!("Published, {}", sent.status)
-    } else {
-        "Private".to_owned()
+    match (published(sent), sent.status.as_str()) {
+        (false, _) => "Private".to_owned(),
+        (true, "unverified") => "Published \u{b7} checking".to_owned(),
+        (true, status) => format!("Published \u{b7} {status}"),
     }
 }
 
@@ -170,5 +170,36 @@ pub fn server_copies(count: usize) -> String {
         0 => String::new(),
         1 => " 1 of them stays on the Lost Scores server.".to_owned(),
         many => format!(" {many} of them stay on the Lost Scores server."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lost_scores_app::history::Sent;
+    use osu_api::Submission;
+
+    use super::label;
+
+    fn sent(visibility: &str, status: &str) -> Sent {
+        let answer = Submission {
+            id: "abc".into(),
+            visibility: visibility.into(),
+            status: status.into(),
+        };
+        Sent::new(&answer, "https://api.test")
+    }
+
+    #[test]
+    fn the_status_line_is_short() {
+        assert_eq!(
+            label(&sent("public", "unverified")),
+            "Published \u{b7} checking"
+        );
+        assert_eq!(
+            label(&sent("public", "verified")),
+            "Published \u{b7} verified"
+        );
+        assert_eq!(label(&sent("public", "hidden")), "Published \u{b7} hidden");
+        assert_eq!(label(&sent("private", "unverified")), "Private");
     }
 }
