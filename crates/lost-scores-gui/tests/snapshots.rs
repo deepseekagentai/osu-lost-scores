@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
+use i_slint_backend_testing::ElementHandle;
 use image::{Rgba, RgbaImage};
 use jiff::tz::TimeZone;
 use lost_scores_app::history::{SavedScan, VERSION};
@@ -12,7 +13,8 @@ use lost_scores_app::rows::{Hits, LostRow, OnlineRow, PotentialRow};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 use lost_scores_gui::avatar::{GUEST, render_avatar};
-use lost_scores_gui::table::{Column, Tab, Table, when};
+use lost_scores_gui::share::upload::{LINKS_IN_THE_LOG, links_summary, progress_label};
+use lost_scores_gui::table::{Column, Tab, Table, when_short};
 use lost_scores_gui::view::{RowsModel, foot};
 use lost_scores_gui::{LogEntry, MainWindow, State};
 use slint::platform::WindowEvent;
@@ -20,7 +22,7 @@ use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{Platform, WindowAdapter};
-use slint::{ComponentHandle, ModelRc, PhysicalSize, VecModel};
+use slint::{ComponentHandle, ModelRc, PhysicalSize, SharedString, VecModel};
 
 const SCALE: f32 = 1.25;
 const LOGICAL: (f32, f32) = (650.0, 800.0);
@@ -33,6 +35,64 @@ struct Offscreen(Rc<MinimalSoftwareWindow>);
 impl Platform for Offscreen {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
         Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn the_results_header_fits_one_row_in_the_narrowest_window() {
+    let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let window = MainWindow::new().unwrap();
+    let state = window.global::<State>();
+    state.set_has_results(true);
+    state.set_show_results(true);
+    state.set_has_images(true);
+    state.set_images_shown(true);
+    state.set_sent_state("Published, unverified".into());
+    state.set_sent_public(true);
+    let september = jiff::civil::date(2026, 9, 30)
+        .at(12, 0, 0, 0)
+        .to_zoned(TimeZone::UTC)
+        .unwrap()
+        .timestamp()
+        .as_second();
+    state.set_scan_date(when_short(september, &TimeZone::UTC).into());
+    window.show().unwrap();
+    window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: SCALE,
+        });
+    surface.set_size(PhysicalSize::new(
+        (LOGICAL.0 * SCALE) as u32,
+        (LOGICAL.1 * SCALE) as u32,
+    ));
+    let partly = links_summary(&[
+        ("a", Ok("x".to_owned())),
+        ("b", Err("e".to_owned())),
+        ("c", Err("e".to_owned())),
+    ]);
+    let failed = links_summary(&[("a", Err("e".to_owned()))]);
+    let labels = [
+        String::new(),
+        progress_label(1, 1),
+        progress_label(2, 3),
+        partly.label,
+        failed.label,
+        LINKS_IN_THE_LOG.to_owned(),
+    ];
+    for label in labels {
+        state.set_catbox_label(label.as_str().into());
+        thread::sleep(Duration::from_millis(400));
+        slint::platform::update_timers_and_animations();
+        let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
+            .next()
+            .unwrap();
+        let right = switch.absolute_position().x + switch.size().width;
+        assert!(
+            right <= LOGICAL.0 - 26.0 + 0.5,
+            "{label}: right edge {right}"
+        );
     }
 }
 
@@ -466,7 +526,7 @@ impl Results {
     fn present(&self, state: &State<'_>, scan: &SavedScan, tab: Tab) {
         state.set_rows(ModelRc::from(self.rows.clone()));
         state.set_has_results(true);
-        state.set_scan_date(when(scan.made_at, &TimeZone::UTC).into());
+        state.set_scan_date(when_short(scan.made_at, &TimeZone::UTC).into());
         state.set_tab(tab.index() as i32);
         state.set_foot(foot(&self.table.borrow(), tab));
         self.rows.show(tab);
@@ -474,6 +534,7 @@ impl Results {
         state.set_sort_column(column.index());
         state.set_sort_desc(descending);
         state.set_search_open(false);
+        state.set_search_text("".into());
         state.set_search_label("".into());
     }
 }
@@ -518,6 +579,7 @@ fn render_results_snapshots() {
 
     results.present(&state, &scan, Tab::Lost);
     let found = results.table.borrow().search(Tab::Lost, "camellia");
+    state.set_search_text("camellia".into());
     state.set_search_label(format!("{} found", found.len()).into());
     state.set_search_open(true);
     results.rows.narrow(Some(found));
@@ -611,6 +673,18 @@ fn render_results_snapshots() {
     state.set_images_shown(false);
     state.set_show_results(true);
     draw(&surface, &dir.join("29-results-submit.png"));
+    state.set_send_menu_x(288.0);
+    state.set_send_menu_y(72.0);
+    state.set_send_menu_open(true);
+    draw(&surface, &dir.join("38-share-menu.png"));
+    state.set_send_menu_open(false);
+    state.set_scans(ModelRc::new(VecModel::from(vec![
+        SharedString::from("3 September 2024 \u{b7} 23:39"),
+        SharedString::from("28 August 2024 \u{b7} 18:02"),
+    ])));
+    state.set_scans_open(true);
+    draw(&surface, &dir.join("39-scan-menu.png"));
+    state.set_scans_open(false);
     state.set_sent_state("Private".into());
     draw(&surface, &dir.join("30-results-private.png"));
     state.set_sent_state("Published, unverified".into());
@@ -901,7 +975,7 @@ fn render_switch_snapshots() {
         labels.map(slint::SharedString::from).to_vec(),
     )));
     state.set_scan_selected(0);
-    state.set_scan_date(labels[0].into());
+    state.set_scan_date("14 Nov 2026".into());
     state.set_has_images(true);
 
     state.set_show_results(true);
@@ -912,6 +986,23 @@ fn render_switch_snapshots() {
     state.set_next_picture_ok(true);
     draw_sized(&surface, LOGICAL, &dir.join("switch3-images-650.png"));
     draw_sized(&surface, TWO_COLUMNS, &dir.join("switch3-images-1600.png"));
+    state.set_scan_date("30 Sep 2026".into());
+    state.set_sent_state("Published, unverified".into());
+    state.set_sent_public(true);
+    state.set_catbox_label("Uploading 2 of 3".into());
+    state.set_catbox_busy(true);
+    state.set_show_results(true);
+    state.set_images_shown(true);
+    draw_sized(
+        &surface,
+        LOGICAL,
+        &dir.join("switch3-images-650-widest.png"),
+    );
+    state.set_catbox_label("catbox".into());
+    state.set_catbox_busy(false);
+    state.set_sent_state("".into());
+    state.set_sent_public(false);
+    state.set_scan_date("14 Nov 2026".into());
 
     state.set_images_shown(false);
     state.set_show_results(true);

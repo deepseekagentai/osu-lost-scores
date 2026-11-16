@@ -35,7 +35,7 @@ use crate::scans::{move_to_trash, older_done, older_prompt, reread, trash_messag
 use crate::send::{self, Call, Courier, Reply};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
-use crate::table::{Column, Tab, Table, anchor_index, tone, when};
+use crate::table::{Column, Tab, Table, anchor_index, tone, when, when_short};
 use crate::update::update_message;
 use crate::view::{RowsModel, foot, mods_width};
 use crate::worker::{self, Job, Message, Sink};
@@ -680,7 +680,7 @@ impl Session {
         self.marks.borrow_mut().clear();
         let state = self.window.global::<State>();
         self.relist(index);
-        state.set_scan_date(when(scan.made_at, &zone).into());
+        state.set_scan_date(when_short(scan.made_at, &zone).into());
         state.set_has_results(true);
         self.refresh_shared();
         let images = self.images_view.get();
@@ -1323,7 +1323,7 @@ impl Session {
                 app.log(&format!(
                     "Uploaded, but the links could not be copied: {error}. Links: {shown}"
                 ));
-                app.finish_catbox("Links in the log", -1, &error);
+                app.finish_catbox(upload::LINKS_IN_THE_LOG, -1, &error);
                 app.toast("Uploaded: the links are in the log");
             }
         });
@@ -3204,7 +3204,7 @@ mod tests {
             .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
                 scale_factor: 1.25,
             });
-        window.window().set_size(LogicalSize::new(650.0, 800.0));
+        window.window().set_size(LogicalSize::new(650.0, 740.0));
         let state = window.global::<State>();
         state.set_has_results(true);
         state.set_show_results(true);
@@ -3639,6 +3639,19 @@ mod tests {
         (0..session.rows.row_count())
             .map(|i| session.rows.row_data(i).unwrap().title.to_string())
             .collect()
+    }
+
+    #[test]
+    fn the_scan_button_shows_a_short_date() {
+        use crate::table::when_short;
+        use jiff::tz::TimeZone;
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        shown_replay_scan(&session, root.path(), None);
+        assert_eq!(
+            state.get_scan_date(),
+            when_short(replay_scan().made_at, &TimeZone::system())
+        );
     }
 
     #[test]

@@ -460,20 +460,25 @@ component HeaderCell inherits Rectangle {
 
 component BackButton inherits Rectangle {
     callback clicked;
-    width: label.preferred-width + 28px;
+    width: 42px;
     height: 42px;
     border-radius: 10px;
     background: T.btn;
     border-width: 2px;
     border-color: ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
-    label := Text {
-        text: "‹ Back";
+    Text {
+        text: "\u{2039}";
         color: #ffffff;
-        font-size: 15px;
+        font-size: 26px;
         font-weight: 600;
     }
-    ta := TouchArea {
+    ta := TipArea {
+        accessible-role: button;
+        accessible-label: "Back";
+        tip: "Back";
+        anchor: root.absolute-position;
+        anchor-height: root.height;
         mouse-cursor: pointer;
         clicked => {
             root.clicked();
@@ -504,20 +509,19 @@ component RowTrash inherits Rectangle {
 }
 
 component ScanSelector inherits Rectangle {
-    property <bool> many: State.scans.length > 1;
     width: row.preferred-width + 28px;
     height: 42px;
     border-radius: 10px;
     background: T.card;
     border-width: 2px;
-    border-color: (root.many && ta.has-hover) || State.scans-open ? T.acc : transparent;
+    border-color: ta.has-hover || State.scans-open ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     ta := TouchArea {
-        mouse-cursor: root.many ? MouseCursor.pointer : MouseCursor.default;
+        accessible-role: button;
+        accessible-label: "Scans";
+        mouse-cursor: pointer;
         clicked => {
-            if (root.many) {
-                State.scans-open = !State.scans-open;
-            }
+            State.scans-open = !State.scans-open;
         }
     }
     row := HorizontalLayout {
@@ -536,19 +540,13 @@ component ScanSelector inherits Rectangle {
             }
         }
         Text {
-            text: "Scan";
-            color: T.k;
-            font-size: 14px;
-            vertical-alignment: center;
-        }
-        Text {
             text: State.scan-date;
             color: #ffffff;
             font-size: 16px;
             font-weight: 600;
             vertical-alignment: center;
         }
-        if root.many: VerticalLayout {
+        VerticalLayout {
             alignment: center;
             Image {
                 source: @image-url("../assets/i-caret.svg");
@@ -585,6 +583,9 @@ component SearchField inherits Rectangle {
         font-size: 14px;
         vertical-alignment: center;
         single-line: true;
+        init => {
+            self.focus();
+        }
         edited => {
             State.search-changed(self.text);
         }
@@ -598,15 +599,21 @@ component SearchField inherits Rectangle {
     }
 }
 
-component OpenFolder inherits VerticalLayout {
+component SearchToggle inherits VerticalLayout {
     alignment: center;
     IconButton {
         width: 42px;
         height: 42px;
-        icon: @image-url("../assets/i-folder.svg");
-        tip: "Open the scan's folder";
+        icon: @image-url("../assets/i-search.svg");
+        tip: State.search-open ? "Close the search" : "Search in the table (Ctrl+F)";
         clicked => {
-            State.open-scan-folder();
+            if (State.search-open) {
+                State.search-text = "";
+                State.search-open = false;
+                State.search-changed("");
+            } else {
+                State.search-open = true;
+            }
         }
     }
 }
@@ -616,6 +623,7 @@ component SendPill inherits Rectangle {
     in property <string> tip;
     in property <image> icon;
     in property <bool> enabled: true;
+    in property <bool> menu;
     callback clicked;
     width: row.preferred-width + 26px;
     height: 40px;
@@ -623,7 +631,7 @@ component SendPill inherits Rectangle {
     background: T.btn;
     opacity: root.enabled ? 1 : 0.45;
     border-width: 2px;
-    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
+    border-color: (root.enabled && ta.has-hover) || (root.menu && State.send-menu-open) ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     row := HorizontalLayout {
         x: 13px;
@@ -646,6 +654,16 @@ component SendPill inherits Rectangle {
             font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
+        }
+        if root.menu: VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../assets/i-caret.svg");
+                width: 12px;
+                height: 12px;
+                image-fit: contain;
+                colorize: T.ibicon;
+            }
         }
     }
     ta := TipArea {
@@ -723,12 +741,15 @@ component SendButton inherits VerticalLayout {
     property <bool> ready: State.can-send && !State.busy && !State.sending;
     alignment: center;
     if State.sent-state == "": SendPill {
-        text: "Submit";
+        text: "Share";
         icon: @image-url("../assets/i-cloud-up.svg");
+        menu: true;
         enabled: root.ready;
-        tip: !State.can-send ? "Log in with osu! to send scans" : (State.busy ? "Wait for the scan to finish" : "Send this scan to your profile on the Lost Scores server; only you see it");
+        tip: !State.can-send ? "Log in with osu! to share scans" : (State.busy ? "Wait for the scan to finish" : "Publish this scan in the Hall of Fame or keep it in your profile");
         clicked => {
-            State.submit-scan();
+            State.send-menu-x = self.absolute-position.x;
+            State.send-menu-y = self.absolute-position.y + self.height + 6px;
+            State.send-menu-open = !State.send-menu-open;
         }
     }
     if State.sent-state != "": SendMenuPill { }
@@ -843,7 +864,7 @@ component CatboxButton inherits VerticalLayout {
             width: parent.width - 26px;
             spacing: 8px;
             alignment: center;
-            VerticalLayout {
+            if State.catbox-label == "": VerticalLayout {
                 alignment: center;
                 Image {
                     source: @image-url("../assets/i-cloud-up.svg");
@@ -970,18 +991,20 @@ component PictureArrows inherits HorizontalLayout {
 }
 
 component ModeSegment inherits Rectangle {
-    in property <string> text;
+    in property <image> icon;
+    in property <string> label;
     in property <bool> active;
     in property <bool> hovered;
-    Text {
-        text: root.text;
-        color: root.active || root.hovered ? #ffffff : T.k;
-        font-size: 14px;
-        font-weight: 600;
-        animate color {
-            duration: 180ms;
-            easing: ease-out;
-        }
+    accessible-role: button;
+    accessible-label: root.label;
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        source: root.icon;
+        colorize: root.active || root.hovered ? #ffffff : T.k;
+        image-fit: contain;
     }
 }
 
@@ -994,7 +1017,7 @@ component ModeThumb inherits Rectangle {
 
 component ModeSwitch inherits Rectangle {
     property <length> segment: (root.width - 8px) / 2;
-    width: 152px;
+    width: 96px;
     height: 40px;
     border-radius: 10px;
     background: T.btn;
@@ -1012,19 +1035,24 @@ component ModeSwitch inherits Rectangle {
         padding: 3px;
         spacing: 2px;
         ModeSegment {
-            text: "Images";
+            icon: @image-url("../assets/i-image.svg");
+            label: "Images";
             active: State.images-shown;
             hovered: ta.has-hover;
         }
         ModeSegment {
-            text: "Table";
+            icon: @image-url("../assets/i-list.svg");
+            label: "Table";
             active: !State.images-shown;
             hovered: ta.has-hover;
         }
     }
-    ta := TouchArea {
+    ta := TipArea {
         accessible-role: button;
         accessible-label: State.images-shown ? "Show the table" : "Show the images";
+        tip: State.images-shown ? "Show the table" : "Show the images to share";
+        anchor: root.absolute-position;
+        anchor-height: root.height;
         mouse-cursor: pointer;
         clicked => {
             if (State.images-shown) {
@@ -1159,60 +1187,30 @@ export component ResultsPanel inherits Rectangle {
         padding-top: 24px;
         padding-bottom: 18px;
         spacing: 12px;
-        if !root.narrow: HorizontalLayout {
+        HorizontalLayout {
             spacing: 6px;
             vertical-stretch: 0;
+            property <bool> searching: State.search-open && !root.view-images;
             if root.show-back: BackButton {
                 clicked => {
                     State.back();
                 }
             }
-            if State.has-results: ScanSelector { }
-            if State.has-results: OpenFolder { }
-            if State.has-results: SendButton { }
-            Rectangle { horizontal-stretch: 1; }
-            if !root.view-images: SearchField {
+            if State.has-results && !(root.narrow && self.searching): ScanSelector { }
+            if State.has-results && !(root.narrow && self.searching): SendButton { }
+            if !self.searching: Rectangle { horizontal-stretch: 1; }
+            if self.searching: SearchField {
                 horizontal-stretch: 1;
-                min-width: 140px;
-                max-width: 260px;
+                min-width: 120px;
+                opacity: root.body-fade;
+            }
+            if State.has-results && !root.view-images: SearchToggle {
                 opacity: root.body-fade;
             }
             if State.has-results && root.view-images && State.has-images: CatboxButton {
                 opacity: root.body-fade;
             }
             if State.has-results: ModeSwitch { }
-        }
-        if root.narrow: VerticalLayout {
-            spacing: 8px;
-            vertical-stretch: 0;
-            HorizontalLayout {
-                spacing: 6px;
-                if root.show-back: BackButton {
-                    clicked => {
-                        State.back();
-                    }
-                }
-                if State.has-results: ScanSelector { }
-                if State.has-results: OpenFolder { }
-                if State.has-results: SendButton { }
-                Rectangle { horizontal-stretch: 1; }
-                if State.has-results && root.switch-up && root.view-images && State.has-images: CatboxButton {
-                    opacity: root.body-fade;
-                }
-                if State.has-results && root.switch-up: ModeSwitch { }
-            }
-            if !(root.switch-up && root.view-images): HorizontalLayout {
-                spacing: 6px;
-                if !root.view-images: SearchField {
-                    horizontal-stretch: 1;
-                    opacity: root.body-fade;
-                }
-                if State.has-results && !root.switch-up && root.view-images && State.has-images: CatboxButton {
-                    opacity: root.body-fade;
-                }
-                if root.view-images: Rectangle { horizontal-stretch: 1; }
-                if State.has-results && !root.switch-up: ModeSwitch { }
-            }
         }
         if State.has-results && State.offer-shown: OfferCard {
             vertical-stretch: 0;
@@ -1412,7 +1410,7 @@ export component ResultsPanel inherits Rectangle {
         menu := VerticalLayout {
             padding: 6px;
             spacing: 2px;
-            Rectangle {
+            if State.sent-state != "": Rectangle {
                 height: 30px;
                 Text {
                     x: 12px;
@@ -1423,6 +1421,20 @@ export component ResultsPanel inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
+            if State.sent-state == "": MenuRow {
+                text: "Publish to the Hall of Fame";
+                clicked => {
+                    State.send-menu-open = false;
+                    State.publish-offer();
+                }
+            }
+            if State.sent-state == "": MenuRow {
+                text: "Save to my profile only";
+                clicked => {
+                    State.send-menu-open = false;
+                    State.submit-scan();
+                }
+            }
             if State.can-share-replays: MenuRow {
                 text: "Share the replays of my top";
                 clicked => {
@@ -1430,7 +1442,7 @@ export component ResultsPanel inherits Rectangle {
                     State.share-replays();
                 }
             }
-            MenuRow {
+            if State.sent-state != "": MenuRow {
                 text: State.sent-public ? "Unpublish" : "Publish to the Hall of Fame";
                 clicked => {
                     State.send-menu-open = false;
@@ -1441,7 +1453,7 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
             }
-            MenuRow {
+            if State.sent-state != "": MenuRow {
                 text: "Delete from the server";
                 clicked => {
                     State.send-menu-open = false;
@@ -1489,10 +1501,10 @@ export component ResultsPanel inherits Rectangle {
         }
     }
     if State.scans-open: Rectangle {
-        x: root.show-back ? 116px : 26px;
+        x: root.show-back ? 74px : 26px;
         y: 24px + 42px + 6px;
         width: 320px;
-        height: min(340px, 16px + State.scans.length * 34px + (State.scans.length > 1 ? 26px + 9px + 30px : 0px));
+        height: min(380px, 16px + State.scans.length * 34px + (State.scans.length > 1 ? 26px + 9px + 30px : 0px) + 9px + 30px);
         border-radius: 10px;
         background: T.card;
         border-width: 2px;
@@ -1580,6 +1592,49 @@ export component ResultsPanel inherits Rectangle {
                     mouse-cursor: pointer;
                     clicked => {
                         State.delete-older-scans();
+                    }
+                }
+            }
+            Rectangle {
+                height: 9px;
+                Rectangle {
+                    y: 4px;
+                    x: 4px;
+                    width: parent.width - 8px;
+                    height: 1px;
+                    background: T.togb;
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: 6px;
+                background: folder-ta.has-hover ? T.btn : transparent;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 7px;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../assets/i-folder.svg");
+                            width: 13px;
+                            height: 13px;
+                            image-fit: contain;
+                            colorize: T.ibicon;
+                        }
+                    }
+                    Text {
+                        text: "Open the scan folder";
+                        color: #ffffff;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+                folder-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        State.scans-open = false;
+                        State.open-scan-folder();
                     }
                 }
             }

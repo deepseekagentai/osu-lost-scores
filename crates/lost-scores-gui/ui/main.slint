@@ -58,6 +58,12 @@ export component MainWindow inherits Window {
             keys.focus();
         }
     }
+    property <bool> searching: State.search-open;
+    changed searching => {
+        if (!self.searching) {
+            keys.focus();
+        }
+    }
     keys := FocusScope {
         init => {
             self.focus();

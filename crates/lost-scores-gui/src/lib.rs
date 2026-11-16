@@ -514,14 +514,17 @@ mod tests {
                 tail: "".into(),
                 tone: 0,
             }])));
+            state.set_search_open(true);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
             assert_eq!(count(&window, "FootPair"), 1, "{width} tables");
+            assert_eq!(count(&window, "SearchToggle"), 1, "{width} tables");
             assert_eq!(count(&window, "Tab"), 3, "{width} tables");
             assert_eq!(count(&window, "SearchField"), 1, "{width} tables");
             assert!(count(&window, "HeaderCell") > 0, "{width} tables");
             state.set_images_shown(true);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
             assert_eq!(count(&window, "SearchField"), 0, "{width} images");
+            assert_eq!(count(&window, "SearchToggle"), 0, "{width} images");
             assert_eq!(count(&window, "HeaderCell"), 0, "{width} images");
             assert_eq!(count(&window, "FootPair"), 0, "{width} images");
             assert_eq!(count(&window, "Tab"), 0, "{width} images");
@@ -604,10 +607,10 @@ mod tests {
         let state = window.global::<State>();
         state.set_images_shown(false);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
-        let search = ElementHandle::find_by_element_type_name(&window, "SearchField")
+        let search = ElementHandle::find_by_element_type_name(&window, "SearchToggle")
             .next()
             .unwrap();
-        let search_x = search.absolute_position().x;
+        let search_x = search.absolute_position().x + search.size().width;
         state.set_images_shown(true);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(400));
         let catbox = ElementHandle::find_by_element_type_name(&window, "CatboxButton")
@@ -616,7 +619,7 @@ mod tests {
         let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
             .next()
             .unwrap();
-        assert!((catbox.absolute_position().x - search_x).abs() < 1.0);
+        assert!((catbox.absolute_position().x + catbox.size().width - search_x).abs() < 1.0);
         let middle =
             |element: &ElementHandle| element.absolute_position().y + element.size().height / 2.0;
         assert!((middle(&catbox) - middle(&switch)).abs() < 2.0);
@@ -699,7 +702,7 @@ mod tests {
         let labelled =
             |label: &str| ElementHandle::find_by_accessible_label(&window, label).count();
         assert_eq!(labelled("Open folder"), 0);
-        assert_eq!(labelled("Open the scan's folder"), 1);
+        assert_eq!(labelled("Open the scan's folder"), 0);
         assert_eq!(labelled("Lost Scores"), 0);
         assert_eq!(labelled("Badge"), 0);
         assert_eq!(labelled("Open"), 0);
@@ -963,6 +966,64 @@ mod tests {
         assert_eq!(state.get_search_text(), "");
         assert!(!state.get_search_open());
         assert_eq!(*calls.borrow(), ["search-cleared"]);
+    }
+
+    fn results_window() -> (MainWindow, Calls) {
+        let (window, calls) = keyboard_window();
+        let state = window.global::<State>();
+        let record = |name: &'static str| {
+            let calls = calls.clone();
+            move || calls.borrow_mut().push(name)
+        };
+        state.on_publish_offer(record("publish-offer"));
+        state.on_submit_scan(record("submit-scan"));
+        state.on_open_scan_folder(record("open-scan-folder"));
+        state.set_has_results(true);
+        state.set_show_results(true);
+        state.set_logged_in(true);
+        state.set_own_keys(false);
+        state.set_scans(ModelRc::new(VecModel::from(vec![SharedString::from(
+            "3 September 2024 \u{b7} 23:39",
+        )])));
+        settle();
+        (window, calls)
+    }
+
+    fn click_label(window: &MainWindow, label: &str) {
+        ElementHandle::find_by_accessible_label(window, label)
+            .next()
+            .unwrap_or_else(|| panic!("no {label}"))
+            .mock_single_click(PointerEventButton::Left);
+        settle();
+    }
+
+    #[test]
+    fn an_unsent_scans_share_menu_publishes_or_keeps_it_private() {
+        let (window, calls) = results_window();
+        let state = window.global::<State>();
+        state.set_send_menu_open(true);
+        settle();
+        click_label(&window, "Publish to the Hall of Fame");
+        assert!(!state.get_send_menu_open());
+        state.set_send_menu_open(true);
+        settle();
+        click_label(&window, "Save to my profile only");
+        assert_eq!(*calls.borrow(), ["publish-offer", "submit-scan"]);
+    }
+
+    #[test]
+    fn the_scan_menu_opens_with_one_scan_and_opens_its_folder() {
+        let (window, calls) = results_window();
+        let state = window.global::<State>();
+        ElementHandle::find_by_element_type_name(&window, "ScanSelector")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        settle();
+        assert!(state.get_scans_open());
+        click_label(&window, "Open the scan folder");
+        assert!(!state.get_scans_open());
+        assert_eq!(*calls.borrow(), ["open-scan-folder"]);
     }
 
     #[test]

@@ -142,6 +142,8 @@ impl Choices {
     }
 }
 
+pub const LINKS_IN_THE_LOG: &str = "Links in the log";
+
 pub struct Summary {
     pub links: String,
     pub message: String,
