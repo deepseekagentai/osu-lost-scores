@@ -1053,7 +1053,6 @@ mod tests {
         state.on_open_about(record("open-about"));
         state.on_open_hall(record("open-hall"));
         state.on_open_profile(record("open-profile"));
-        state.on_open_slint_site(record("open-slint-site"));
         state.on_check_updates(record("check-updates"));
         state.on_delete_older_scans(record("delete-older-scans"));
         state.on_show_images(record("show-images"));
@@ -1105,15 +1104,19 @@ mod tests {
             *calls.borrow(),
             ["log-in", "open-keys", "open-hall", "open-about"]
         );
+        let state = window.global::<State>();
+        state.set_connected(true);
+        settle();
         assert!(
-            ElementHandle::find_by_accessible_label(&window, "Your profile")
+            ElementHandle::find_by_accessible_label(&window, "My profile")
                 .next()
                 .is_none()
         );
-        window.global::<State>().set_logged_in(true);
+        activate(&window, "About");
+        state.set_logged_in(true);
         settle();
-        activate(&window, "Your profile");
-        assert_eq!(calls.borrow().last(), Some(&"open-profile"));
+        activate(&window, "My profile");
+        assert_eq!(calls.borrow()[4..], ["open-about", "open-profile"]);
     }
 
     #[test]
@@ -1122,17 +1125,10 @@ mod tests {
         record_more(&window, &calls);
         window.global::<State>().set_about_open(true);
         settle();
-        for label in [
-            "Made by KZ_Lemon4ik",
-            "Made with Slint",
-            "Check for updates",
-        ] {
+        for label in ["Made by KZ_Lemon4ik", "Check for updates"] {
             activate(&window, label);
         }
-        assert_eq!(
-            *calls.borrow(),
-            ["open-developer-site", "open-slint-site", "check-updates"]
-        );
+        assert_eq!(*calls.borrow(), ["open-developer-site", "check-updates"]);
     }
 
     #[test]

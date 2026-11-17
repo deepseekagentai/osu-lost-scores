@@ -287,18 +287,6 @@ export component MainWindow inherits Window {
                             State.open-hall();
                         }
                     }
-                    if State.logged-in: Link {
-                        text: "Your profile";
-                        clicked => {
-                            State.open-profile();
-                        }
-                    }
-                    Link {
-                        text: "About";
-                        clicked => {
-                            State.open-about();
-                        }
-                    }
                 }
             }
             if !root.two-columns: Rectangle { horizontal-stretch: 1; }

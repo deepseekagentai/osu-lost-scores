@@ -47,7 +47,6 @@ const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
 const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
 const SITE: &str = "https://lost.lemon4ik.kz";
-const SLINT_SITE: &str = "https://slint.dev/";
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
 const COPIED_FOR: Duration = Duration::from_secs(2);
 const CATBOX_DONE_FOR: Duration = Duration::from_secs(4);
@@ -570,8 +569,6 @@ impl Session {
                 session.launch("the page", page.into());
             }
         });
-        let session = self.clone();
-        state.on_open_slint_site(move || session.launch("the page", SLINT_SITE.into()));
         let session = self.clone();
         state.on_open_about(move || {
             session.close_popups();
@@ -2975,9 +2972,8 @@ mod tests {
         session.bind_extras(&state);
         state.invoke_open_hall();
         state.invoke_open_profile();
-        state.invoke_open_slint_site();
         let timeout = std::time::Duration::from_secs(5);
-        let mut opened: Vec<String> = (0..3)
+        let mut opened: Vec<String> = (0..2)
             .map(|_| {
                 received
                     .recv_timeout(timeout)
@@ -2992,7 +2988,6 @@ mod tests {
             [
                 "https://lost.lemon4ik.kz/hall-of-copium".to_owned(),
                 format!("https://lost.lemon4ik.kz/profile/{}", login().osu_id),
-                "https://slint.dev/".to_owned(),
             ]
         );
     }

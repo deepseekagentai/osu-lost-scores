@@ -170,6 +170,13 @@ component Profile inherits HorizontalLayout {
                     State.editing-name = !State.editing-name;
                 }
             }
+            if State.logged-in: IconButton {
+                icon: @image-url("../assets/i-user.svg");
+                tip: "My profile";
+                clicked => {
+                    State.open-profile();
+                }
+            }
             IconButton {
                 icon: @image-url("../assets/i-door.svg");
                 tip: "Log out";
@@ -270,11 +277,10 @@ component Profile inherits HorizontalLayout {
                 }
             }
             IconButton {
-                icon: @image-url("../assets/i-rotate.svg");
-                tip: "Check for updates";
-                enabled: !State.checking-updates;
+                icon: @image-url("../assets/i-circle-info.svg");
+                tip: "About";
                 clicked => {
-                    State.check-updates();
+                    State.open-about();
                 }
             }
         }
@@ -299,6 +305,15 @@ export component AccountCard inherits HoverBox {
             }
             opacity: self.shown;
             Connect { }
+            IconButton {
+                x: parent.width - self.width - 26px;
+                y: 20px;
+                icon: @image-url("../assets/i-circle-info.svg");
+                tip: "About";
+                clicked => {
+                    State.open-about();
+                }
+            }
         }
         if State.connected: Rectangle {
             property <float> shown;
