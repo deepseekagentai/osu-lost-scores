@@ -19,7 +19,7 @@ use lost_scores_app::shared::{self, Shared};
 use lost_scores_app::updates::latest_release;
 use lost_scores_app::{cache, history, keys, replays, setup, submission};
 use osu_api::{ApiError, Credentials, Http, Server, UserKey};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 use crate::account::{
     Account, Field, KeysError, Profile, check_fields, keys_error, lookup_failure, parse_account,
@@ -27,7 +27,7 @@ use crate::account::{
 };
 use crate::avatar::{GUEST, avatar_pixels, fetch, render_avatar};
 use crate::clipboard::{Clipboard, Request};
-use crate::log::{clock_now, split, stamp};
+use crate::log::{clock_now, stamp};
 use crate::newest::{load_newest, newest_of_player};
 use crate::previews::{Wanted, picture_tops, plan, render_all, step_target};
 use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT, NEEDS_FOLDER, Phase, ScanState, check_folders};
@@ -57,6 +57,7 @@ struct Session {
     window: MainWindow,
     weak: Weak<MainWindow>,
     log: Rc<VecModel<LogEntry>>,
+    log_file: Option<PathBuf>,
     credentials: RefCell<Option<Credentials>>,
     login: RefCell<Option<Login>>,
     login_epoch: Cell<u64>,
@@ -203,6 +204,9 @@ impl Session {
             window: window.clone_strong(),
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
+            log_file: setup::data_root()
+                .map(|dir| dir.join("log.txt"))
+                .inspect(|file| crate::log::rotate(file)),
             credentials: RefCell::new(None),
             login: RefCell::new(None),
             login_epoch: Cell::new(0),
@@ -1631,12 +1635,29 @@ impl Session {
     }
 
     fn log(&self, text: &str) {
-        let line = stamp(clock_now(), text);
-        let (time, text) = crate::log::split(&line);
+        self.add_log_line(&stamp(clock_now(), text));
+    }
+
+    fn add_log_line(&self, line: &str) {
+        let (time, text) = crate::log::split(line);
         self.log.push(LogEntry {
             time: time.into(),
             text: text.into(),
         });
+        while self.log.row_count() > crate::log::KEEP_LINES {
+            self.log.remove(0);
+        }
+        let joined: Vec<String> = self
+            .log
+            .iter()
+            .map(|entry| format!("{} {}", entry.time, entry.text).trim().to_owned())
+            .collect();
+        self.window
+            .global::<State>()
+            .set_log_text(joined.join("\n").into());
+        if let Some(file) = &self.log_file {
+            crate::log::append(file, line);
+        }
     }
 
     fn close_popups(&self) {
@@ -2042,14 +2063,12 @@ impl Session {
         state.set_status(scan.status.clone().into());
         state.set_progress(scan.progress);
         state.set_busy(self.busy());
-        for line in &scan.log[self.shown.get()..] {
-            let (time, text) = split(line);
-            self.log.push(LogEntry {
-                time: time.into(),
-                text: text.into(),
-            });
-        }
+        let fresh: Vec<String> = scan.log[self.shown.get()..].to_vec();
         self.shown.set(scan.log.len());
+        drop(scan);
+        for line in &fresh {
+            self.add_log_line(line);
+        }
     }
 
     fn handle(&self, message: Message) {
@@ -4398,6 +4417,25 @@ mod tests {
         assert_eq!(marks(), [3]);
         session.answered(&folder, Ok(Reply::Sent(answer("private", "hidden"))));
         assert_eq!(marks(), [0]);
+    }
+
+    #[test]
+    fn the_log_is_one_selectable_text_kept_in_a_file() {
+        let (window, session, _root) = session(650.0);
+        let state = window.global::<State>();
+        session.log("first line");
+        session.log("second line");
+        let text = state.get_log_text().to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[lines.len() - 2].ends_with("] first line"), "{text}");
+        assert!(lines[lines.len() - 1].ends_with("] second line"), "{text}");
+        let saved = std::fs::read_to_string(setup::data_root().unwrap().join("log.txt")).unwrap();
+        assert!(saved.contains("] first line\n"), "{saved}");
+        for line in 0..crate::log::KEEP_LINES {
+            session.log(&format!("line {line}"));
+        }
+        assert_eq!(session.log.row_count(), crate::log::KEEP_LINES);
+        assert_eq!(state.get_log_text().lines().count(), crate::log::KEEP_LINES);
     }
 
     #[test]

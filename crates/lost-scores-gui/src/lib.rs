@@ -96,11 +96,17 @@ mod tests {
                 .next()
                 .is_some()
         };
+        let log_box = || {
+            ElementHandle::find_by_element_type_name(&window, "LogBox")
+                .next()
+                .is_some()
+        };
         assert!(shown("Error: could not reach the osu! API: timeout"));
-        assert!(!shown("14982 replays read in 2.7 s"));
+        assert!(!log_box());
         window.window().set_size(LogicalSize::new(650.0, 800.0));
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
-        assert!(shown("14982 replays read in 2.7 s"));
+        assert!(log_box());
+        assert!(!shown("Error: could not reach the osu! API: timeout"));
     }
 
     #[test]

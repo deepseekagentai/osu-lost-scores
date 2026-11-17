@@ -148,6 +148,15 @@ fn guest() -> slint::Image {
     slint::Image::from_rgba8(render_avatar(GUEST, pixels).unwrap())
 }
 
+fn show_log(state: &State<'_>, lines: &[(&str, &str)]) {
+    state.set_log(log(lines));
+    let text: Vec<String> = lines
+        .iter()
+        .map(|(time, text)| format!("{time} {text}").trim().to_owned())
+        .collect();
+    state.set_log_text(text.join("\n").into());
+}
+
 fn log(lines: &[(&str, &str)]) -> ModelRc<LogEntry> {
     ModelRc::new(VecModel::from(
         lines
@@ -221,18 +230,21 @@ fn render_snapshots() {
     state.set_show_lost(true);
     state.set_status("Scan finished: 340 lost plays, 238 on ranked maps".into());
     state.set_progress(1.0);
-    state.set_log(log(&[
-        ("[17:50:02]", "osu!: /home/player/games/osu!"),
-        ("[17:50:02]", "player: SamplePlayer"),
-        (
-            "[17:50:09]",
-            "14982 replays read in 5.1 s, 12287 of the player's have a local beatmap and pp",
-        ),
-        (
-            "[17:50:15]",
-            "asked again about 6 maps whose status can change, 0 changed",
-        ),
-    ]));
+    show_log(
+        &state,
+        &[
+            ("[17:50:02]", "osu!: /home/player/games/osu!"),
+            ("[17:50:02]", "player: SamplePlayer"),
+            (
+                "[17:50:09]",
+                "14982 replays read in 5.1 s, 12287 of the player's have a local beatmap and pp",
+            ),
+            (
+                "[17:50:15]",
+                "asked again about 6 maps whose status can change, 0 changed",
+            ),
+        ],
+    );
     draw(&surface, &dir.join("5-main-connected.png"));
 
     state.set_own_keys(false);
@@ -251,30 +263,36 @@ fn render_snapshots() {
 
     state.set_progress(0.42);
     state.set_status("Calculating pp: 1,798 of 14,982".into());
-    state.set_log(log(&[
-        ("[17:50:02]", "osu!: /home/player/games/osu!"),
-        ("[17:50:02]", "player: SamplePlayer"),
-        (
-            "[17:50:07]",
-            "14982 replays read in 4.9 s, 12287 of the player's have a local beatmap and pp",
-        ),
-        (
-            "[17:50:08]",
-            "asking the osu! API about 1738 maps, about 181 requests at one per second",
-        ),
-    ]));
+    show_log(
+        &state,
+        &[
+            ("[17:50:02]", "osu!: /home/player/games/osu!"),
+            ("[17:50:02]", "player: SamplePlayer"),
+            (
+                "[17:50:07]",
+                "14982 replays read in 4.9 s, 12287 of the player's have a local beatmap and pp",
+            ),
+            (
+                "[17:50:08]",
+                "asking the osu! API about 1738 maps, about 181 requests at one per second",
+            ),
+        ],
+    );
     draw(&surface, &dir.join("6-main-scanning.png"));
 
     state.set_busy(false);
     state.set_progress(0.0);
     state.set_status("Operation failed".into());
-    state.set_log(log(&[
-        ("[17:50:02]", "osu!: /home/player/games/osu!"),
-        (
-            "",
-            "Error: the osu! API did not accept the keys or does not know this player",
-        ),
-    ]));
+    show_log(
+        &state,
+        &[
+            ("[17:50:02]", "osu!: /home/player/games/osu!"),
+            (
+                "",
+                "Error: the osu! API did not accept the keys or does not know this player",
+            ),
+        ],
+    );
     draw(&surface, &dir.join("7-main-failed.png"));
 }
 
@@ -615,10 +633,13 @@ fn render_results_snapshots() {
     state.set_rank("#14,856".into());
     state.set_status("Scan finished: 7 lost plays, 4 on ranked maps".into());
     state.set_progress(1.0);
-    state.set_log(log(&[
-        ("[17:50:02]", "player: SamplePlayer"),
-        ("[17:50:15]", "7 lost plays found, 4 of them on ranked maps"),
-    ]));
+    show_log(
+        &state,
+        &[
+            ("[17:50:02]", "player: SamplePlayer"),
+            ("[17:50:15]", "7 lost plays found, 4 of them on ranked maps"),
+        ],
+    );
     state.set_show_results(false);
     draw(&surface, &dir.join("16-main-one-column.png"));
     draw_sized(&surface, COMPACT, &dir.join("17-main-compact.png"));
@@ -778,10 +799,13 @@ fn connect_sample(state: &State<'_>) {
     state.set_rank("#14,856".into());
     state.set_status("Scan finished: 9 lost plays, 6 on ranked maps".into());
     state.set_progress(1.0);
-    state.set_log(log(&[
-        ("[17:50:02]", "player: SamplePlayer"),
-        ("[17:50:15]", "9 lost plays found, 6 of them on ranked maps"),
-    ]));
+    show_log(
+        &state,
+        &[
+            ("[17:50:02]", "player: SamplePlayer"),
+            ("[17:50:15]", "9 lost plays found, 6 of them on ranked maps"),
+        ],
+    );
 }
 
 #[test]
