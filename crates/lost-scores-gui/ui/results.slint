@@ -1563,7 +1563,8 @@ export component ResultsPanel inherits Rectangle {
                         property <bool> trash-over;
                         border-radius: 6px;
                         background: ta.has-hover || row.trash-over ? T.btn : transparent;
-                        Text {
+                        property <int> mark: State.scan-marks[i];
+                        date := Text {
                             accessible-role: none;
                             x: 10px;
                             text: label;
@@ -1572,9 +1573,16 @@ export component ResultsPanel inherits Rectangle {
                             font-weight: i == State.scan-selected ? 600 : 400;
                             vertical-alignment: center;
                         }
+                        if row.mark > 0: Rectangle {
+                            x: date.x + date.preferred-width + 8px;
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: row.mark == 3 ? T.down : (row.mark == 2 ? T.up : T.acc);
+                        }
                         ta := TouchArea {
                             accessible-role: button;
-                            accessible-label: label;
+                            accessible-label: row.mark > 0 ? label + ", published" : label;
                             accessible-action-default => {
                                 State.select-scan(i);
                             }

@@ -739,6 +739,32 @@ impl Session {
         let state = self.window.global::<State>();
         state.set_scans(ModelRc::new(VecModel::from(labels)));
         state.set_scan_selected(index as i32);
+        self.mark_scans();
+    }
+
+    fn mark_scans(&self) {
+        let server = self.sending_login().map(|login| login.server);
+        let marks: Vec<i32> = self
+            .entries
+            .borrow()
+            .iter()
+            .map(|entry| {
+                let sent = server
+                    .as_deref()
+                    .and_then(|server| history::submission(&entry.folder, server));
+                match sent {
+                    Some(sent) if send::published(&sent) => match sent.status.as_str() {
+                        "verified" => 2,
+                        "hidden" | "rejected" => 3,
+                        _ => 1,
+                    },
+                    _ => 0,
+                }
+            })
+            .collect();
+        self.window
+            .global::<State>()
+            .set_scan_marks(ModelRc::new(VecModel::from(marks)));
     }
 
     fn ask_delete_scan(&self, index: usize) {
@@ -867,6 +893,7 @@ impl Session {
     }
 
     fn show_sent(&self) {
+        self.mark_scans();
         let sent = self.shown_sent();
         let state = self.window.global::<State>();
         state.set_sent_state(sent.as_ref().map(send::label).unwrap_or_default().into());
@@ -4349,6 +4376,28 @@ mod tests {
         assert_eq!(state.get_sent_state(), "Private");
         assert!(!state.get_copied());
         assert!(state.get_offer_shown());
+    }
+
+    #[test]
+    fn the_scan_list_marks_published_scans_with_their_check_state() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        calls(&received, 1);
+        *session.entries.borrow_mut() = history::list(root.path());
+        let marks = || state.get_scan_marks().iter().collect::<Vec<i32>>();
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert_eq!(marks(), [0]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        assert_eq!(marks(), [1]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "verified"))));
+        assert_eq!(marks(), [2]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "hidden"))));
+        assert_eq!(marks(), [3]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "hidden"))));
+        assert_eq!(marks(), [0]);
     }
 
     #[test]
