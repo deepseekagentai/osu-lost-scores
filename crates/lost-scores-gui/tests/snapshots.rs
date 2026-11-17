@@ -106,12 +106,16 @@ fn draw_sized(surface: &Rc<MinimalSoftwareWindow>, logical: (f32, f32), path: &P
     let height = (logical.1 * SCALE) as u32;
     surface.set_size(PhysicalSize::new(width, height));
     slint::platform::update_timers_and_animations();
+    let mut buffer = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
+    surface.request_redraw();
+    surface.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, width as usize);
+    });
     thread::sleep(Duration::from_millis(700));
     for _ in 0..3 {
         slint::platform::update_timers_and_animations();
         surface.request_redraw();
     }
-    let mut buffer = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
     surface.draw_if_needed(|renderer| {
         renderer.render(&mut buffer, width as usize);
     });

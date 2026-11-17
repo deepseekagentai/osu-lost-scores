@@ -288,7 +288,29 @@ export component AccountCard inherits HoverBox {
     border-radius: 12px;
     background: T.card;
     inner := VerticalLayout {
-        if !State.connected: Connect { }
-        if State.connected: Profile { }
+        if !State.connected: Rectangle {
+            property <float> shown;
+            animate shown {
+                duration: 200ms;
+                easing: ease-out;
+            }
+            init => {
+                self.shown = 1;
+            }
+            opacity: self.shown;
+            Connect { }
+        }
+        if State.connected: Rectangle {
+            property <float> shown;
+            animate shown {
+                duration: 200ms;
+                easing: ease-out;
+            }
+            init => {
+                self.shown = 1;
+            }
+            opacity: self.shown;
+            Profile { }
+        }
     }
 }

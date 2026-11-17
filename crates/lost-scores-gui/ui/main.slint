@@ -396,6 +396,15 @@ export component MainWindow inherits Window {
             }
         }
         if Tip.text != "": Rectangle {
+            property <float> shown;
+            animate shown {
+                duration: 120ms;
+                easing: ease-out;
+            }
+            init => {
+                self.shown = 1;
+            }
+            opacity: self.shown;
             x: max(8px, min(Tip.x, root.width - self.width - 8px));
             y: min(Tip.y, root.height - self.height - 8px);
             width: label.preferred-width + 20px;

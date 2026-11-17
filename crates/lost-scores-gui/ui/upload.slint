@@ -5,13 +5,23 @@ export component UploadSheet inherits Rectangle {
     callback cancel();
     callback ok(bool);
     property <bool> remember: false;
-    background: #000000b0;
+    property <float> shown;
+    animate shown {
+        duration: 180ms;
+        easing: ease-out;
+    }
+    init => {
+        self.shown = 1;
+    }
+    background: #000000.with-alpha(0.69 * root.shown);
     TouchArea {
         clicked => {
             root.cancel();
         }
     }
     Rectangle {
+        opacity: root.shown;
+        y: (parent.height - self.height) / 2 + (1 - root.shown) * 12px;
         width: min(380px, parent.width - 40px);
         height: card.preferred-height;
         border-radius: 12px;

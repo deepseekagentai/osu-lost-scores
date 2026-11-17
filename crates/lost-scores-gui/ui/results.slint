@@ -1490,8 +1490,17 @@ export component ResultsPanel inherits Rectangle {
         }
     }
     if State.send-menu-open: Rectangle {
+        property <float> shown;
+        animate shown {
+            duration: 150ms;
+            easing: ease-out;
+        }
+        init => {
+            self.shown = 1;
+        }
+        opacity: self.shown;
         x: max(8px, min(State.send-menu-x - root.absolute-position.x, root.width - self.width - 8px));
-        y: State.send-menu-y - root.absolute-position.y;
+        y: State.send-menu-y - root.absolute-position.y - (1 - self.shown) * 6px;
         width: 236px;
         height: menu.preferred-height;
         border-radius: 10px;
@@ -1586,10 +1595,19 @@ export component ResultsPanel inherits Rectangle {
         }
     }
     if State.scans-open: scans-menu := Rectangle {
+        property <float> shown;
+        animate shown {
+            duration: 150ms;
+            easing: ease-out;
+        }
+        init => {
+            self.shown = 1;
+        }
+        opacity: self.shown;
         property <length> footer: (State.scans.length > 1 ? 9px + 30px : 0px) + 9px + 30px;
         property <length> list-height: min(State.scans.length * 34px + (State.scans.length > 1 ? 26px : 0px), 380px - 16px - self.footer);
         x: root.show-back ? 74px : 26px;
-        y: 24px + 42px + 6px;
+        y: 24px + 42px + 6px - (1 - self.shown) * 6px;
         width: 320px;
         height: 16px + self.list-height + self.footer;
         border-radius: 10px;

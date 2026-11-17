@@ -22,13 +22,23 @@ component Credit inherits HorizontalLayout {
 }
 
 export component AboutSheet inherits Rectangle {
-    background: #000000b0;
+    property <float> shown;
+    animate shown {
+        duration: 180ms;
+        easing: ease-out;
+    }
+    init => {
+        self.shown = 1;
+    }
+    background: #000000.with-alpha(0.69 * root.shown);
     TouchArea {
         clicked => {
             State.close-about();
         }
     }
     Rectangle {
+        opacity: root.shown;
+        y: (parent.height - self.height) / 2 + (1 - root.shown) * 12px;
         width: min(440px, parent.width - 40px);
         height: min(card.preferred-height, parent.height - 40px);
         border-radius: 12px;
