@@ -155,7 +155,14 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     )?;
     proceed!();
     let scores = find(&read.scan, &catalog, &mut timings);
-    let found = lost(&scores, &catalog);
+    let mut found = lost(&scores, &catalog);
+    pipeline::fill_set_ids(
+        job.source.maps.as_deref(),
+        &mut found,
+        &mut catalog,
+        &mut *api,
+        &mut events,
+    )?;
     let result =
         pipeline::potential_top(api, &player, &scores, &catalog, &mut timings, &mut events)?;
     proceed!();

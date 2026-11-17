@@ -186,6 +186,7 @@ mod tests {
                 (*md5).into(),
                 MapInfo {
                     beatmap_id: *beatmap_id,
+                    beatmapset_id: None,
                     status: *status,
                     ranked_at: None,
                     outdated: false,

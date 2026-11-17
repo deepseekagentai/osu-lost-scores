@@ -70,7 +70,11 @@ pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
                     .get(&header.beatmap_md5)
                     .and_then(|info| info.beatmap_id)
                     .or(metadata.and_then(|m| m.beatmap_id)),
-                beatmapset_id: metadata.and_then(|m| m.beatmapset_id),
+                beatmapset_id: metadata.and_then(|m| m.beatmapset_id).or_else(|| {
+                    catalog
+                        .get(&header.beatmap_md5)
+                        .and_then(|info| info.beatmapset_id)
+                }),
                 artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
                 title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                 version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
@@ -208,6 +212,7 @@ pub fn potential_rows(
     online: &[Score],
     found: &[LostScore],
     lost: &[(usize, Play)],
+    catalog: &MapCatalog,
 ) -> Vec<PotentialRow> {
     potential
         .top
@@ -240,7 +245,11 @@ pub fn potential_rows(
                     let metadata = play.beatmap.as_ref().map(|beatmap| &beatmap.metadata);
                     Details {
                         lost: true,
-                        beatmapset_id: metadata.and_then(|m| m.beatmapset_id),
+                        beatmapset_id: metadata.and_then(|m| m.beatmapset_id).or_else(|| {
+                            catalog
+                                .get(&play.header.beatmap_md5)
+                                .and_then(|info| info.beatmapset_id)
+                        }),
                         artist: metadata.map(|m| m.artist.clone()).unwrap_or_default(),
                         title: metadata.map(|m| m.title.clone()).unwrap_or_default(),
                         version: metadata.map(|m| m.version.clone()).unwrap_or_default(),
@@ -344,7 +353,7 @@ mod tests {
     use std::path::PathBuf;
 
     use lost_scores_core::lost::LostScore;
-    use lost_scores_core::maps::{MapCatalog, MapStatus};
+    use lost_scores_core::maps::{MapCatalog, MapInfo, MapStatus};
     use lost_scores_core::potential::{Origin, Play, Potential, Ranked};
     use lost_scores_core::{LocalBeatmap, ScannedReplay};
     use osu_api::{Score, ScoreBeatmap, ScoreBeatmapset, ScoreStatistics};
@@ -587,7 +596,7 @@ mod tests {
             status: MapStatus::Ranked,
         }];
         let lost = [(0, potential.top[1].play)];
-        let rows = potential_rows(&potential, &scores, &found, &lost);
+        let rows = potential_rows(&potential, &scores, &found, &lost, &MapCatalog::default());
         assert_eq!(rows[0].weighted, rows[0].pp);
         assert!((rows[1].weighted - rows[1].pp * 0.95).abs() < 1e-9);
         assert!(!rows[0].lost);
@@ -605,6 +614,22 @@ mod tests {
         assert_eq!(rows[0].unix_time, 1_725_745_440);
         assert_eq!(rows[1].unix_time, played.header.unix_time());
         assert_ne!(rows[1].unix_time, 0);
+    }
+
+    fn catalog_with_set(md5: &str, set: u32) -> MapCatalog {
+        let mut catalog = MapCatalog::default();
+        catalog.insert(
+            md5.into(),
+            MapInfo {
+                beatmap_id: Some(1),
+                beatmapset_id: Some(set),
+                status: MapStatus::Ranked,
+                ranked_at: None,
+                outdated: false,
+                checked_at: None,
+            },
+        );
+        catalog
     }
 
     #[test]
@@ -630,6 +655,28 @@ mod tests {
             rows(&missing, &MapCatalog::default())[0].beatmapset_id,
             None
         );
+        let mut old_file = replay("o.osr", 10_000_000, 300.0, 1_728_470_722);
+        if let Some(beatmap) = old_file.beatmap.as_mut() {
+            beatmap.metadata.beatmapset_id = None;
+        }
+        let mut catalog = MapCatalog::default();
+        catalog.insert(
+            old_file.header.beatmap_md5.clone(),
+            MapInfo {
+                beatmap_id: Some(10),
+                beatmapset_id: Some(44),
+                status: MapStatus::Ranked,
+                ranked_at: None,
+                outdated: false,
+                checked_at: None,
+            },
+        );
+        let old = [LostScore {
+            play: &old_file,
+            kept: &old_file,
+            status: MapStatus::Ranked,
+        }];
+        assert_eq!(rows(&old, &catalog)[0].beatmapset_id, Some(44));
         assert_eq!(online_rows(&[score()])[0].beatmapset_id, Some(2));
         let (potential, scores, played) = sample();
         let found = [LostScore {
@@ -638,9 +685,32 @@ mod tests {
             status: MapStatus::Ranked,
         }];
         let lost_plays = [(0, potential.top[1].play)];
-        let potential_rows = potential_rows(&potential, &scores, &found, &lost_plays);
+        let potential_rows = potential_rows(
+            &potential,
+            &scores,
+            &found,
+            &lost_plays,
+            &MapCatalog::default(),
+        );
         assert_eq!(potential_rows[0].beatmapset_id, Some(2));
         assert_eq!(potential_rows[1].beatmapset_id, Some(1));
+        let (_, _, mut bare_played) = sample();
+        if let Some(beatmap) = bare_played.beatmap.as_mut() {
+            beatmap.metadata.beatmapset_id = None;
+        }
+        let bare_found = [LostScore {
+            play: &bare_played,
+            kept: &bare_played,
+            status: MapStatus::Ranked,
+        }];
+        let from_catalog = super::potential_rows(
+            &potential,
+            &scores,
+            &bare_found,
+            &lost_plays,
+            &catalog_with_set(&bare_played.header.beatmap_md5, 45),
+        );
+        assert_eq!(from_catalog[1].beatmapset_id, Some(45));
     }
 
     #[test]

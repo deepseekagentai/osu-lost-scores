@@ -298,6 +298,7 @@ fn an_expired_login_in_the_status_refresh_ends_with_its_own_message() {
         "a".repeat(32),
         MapInfo {
             beatmap_id: Some(5),
+            beatmapset_id: None,
             status: MapStatus::Graveyard,
             ranked_at: None,
             outdated: false,

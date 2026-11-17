@@ -101,6 +101,7 @@ fn download<E, S: MapSource<Error = E> + OsuFiles<Error = E> + ?Sized>(
                 md5,
                 MapInfo {
                     beatmap_id: None,
+                    beatmapset_id: None,
                     status: MapStatus::Unknown,
                     ranked_at: None,
                     outdated: false,
@@ -209,6 +210,7 @@ mod tests {
                 checksum: Some(md5.into()),
                 info: MapInfo {
                     beatmap_id: Some(id),
+                    beatmapset_id: None,
                     status: MapStatus::Ranked,
                     ranked_at: None,
                     outdated: false,
@@ -433,6 +435,7 @@ mod tests {
     fn old_entry(checked_at: Option<i64>) -> MapInfo {
         MapInfo {
             beatmap_id: Some(5),
+            beatmapset_id: None,
             status: MapStatus::Ranked,
             ranked_at: Some(1_500_000_000),
             outdated: true,

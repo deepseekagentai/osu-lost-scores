@@ -55,6 +55,8 @@ impl MapStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MapInfo {
     pub beatmap_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beatmapset_id: Option<u32>,
     pub status: MapStatus,
     pub ranked_at: Option<i64>,
     #[serde(default)]
@@ -294,6 +296,7 @@ pub fn fill<S: MapSource + ?Sized>(
                     report.not_found += 1;
                     MapInfo {
                         beatmap_id: None,
+                        beatmapset_id: None,
                         status: MapStatus::Unknown,
                         ranked_at: None,
                         outdated: false,
@@ -357,10 +360,34 @@ pub fn refresh<S: MapSource + ?Sized>(
             }
             info.status = found.status;
             info.ranked_at = found.ranked_at;
+            info.beatmapset_id = found.beatmapset_id.or(info.beatmapset_id);
         }
         info.checked_at = Some(now);
     }
     Ok(changed)
+}
+
+pub fn fill_set_ids<S: MapSource + ?Sized>(
+    catalog: &mut MapCatalog,
+    ids: &[u32],
+    source: &mut S,
+) -> Result<HashMap<u32, u32>, S::Error> {
+    let mut sets = HashMap::new();
+    for chunk in ids.chunks(source.batch_size()) {
+        for map in source.batch(chunk)? {
+            if let (Some(id), Some(set)) = (map.info.beatmap_id, map.info.beatmapset_id) {
+                sets.insert(id, set);
+            }
+        }
+    }
+    for info in catalog.maps.values_mut() {
+        if info.beatmapset_id.is_none()
+            && let Some(set) = info.beatmap_id.and_then(|id| sets.get(&id))
+        {
+            info.beatmapset_id = Some(*set);
+        }
+    }
+    Ok(sets)
 }
 
 #[cfg(test)]
@@ -374,7 +401,7 @@ mod tests {
 
     use super::{
         BATCH_SIZE, CatalogError, FetchedMap, FillReport, MapCatalog, MapInfo, MapSource,
-        MapStatus, RECHECK_AFTER, Wanted, fill, refresh, stale, wanted,
+        MapStatus, RECHECK_AFTER, Wanted, fill, fill_set_ids, refresh, stale, wanted,
     };
     use crate::{LocalBeatmap, ScannedReplay};
 
@@ -398,6 +425,7 @@ mod tests {
             catalog.get("aaaa"),
             Some(&MapInfo {
                 beatmap_id: Some(11),
+                beatmapset_id: None,
                 status: MapStatus::Ranked,
                 ranked_at: Some(1557000000),
                 outdated: false,
@@ -476,6 +504,7 @@ mod tests {
     fn info(id: u32, status: MapStatus) -> MapInfo {
         MapInfo {
             beatmap_id: Some(id),
+            beatmapset_id: None,
             status,
             ranked_at: Some(1_400_000_000),
             outdated: false,
@@ -671,11 +700,81 @@ mod tests {
         assert_eq!(loaded.get("a"), Some(&info(11, MapStatus::Ranked)));
     }
 
+    #[test]
+    fn set_numbers_are_filled_in_only_where_they_are_missing() {
+        let mut catalog = MapCatalog::default();
+        catalog.insert("old".into(), info(11, MapStatus::Ranked));
+        catalog.insert(
+            "known".into(),
+            MapInfo {
+                beatmapset_id: Some(7),
+                ..info(12, MapStatus::Ranked)
+            },
+        );
+        let mut source = FakeSource {
+            batch: vec![
+                FetchedMap {
+                    checksum: Some("old".into()),
+                    info: MapInfo {
+                        beatmapset_id: Some(5),
+                        ..info(11, MapStatus::Loved)
+                    },
+                },
+                FetchedMap {
+                    checksum: Some("known".into()),
+                    info: MapInfo {
+                        beatmapset_id: Some(9),
+                        ..info(12, MapStatus::Ranked)
+                    },
+                },
+            ],
+            size: Some(1),
+            ..FakeSource::default()
+        };
+        let sets = fill_set_ids(&mut catalog, &[11, 12], &mut source).unwrap();
+        assert_eq!(source.batch_calls, [vec![11], vec![12]]);
+        assert_eq!(sets.get(&11), Some(&5));
+        assert_eq!(catalog.get("old").unwrap().beatmapset_id, Some(5));
+        assert_eq!(catalog.get("old").unwrap().status, MapStatus::Ranked);
+        assert_eq!(catalog.get("known").unwrap().beatmapset_id, Some(7));
+    }
+
+    #[test]
+    fn an_old_catalog_without_set_numbers_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("maps.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"maps":{"a":{"beatmap_id":11,"status":"ranked","ranked_at":1400000000}}}"#,
+        )
+        .unwrap();
+        let loaded = MapCatalog::load(&path).unwrap();
+        assert_eq!(loaded.get("a").unwrap().beatmapset_id, None);
+        let mut known = loaded.clone();
+        known.insert(
+            "b".into(),
+            MapInfo {
+                beatmapset_id: Some(3),
+                ..info(12, MapStatus::Ranked)
+            },
+        );
+        known.save(&path).unwrap();
+        assert_eq!(
+            MapCatalog::load(&path)
+                .unwrap()
+                .get("b")
+                .unwrap()
+                .beatmapset_id,
+            Some(3)
+        );
+    }
+
     const NOW: i64 = 1_800_000_000;
 
     fn entry(id: u32, status: MapStatus, checked_at: Option<i64>) -> MapInfo {
         MapInfo {
             beatmap_id: Some(id),
+            beatmapset_id: None,
             status,
             ranked_at: None,
             outdated: false,

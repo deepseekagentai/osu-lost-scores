@@ -132,6 +132,8 @@ pub struct Beatmapset {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Beatmap {
     pub id: u32,
+    #[serde(default)]
+    pub beatmapset_id: Option<u32>,
     pub checksum: Option<String>,
     pub status: String,
     pub beatmapset: Option<Beatmapset>,

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use lost_scores_core::lost::LostScore;
-use lost_scores_core::maps::{self, MapCatalog, MapSource, Wanted};
+use lost_scores_core::maps::{self, MapCatalog, MapSource, MapStatus, Wanted};
 use lost_scores_core::missing::{MissingError, OsuFiles, fetch_missing, missing_maps};
 use lost_scores_core::potential::{self, Play};
 use lost_scores_core::{Scan, Stage, lost as find_lost, pp};
@@ -422,6 +422,55 @@ pub fn lost(found: &[LostScore<'_>], catalog: &MapCatalog) -> Lost {
     }
 }
 
+pub fn fill_set_ids(
+    maps: Option<&Path>,
+    found: &mut Lost,
+    catalog: &mut MapCatalog,
+    api: &mut dyn Api,
+    events: &mut dyn FnMut(Event),
+) -> Result<()> {
+    let mut ids: Vec<u32> = found
+        .rows
+        .iter()
+        .filter(|row| row.beatmapset_id.is_none())
+        .filter(|row| {
+            catalog
+                .get(&row.beatmap_md5)
+                .is_some_and(|info| info.status != MapStatus::Unknown)
+        })
+        .filter_map(|row| row.beatmap_id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let sets = match maps::fill_set_ids(catalog, &ids, api) {
+        Ok(sets) => sets,
+        Err(ApiError::LoginRequired) => return Err(ApiError::LoginRequired.into()),
+        Err(error) => {
+            events(Event::Log(format!(
+                "Could not get the beatmap sets of {} maps: {}",
+                ids.len(),
+                printable(&error.to_string())
+            )));
+            return Ok(());
+        }
+    };
+    if sets.is_empty() {
+        return Ok(());
+    }
+    if let Some(path) = catalog_file(maps) {
+        catalog.save(&path)?;
+    }
+    for row in &mut found.rows {
+        if row.beatmapset_id.is_none() {
+            row.beatmapset_id = row.beatmap_id.and_then(|id| sets.get(&id).copied());
+        }
+    }
+    Ok(())
+}
+
 const NO_STATISTICS: &str =
     "The osu! API sent no statistics for this player; the Potential Top is left out";
 
@@ -500,7 +549,7 @@ pub fn potential(
         potential_accuracy: result.accuracy,
         global_rank: player.global_rank,
         lost_in_top: result.lost_in_top,
-        rows: potential_rows(&result, &scores, found, &lost),
+        rows: potential_rows(&result, &scores, found, &lost, catalog),
         online: online_rows(&scores),
     })
 }

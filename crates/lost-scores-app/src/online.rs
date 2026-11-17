@@ -106,6 +106,7 @@ pub(crate) fn fetched(beatmap: Beatmap) -> FetchedMap {
         checksum: beatmap.checksum,
         info: MapInfo {
             beatmap_id: Some(beatmap.id),
+            beatmapset_id: beatmap.beatmapset_id,
             status: MapStatus::from_name(&beatmap.status),
             ranked_at,
             outdated: false,
@@ -151,6 +152,7 @@ mod tests {
     fn api_beatmap_becomes_a_catalog_entry() {
         let beatmap = Beatmap {
             id: 402752,
+            beatmapset_id: Some(158023),
             checksum: Some("dd00049a".into()),
             status: "loved".into(),
             beatmapset: Some(Beatmapset {
@@ -164,6 +166,7 @@ mod tests {
                 checksum: Some("dd00049a".into()),
                 info: MapInfo {
                     beatmap_id: Some(402752),
+                    beatmapset_id: Some(158023),
                     status: MapStatus::Loved,
                     ranked_at: Some(1_407_243_744),
                     outdated: false,

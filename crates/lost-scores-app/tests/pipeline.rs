@@ -7,11 +7,13 @@ use common::{Isolated, Replay, isolate_environment, write};
 use lost_scores_app::history;
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    Api, Event, Lost, PlayerLookup, Source, Step, find, load_catalog, lost, potential, read,
-    refresh_statuses, saved, unix_now,
+    Api, Event, Lost, PlayerLookup, Source, Step, fill_set_ids, find, load_catalog, lost,
+    potential, read, refresh_statuses, saved, unix_now,
 };
+use lost_scores_app::rows::{Hits, LostRow};
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
+use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::{FetchedMap, MapCatalog, MapInfo, MapSource, MapStatus};
 use lost_scores_core::missing::OsuFiles;
 use osu_api::{ApiError, Score, ScoreBeatmap, ScoreBeatmapset, ScoreStatistics};
@@ -33,6 +35,7 @@ struct Fake {
     lookup_failure: Option<u16>,
     shared: bool,
     expired: bool,
+    sets: Vec<(u32, u32)>,
 }
 
 impl MapSource for Fake {
@@ -46,7 +49,22 @@ impl MapSource for Fake {
         if self.fail_batch {
             return Err(ApiError::Network("down".into()));
         }
-        Ok(Vec::new())
+        Ok(self
+            .sets
+            .iter()
+            .filter(|(id, _)| ids.contains(id))
+            .map(|&(id, set)| FetchedMap {
+                checksum: None,
+                info: MapInfo {
+                    beatmap_id: Some(id),
+                    beatmapset_id: Some(set),
+                    status: MapStatus::Ranked,
+                    ranked_at: None,
+                    outdated: false,
+                    checked_at: None,
+                },
+            })
+            .collect())
     }
 
     fn lookup(&mut self, md5: &str) -> Result<Option<FetchedMap>, ApiError> {
@@ -58,6 +76,7 @@ impl MapSource for Fake {
             checksum: Some(md5.to_owned()),
             info: MapInfo {
                 beatmap_id: Some(11),
+                beatmapset_id: None,
                 status: MapStatus::Ranked,
                 ranked_at: None,
                 outdated: false,
@@ -494,6 +513,7 @@ fn refresh_is_a_separate_step() {
         SAMPLE_MD5.to_owned(),
         MapInfo {
             beatmap_id: Some(5),
+            beatmapset_id: None,
             status: MapStatus::Pending,
             ranked_at: None,
             outdated: false,
@@ -560,6 +580,7 @@ fn a_failed_status_refresh_warns_and_carries_on() {
         SAMPLE_MD5.to_owned(),
         MapInfo {
             beatmap_id: Some(5),
+            beatmapset_id: None,
             status: MapStatus::Pending,
             ranked_at: None,
             outdated: false,
@@ -604,6 +625,7 @@ fn an_expired_login_stops_the_status_refresh_instead_of_a_warning() {
         SAMPLE_MD5.to_owned(),
         MapInfo {
             beatmap_id: Some(5),
+            beatmapset_id: None,
             status: MapStatus::Pending,
             ranked_at: None,
             outdated: false,
@@ -824,4 +846,96 @@ fn read_maps_scan_progress_to_the_songs_replays_and_pp_steps() {
     assert_eq!(last(Step::Replays), Some((2, 2)));
     assert_eq!(last(Step::Pp), Some((2, 2)));
     assert_eq!(last(Step::MissingMaps), None);
+}
+
+fn lost_row(md5: &str, beatmap_id: u32, beatmapset_id: Option<u32>) -> LostRow {
+    LostRow {
+        pp: 300.0,
+        kept_pp: 200.0,
+        score: 1_000_000,
+        kept_score: 900_000,
+        mods: String::new(),
+        unix_time: 1_700_000_000,
+        played: "2023-11-14 22:13".into(),
+        status: MapStatus::Ranked,
+        beatmap_md5: md5.into(),
+        beatmap_id: Some(beatmap_id),
+        beatmapset_id,
+        artist: "A".into(),
+        title: "T".into(),
+        version: "V".into(),
+        file: format!("{md5}.osr"),
+        creator: "M".into(),
+        hits: Hits {
+            n300: 300,
+            n100: 2,
+            n50: 0,
+            misses: 0,
+        },
+        accuracy: 99.5,
+        grade: Grade::S,
+        max_combo: 500,
+    }
+}
+
+#[test]
+fn lost_plays_without_a_set_number_get_one_in_a_single_request() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("maps.json");
+    let mut fake = Fake {
+        sets: vec![(11, 44), (13, 46)],
+        ..Fake::default()
+    };
+    let known = |beatmap_id: u32, status: MapStatus| MapInfo {
+        beatmap_id: Some(beatmap_id),
+        beatmapset_id: None,
+        status,
+        ranked_at: None,
+        outdated: false,
+        checked_at: None,
+    };
+    let mut catalog = MapCatalog::default();
+    catalog.insert("a".into(), known(11, MapStatus::Ranked));
+    catalog.insert("b".into(), known(12, MapStatus::Ranked));
+    catalog.insert("c".into(), known(13, MapStatus::Unknown));
+    let mut found = Lost {
+        rows: vec![
+            lost_row("a", 11, None),
+            lost_row("b", 12, Some(7)),
+            lost_row("c", 13, None),
+        ],
+        total: 3,
+        ranked: 2,
+    };
+    let mut events = Vec::new();
+    fill_set_ids(
+        Some(&path),
+        &mut found,
+        &mut catalog,
+        &mut fake,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert_eq!(fake.calls, ["batch [11]"]);
+    assert_eq!(found.rows[0].beatmapset_id, Some(44));
+    assert_eq!(found.rows[1].beatmapset_id, Some(7));
+    assert_eq!(found.rows[2].beatmapset_id, None);
+    assert_eq!(
+        MapCatalog::load(&path)
+            .unwrap()
+            .get("a")
+            .unwrap()
+            .beatmapset_id,
+        Some(44)
+    );
+    fake.calls.clear();
+    fill_set_ids(
+        Some(&path),
+        &mut found,
+        &mut catalog,
+        &mut fake,
+        &mut collect(&mut events),
+    )
+    .unwrap();
+    assert!(fake.calls.is_empty(), "{:?}", fake.calls);
 }
