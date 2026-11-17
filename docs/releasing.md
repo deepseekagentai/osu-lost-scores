@@ -17,6 +17,15 @@ The files:
 
 While the repository is private, a macOS minute of GitHub Actions counts ten times, so macOS builds only in this workflow.
 
+## When osu! changes the pp formula
+
+The backend reads once a day which `ppy.osu.Game.Rulesets.Osu` version osu-queue-score-statistics deploys and sends one Telegram alert when it is not the app's formula.
+
+1. Bring the rosu-pp fork up to the new version and check it on the parity stand (`.migration/pp-stand/`): 199 of 200 plays of the top within 0.01 pp is the bar.
+2. Pin the new fork commit in `crates/lost-scores-core/Cargo.toml` and set `FORMULA` in `crates/lost-scores-core/src/pp.rs` to the new version.
+3. Set `FORMULA` in `src/formula.ts` of the backend to the same version and deploy it, so that the alert stops.
+4. Release the app as above.
+
 ## macOS check
 
 On a Mac with Apple Silicon, with the zip downloaded from the draft or the test build.
