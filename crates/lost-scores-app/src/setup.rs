@@ -28,6 +28,7 @@ pub struct Settings {
     pub show_lost_in_top_image: bool,
     pub scores_to_show: u16,
     pub catbox_confirmed: bool,
+    pub update_checked_at: Option<i64>,
 }
 
 impl Default for Settings {
@@ -40,6 +41,7 @@ impl Default for Settings {
             show_lost_in_top_image: false,
             scores_to_show: DEFAULT_SCORES_TO_SHOW,
             catbox_confirmed: false,
+            update_checked_at: None,
         }
     }
 }
