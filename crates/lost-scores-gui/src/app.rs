@@ -36,7 +36,7 @@ use crate::send::{self, Call, Courier, Reply};
 use crate::share::render::{ShareImage, images_in};
 use crate::share::upload::{self, Choices, Consent};
 use crate::table::{Column, Tab, Table, anchor_index, tone, when, when_short};
-use crate::update::update_message;
+use crate::update::{self, Outcome};
 use crate::view::{RowsModel, foot, mods_width};
 use crate::worker::{self, Job, Message, Sink};
 use crate::{APP_ID, LogEntry, MainWindow, Preview, State, choose_folder, show_path};
@@ -48,6 +48,7 @@ const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
 const SITE: &str = "https://lost.lemon4ik.kz";
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const COPIED_FOR: Duration = Duration::from_secs(2);
 const CATBOX_DONE_FOR: Duration = Duration::from_secs(4);
 const CATBOX_FAILED_FOR: Duration = Duration::from_secs(6);
@@ -295,6 +296,16 @@ impl Session {
         self.load_newest();
         self.refresh_avatar();
         self.restore(stored_login(), stored_credentials());
+        let program = std::env::current_exe().unwrap_or_default();
+        for leftover in update::leftovers(update::official(), &program) {
+            lost_scores_app::updates::clean_up(&leftover);
+        }
+        if update::due(
+            self.settings.borrow().update_checked_at,
+            pipeline::unix_now(),
+        ) {
+            self.check_updates(false);
+        }
     }
 
     fn restore(self: &Rc<Self>, login: Option<Login>, credentials: Option<Credentials>) {
@@ -598,7 +609,7 @@ impl Session {
         let session = self.clone();
         state.on_confirm_clear_cache(move || session.clear_cache());
         let session = self.clone();
-        state.on_check_updates(move || session.check_updates());
+        state.on_check_updates(move || session.check_updates(true));
     }
 
     fn clear_cache(&self) {
@@ -613,7 +624,7 @@ impl Session {
         }
     }
 
-    fn check_updates(self: &Rc<Self>) {
+    fn check_updates(self: &Rc<Self>, asked: bool) {
         let state = self.window.global::<State>();
         if state.get_checking_updates() {
             return;
@@ -621,23 +632,45 @@ impl Session {
         state.set_checking_updates(true);
         let weak = self.weak.clone();
         thread::spawn(move || {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(UPDATE_TIMEOUT))
-                .user_agent(lost_scores_app::online::USER_AGENT)
-                .build()
-                .into();
-            let result = latest_release(&agent);
+            let agent = |timeout| -> ureq::Agent {
+                ureq::Agent::config_builder()
+                    .timeout_global(Some(timeout))
+                    .user_agent(lost_scores_app::online::USER_AGENT)
+                    .build()
+                    .into()
+            };
+            let outcome = latest_release(&agent(UPDATE_TIMEOUT)).map(|release| {
+                update::update(
+                    release,
+                    env!("CARGO_PKG_VERSION"),
+                    update::official(),
+                    &std::env::current_exe().unwrap_or_default(),
+                    lost_scores_app::updates::PUBLIC_KEY,
+                    &mut agent(DOWNLOAD_TIMEOUT),
+                )
+            });
             on_ui(&weak, move |app| {
                 app.window.global::<State>().set_checking_updates(false);
-                match result {
-                    Ok(release) => {
-                        let message = update_message(env!("CARGO_PKG_VERSION"), release.as_ref());
-                        app.log(&message.text);
-                        if let Some(url) = message.open {
-                            app.launch("the page", url.into());
+                match outcome {
+                    Ok(outcome) => {
+                        app.change_settings(|settings| {
+                            settings.update_checked_at = Some(pipeline::unix_now())
+                        });
+                        if asked || !matches!(outcome, Outcome::Latest | Outcome::NoReleases) {
+                            app.log(&outcome.text());
+                        }
+                        if let Outcome::Manual {
+                            page: Some(page), ..
+                        } = outcome
+                            && asked
+                        {
+                            app.launch("the page", page.into());
                         }
                     }
-                    Err(error) => app.log(&format!("Could not check for updates: {error:#}")),
+                    Err(error) if asked => {
+                        app.log(&format!("Could not check for updates: {error:#}"))
+                    }
+                    Err(_) => {}
                 }
             });
         });
