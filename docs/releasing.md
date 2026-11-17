@@ -73,5 +73,7 @@ On a real Windows 10 or 11 machine with osu!stable, with the exe downloaded from
 
 The window checks the latest release once a day. A newer signed release is downloaded, checked and put in place of the program, which runs it from the next start. Only the release workflow builds copies that update themselves (`LOST_SCORES_OFFICIAL`); a copy built from source only names the new version and opens its page.
 
+`scripts/sign-release.sh` signs only a draft whose tag points at the same commit as the local tag, after it has downloaded every file of the draft and checked that each carries the version of the tag and matches `SHA256SUMS`, with nothing listed that the release lacks. It cannot tell whether the build itself was honest: once the repository is public, add build provenance (GitHub artifact attestations) to the release workflow and check it in the script before signing.
+
 The public key is `PUBLIC_KEY` in `crates/lost-scores-app/src/updates.rs`. The secret key and its password stay with the author and are kept in a second safe place; they never go into the repository or into GitHub secrets. If the secret key is lost, make a new pair with `minisign -G`, put the new public key into `PUBLIC_KEY` and release; copies with the old key then update once by hand.
 
