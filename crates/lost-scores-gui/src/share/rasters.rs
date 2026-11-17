@@ -242,7 +242,9 @@ pub fn covers(
             for (set_id, bytes) in made {
                 match bytes {
                     Some(bytes) => {
-                        let _ = write_atomic(&cover_file(cache_dir, set_id), &bytes);
+                        if keep(&cover_file(cache_dir, set_id), &bytes).is_err() {
+                            covers.failed += 1;
+                        }
                         covers.found.insert(set_id, bytes);
                         done += 1;
                         progress(done, total);
@@ -450,12 +452,16 @@ pub(crate) fn cached(
         bail!("the download is not an image");
     }
     if let Some(file) = file {
-        if let Some(parent) = file.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = write_atomic(file, &bytes);
+        let _ = keep(file, &bytes);
     }
     Ok(Some(bytes))
+}
+
+fn keep(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_atomic(file, bytes)
 }
 
 #[cfg(test)]
@@ -544,6 +550,63 @@ mod tests {
         let cover = image::load_from_memory(&found.found[&123]).unwrap();
         assert_eq!((cover.width(), cover.height()), (900, 250));
         assert!(cache.path().join("123.jpg").is_file());
+    }
+
+    #[test]
+    fn covers_cut_on_the_first_run_reach_the_image_step() {
+        let songs = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("covers");
+        songs_with(
+            songs.path(),
+            "123 Artist - Title",
+            "0,0,\"bg.jpg\",0,0",
+            Some(("bg.jpg", jpeg(1920, 1080))),
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let cut = covers(
+            &[123],
+            &cache,
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert_eq!(cut.failed, 0);
+        let mut offline = Counting::new(Vec::new());
+        let drawn = covers(
+            &[123],
+            &cache,
+            None,
+            &mut CachedCovers(&mut offline),
+            &mut |_, _| {},
+        );
+        assert!(
+            drawn.found.contains_key(&123),
+            "the image step got no cover"
+        );
+        assert!(fetch.calls.is_empty() && offline.calls.is_empty());
+    }
+
+    #[test]
+    fn a_cut_cover_that_cannot_be_kept_counts_as_failed() {
+        let songs = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("file"), b"x").unwrap();
+        songs_with(
+            songs.path(),
+            "123 Artist - Title",
+            "0,0,\"bg.jpg\",0,0",
+            Some(("bg.jpg", jpeg(1920, 1080))),
+        );
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let cut = covers(
+            &[123],
+            &root.path().join("file").join("covers"),
+            Some(songs.path()),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert_eq!(cut.failed, 1);
     }
 
     #[test]
