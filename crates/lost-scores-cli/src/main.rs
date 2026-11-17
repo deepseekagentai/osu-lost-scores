@@ -111,7 +111,7 @@ enum Command {
     },
     #[command(about = "Scan and send the scan to your profile on the Lost Scores server")]
     Submit {
-        #[arg(long, help = "Also publish it to the Hall of Fame")]
+        #[arg(long, help = "Also publish it to the Hall of Copium")]
         publish: bool,
         #[arg(
             long,
@@ -169,7 +169,7 @@ const EXAMPLES: [(&str, &str); 7] = [
     ),
     (
         "lost-scores submit --publish",
-        "send the scan to your profile and the Hall of Fame",
+        "send the scan to your profile and the Hall of Copium",
     ),
     (
         "lost-scores login --keys",

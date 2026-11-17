@@ -798,7 +798,7 @@ component OfferCard inherits Rectangle {
                 }
             }
             Text {
-                text: "Hall of Fame";
+                text: "Hall of Copium";
                 color: #ffffff;
                 font-size: 22px;
                 font-weight: 600;
@@ -876,7 +876,7 @@ component OfferCard inherits Rectangle {
                 height: 40px;
                 text: "Publish";
                 enabled: State.can-send && !State.busy && !State.sending;
-                tip: State.busy ? "Wait for the scan to finish" : "Send this scan and show it in the Hall of Fame";
+                tip: State.busy ? "Wait for the scan to finish" : "Send this scan and show it in the Hall of Copium";
                 clicked => {
                     State.publish-offer();
                 }
@@ -1523,7 +1523,7 @@ export component ResultsPanel inherits Rectangle {
                 }
             }
             if State.sent-state == "": MenuRow {
-                text: "Publish to the Hall of Fame";
+                text: "Publish to the Hall of Copium";
                 clicked => {
                     State.send-menu-open = false;
                     State.publish-offer();
@@ -1537,7 +1537,7 @@ export component ResultsPanel inherits Rectangle {
                 }
             }
             if State.sent-state != "": MenuRow {
-                text: State.sent-public ? "Unpublish" : "Publish to the Hall of Fame";
+                text: State.sent-public ? "Unpublish" : "Publish to the Hall of Copium";
                 clicked => {
                     State.send-menu-open = false;
                     if (State.sent-public) {

@@ -282,9 +282,15 @@ export component MainWindow inherits Window {
                     alignment: end;
                     spacing: 18px;
                     Link {
-                        text: "Developer Website";
+                        text: "Hall of Copium";
                         clicked => {
-                            State.open-developer-site();
+                            State.open-hall();
+                        }
+                    }
+                    if State.logged-in: Link {
+                        text: "Your profile";
+                        clicked => {
+                            State.open-profile();
                         }
                     }
                     Link {

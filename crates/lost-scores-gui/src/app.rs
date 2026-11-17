@@ -46,6 +46,8 @@ const ROW_HEIGHT: f32 = 64.0;
 const ACCOUNT_SETTINGS: &str = "https://osu.ppy.sh/home/account/edit";
 const BEATMAP_PAGE: &str = "https://osu.ppy.sh/b/";
 const DEVELOPER_SITE: &str = "https://lemon4ik.kz/";
+const SITE: &str = "https://lost.lemon4ik.kz";
+const SLINT_SITE: &str = "https://slint.dev/";
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
 const COPIED_FOR: Duration = Duration::from_secs(2);
 const CATBOX_DONE_FOR: Duration = Duration::from_secs(4);
@@ -553,6 +555,23 @@ impl Session {
     fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
         let session = self.clone();
         state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
+        let session = self.clone();
+        state.on_open_hall(move || {
+            session.launch("the page", format!("{SITE}/hall-of-copium").into())
+        });
+        let session = self.clone();
+        state.on_open_profile(move || {
+            let page = session
+                .login
+                .borrow()
+                .as_ref()
+                .map(|login| format!("{SITE}/profile/{}", login.osu_id));
+            if let Some(page) = page {
+                session.launch("the page", page.into());
+            }
+        });
+        let session = self.clone();
+        state.on_open_slint_site(move || session.launch("the page", SLINT_SITE.into()));
         let session = self.clone();
         state.on_open_about(move || {
             session.close_popups();
@@ -2945,6 +2964,40 @@ mod tests {
     }
 
     #[test]
+    fn the_footer_opens_the_hall_and_the_profile_on_the_site() {
+        let (window, session, _root) = keyless(650.0);
+        let (sent, received) = std::sync::mpsc::channel();
+        *session.opener.borrow_mut() = std::sync::Arc::new(move |target| {
+            sent.send(target.to_owned()).unwrap();
+            Ok(())
+        });
+        let state = window.global::<State>();
+        session.bind_extras(&state);
+        state.invoke_open_hall();
+        state.invoke_open_profile();
+        state.invoke_open_slint_site();
+        let timeout = std::time::Duration::from_secs(5);
+        let mut opened: Vec<String> = (0..3)
+            .map(|_| {
+                received
+                    .recv_timeout(timeout)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        opened.sort();
+        assert_eq!(
+            opened,
+            [
+                "https://lost.lemon4ik.kz/hall-of-copium".to_owned(),
+                format!("https://lost.lemon4ik.kz/profile/{}", login().osu_id),
+                "https://slint.dev/".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn a_slow_opener_does_not_hold_the_window() {
         let (_window, session, root) = session(650.0);
         shared(&session, root.path());
@@ -4066,7 +4119,7 @@ mod tests {
         state.set_busy(false);
         assert_eq!(
             state.get_share_tip(),
-            "Publish this scan in the Hall of Fame or keep it in your profile"
+            "Publish this scan in the Hall of Copium or keep it in your profile"
         );
     }
 

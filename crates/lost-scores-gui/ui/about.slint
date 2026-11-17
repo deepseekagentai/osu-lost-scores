@@ -1,7 +1,6 @@
-import { AboutSlint } from "std-widgets.slint";
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { PrimaryButton } from "widgets.slint";
+import { Link, PrimaryButton } from "widgets.slint";
 
 component Credit inherits HorizontalLayout {
     in property <string> name;
@@ -72,9 +71,30 @@ export component AboutSheet inherits Rectangle {
             Credit { name: "Fredoka"; licence: "OFL 1.1"; }
             Credit { name: "Slint"; licence: "GPLv3 or the royalty-free licence"; }
             Credit { name: "osu-web artwork © ppy Pty Ltd"; licence: "AGPL-3.0"; }
-            Rectangle { height: 8px; }
-            AboutSlint { }
-            Rectangle { height: 10px; }
+            Rectangle { height: 14px; }
+            HorizontalLayout {
+                spacing: 18px;
+                alignment: start;
+                Link {
+                    text: "Made by KZ_Lemon4ik";
+                    clicked => {
+                        State.open-developer-site();
+                    }
+                }
+                Link {
+                    text: "Made with Slint";
+                    clicked => {
+                        State.open-slint-site();
+                    }
+                }
+                Link {
+                    text: "Check for updates";
+                    clicked => {
+                        State.check-updates();
+                    }
+                }
+            }
+            Rectangle { height: 16px; }
             PrimaryButton {
                 height: 44px;
                 text: "Close";

@@ -1051,6 +1051,10 @@ mod tests {
         state.on_start_scan(record("start-scan"));
         state.on_open_developer_site(record("open-developer-site"));
         state.on_open_about(record("open-about"));
+        state.on_open_hall(record("open-hall"));
+        state.on_open_profile(record("open-profile"));
+        state.on_open_slint_site(record("open-slint-site"));
+        state.on_check_updates(record("check-updates"));
         state.on_delete_older_scans(record("delete-older-scans"));
         state.on_show_images(record("show-images"));
         let tabs = calls.clone();
@@ -1092,14 +1096,42 @@ mod tests {
         for label in [
             "Log in with osu!",
             "Use Custom API Keys",
-            "Developer Website",
+            "Hall of Copium",
             "About",
         ] {
             activate(&window, label);
         }
         assert_eq!(
             *calls.borrow(),
-            ["log-in", "open-keys", "open-developer-site", "open-about"]
+            ["log-in", "open-keys", "open-hall", "open-about"]
+        );
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Your profile")
+                .next()
+                .is_none()
+        );
+        window.global::<State>().set_logged_in(true);
+        settle();
+        activate(&window, "Your profile");
+        assert_eq!(calls.borrow().last(), Some(&"open-profile"));
+    }
+
+    #[test]
+    fn the_about_links_work_without_a_mouse() {
+        let (window, calls) = keyboard_window();
+        record_more(&window, &calls);
+        window.global::<State>().set_about_open(true);
+        settle();
+        for label in [
+            "Made by KZ_Lemon4ik",
+            "Made with Slint",
+            "Check for updates",
+        ] {
+            activate(&window, label);
+        }
+        assert_eq!(
+            *calls.borrow(),
+            ["open-developer-site", "open-slint-site", "check-updates"]
         );
     }
 
@@ -1192,7 +1224,7 @@ mod tests {
         let state = window.global::<State>();
         state.set_send_menu_open(true);
         settle();
-        click_label(&window, "Publish to the Hall of Fame");
+        click_label(&window, "Publish to the Hall of Copium");
         assert!(!state.get_send_menu_open());
         state.set_send_menu_open(true);
         settle();

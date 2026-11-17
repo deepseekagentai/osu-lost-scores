@@ -133,8 +133,8 @@ pub fn published(sent: &Sent) -> bool {
 
 pub fn done(before: Option<&Sent>, after: &Sent) -> &'static str {
     match (before.is_some_and(published), published(after)) {
-        (_, true) => "Published to the Hall of Fame",
-        (true, false) => "Taken out of the Hall of Fame",
+        (_, true) => "Published to the Hall of Copium",
+        (true, false) => "Taken out of the Hall of Copium",
         (false, false) => "Sent to your profile",
     }
 }
