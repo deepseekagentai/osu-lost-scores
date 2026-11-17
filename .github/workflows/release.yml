@@ -61,6 +61,8 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test --workspace --locked
       - name: Build
+        env:
+          LOST_SCORES_OFFICIAL: "1"
         run: cargo build --release --locked -p lost-scores-gui -p lost-scores-cli
       - name: Package (Linux)
         if: runner.os == 'Linux'

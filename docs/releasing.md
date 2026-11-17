@@ -5,7 +5,7 @@
 3. Optional test build: run the Release workflow by hand on main (Actions, Release, "Run workflow", or `gh workflow run release.yml`). It builds the same files with `<version>-test-<commit>` in their names, as the artifacts Linux, Windows and macOS of the run, and creates no release. Run by hand on a tag, it behaves like the tag push.
 4. Tag the rosu-pp commit that `crates/lost-scores-core/Cargo.toml` pins in kz-lemon4ik/rosu-pp as `lost-scores-<version>` and push that tag. A fork branch can be deleted or rewritten; the tag keeps the commit, so the release can always be built from source. Two releases on the same commit simply give it two tags.
 5. Push the tag `v<version>`. The Release workflow checks that the tag matches `Cargo.toml`, builds the files and creates a draft release with them, `SHA256SUMS` and the notes file.
-6. Check the files of the draft (below), then publish the draft by hand.
+6. Check the files of the draft (below), sign it with `scripts/sign-release.sh v<version>`, then publish the draft by hand. The script downloads `SHA256SUMS` of the draft, signs it with the minisign key in `~/.minisign/minisign.key` (it asks for the key's password) and attaches `SHA256SUMS.minisig`. The window installs only releases whose `SHA256SUMS` carries this signature and whose file matches its checksum; an unsigned release is shown to players as a link only.
 
 The files:
 
@@ -68,3 +68,10 @@ On a real Windows 10 or 11 machine with osu!stable, with the exe downloaded from
 ### Clean up
 - [ ] Clear cache removes the avatars and covers only.
 - [ ] Deleting the exe and the two `lost-scores` folders leaves nothing behind.
+
+## The update key
+
+The window checks the latest release once a day. A newer signed release is downloaded, checked and put in place of the program, which runs it from the next start. Only the release workflow builds copies that update themselves (`LOST_SCORES_OFFICIAL`); a copy built from source only names the new version and opens its page.
+
+The public key is `PUBLIC_KEY` in `crates/lost-scores-app/src/updates.rs`. The secret key and its password stay with the author and are kept in a second safe place; they never go into the repository or into GitHub secrets. If the secret key is lost, make a new pair with `minisign -G`, put the new public key into `PUBLIC_KEY` and release; copies with the old key then update once by hand.
+
