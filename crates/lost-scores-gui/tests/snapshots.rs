@@ -800,7 +800,7 @@ fn connect_sample(state: &State<'_>) {
     state.set_status("Scan finished: 9 lost plays, 6 on ranked maps".into());
     state.set_progress(1.0);
     show_log(
-        &state,
+        state,
         &[
             ("[17:50:02]", "player: SamplePlayer"),
             ("[17:50:15]", "9 lost plays found, 6 of them on ranked maps"),
