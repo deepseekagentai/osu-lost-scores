@@ -13,16 +13,22 @@ trap 'rm -rf "$work"' EXIT
 gh release download "$tag" --dir "$work"
 cd "$work"
 rm -f SHA256SUMS.minisig
+expected="lost-scores-$version-windows-x64.exe lost-scores-cli-$version-windows-x64.zip lost-scores-$version-linux-x64.tar.gz lost-scores-$version-macos-arm64.zip lost-scores-cli-$version-macos-arm64.zip"
 for file in *; do
   [ "$file" = SHA256SUMS ] && continue
-  case "$file" in
-    *"-$version-"*) ;;
+  case " $expected " in
+    *" $file "*) ;;
     *) echo "$file is not a file of $tag" >&2; exit 1 ;;
   esac
   grep -q "  $file\$" SHA256SUMS || { echo "$file is not listed in SHA256SUMS" >&2; exit 1; }
 done
+for file in $expected; do
+  [ -f "$file" ] || { echo "$tag has no $file" >&2; exit 1; }
+done
 [ "$(wc -l < SHA256SUMS)" -eq "$(ls | grep -cv '^SHA256SUMS$')" ] || { echo "SHA256SUMS lists files the release does not have" >&2; exit 1; }
 sha256sum --check --strict --quiet SHA256SUMS
+echo "signing these files of $tag:"
+cat SHA256SUMS
 minisign -Sm SHA256SUMS -t "lost-scores $tag"
 minisign -Vm SHA256SUMS -P "$key" > /dev/null
 gh release upload "$tag" SHA256SUMS.minisig --clobber
