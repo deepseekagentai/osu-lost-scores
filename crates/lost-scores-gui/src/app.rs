@@ -59,6 +59,8 @@ struct Session {
     weak: Weak<MainWindow>,
     log: Rc<VecModel<LogEntry>>,
     log_file: Option<PathBuf>,
+    updated: RefCell<Option<String>>,
+    renderer: RefCell<Option<PathBuf>>,
     credentials: RefCell<Option<Credentials>>,
     login: RefCell<Option<Login>>,
     login_epoch: Cell<u64>,
@@ -205,6 +207,8 @@ impl Session {
             window: window.clone_strong(),
             weak: window.as_weak(),
             log: Rc::new(VecModel::default()),
+            updated: RefCell::new(None),
+            renderer: RefCell::new(None),
             log_file: setup::data_root()
                 .map(|dir| dir.join("log.txt"))
                 .inspect(|file| crate::log::rotate(file)),
@@ -296,9 +300,12 @@ impl Session {
         self.load_newest();
         self.refresh_avatar();
         self.restore(stored_login(), stored_credentials());
-        let program = std::env::current_exe().unwrap_or_default();
-        for leftover in update::leftovers(update::official(), &program) {
-            lost_scores_app::updates::clean_up(&leftover);
+        let leftovers = std::mem::take(&mut self.settings.borrow_mut().update_leftovers);
+        if !leftovers.is_empty() {
+            for leftover in &leftovers {
+                lost_scores_app::updates::remove_leftover(leftover);
+            }
+            self.change_settings(|settings| settings.update_leftovers.clear());
         }
         if update::due(
             self.settings.borrow().update_checked_at,
@@ -629,6 +636,14 @@ impl Session {
         if state.get_checking_updates() {
             return;
         }
+        if let Some(version) = self.updated.borrow().clone() {
+            if asked {
+                self.log(&format!(
+                    "Version {version} is installed; restart the program to use it"
+                ));
+            }
+            return;
+        }
         state.set_checking_updates(true);
         let weak = self.weak.clone();
         thread::spawn(move || {
@@ -653,18 +668,28 @@ impl Session {
                 app.window.global::<State>().set_checking_updates(false);
                 match outcome {
                     Ok(outcome) => {
-                        app.change_settings(|settings| {
-                            settings.update_checked_at = Some(pipeline::unix_now())
-                        });
-                        if asked || !matches!(outcome, Outcome::Latest | Outcome::NoReleases) {
+                        if !matches!(outcome, Outcome::Failed(_)) {
+                            app.change_settings(|settings| {
+                                settings.update_checked_at = Some(pipeline::unix_now())
+                            });
+                        }
+                        if asked || !outcome.quiet() {
                             app.log(&outcome.text());
                         }
-                        if let Outcome::Manual {
-                            page: Some(page), ..
-                        } = outcome
-                            && asked
-                        {
-                            app.launch("the page", page.into());
+                        match outcome {
+                            Outcome::Updated { version, installed } => {
+                                *app.updated.borrow_mut() = Some(version);
+                                *app.renderer.borrow_mut() = Some(installed.old_program);
+                                app.change_settings(|settings| {
+                                    settings.update_leftovers = installed.leftovers
+                                });
+                            }
+                            Outcome::Manual {
+                                page: Some(page), ..
+                            } if asked => {
+                                app.launch("the page", page.into());
+                            }
+                            _ => {}
                         }
                     }
                     Err(error) if asked => {
@@ -2083,7 +2108,11 @@ impl Session {
             },
             scans_dir,
             include_all: settings.include_all,
-            renderer: std::env::current_exe().unwrap_or_default(),
+            renderer: self
+                .renderer
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| std::env::current_exe().unwrap_or_default()),
             share_count: usize::from(clamped_scores(settings.scores_to_show)),
             show_lost_in_top: settings.show_lost_in_top_image,
         };
@@ -2665,6 +2694,23 @@ mod tests {
             accuracy: Some(99.0),
             global_rank: Some(1),
         })
+    }
+
+    #[test]
+    fn after_an_update_the_window_keeps_to_its_own_version_until_restart() {
+        let (window, session, _root) = keyless(650.0);
+        let state = window.global::<State>();
+        let old = PathBuf::from("/programs/lost-scores-gui.old");
+        *session.updated.borrow_mut() = Some("9.9.9".to_owned());
+        *session.renderer.borrow_mut() = Some(old.clone());
+        session.check_updates(true);
+        assert!(!state.get_checking_updates());
+        assert_eq!(
+            last_log(&session),
+            "Version 9.9.9 is installed; restart the program to use it"
+        );
+        let (job, _) = session.prepare_scan().unwrap();
+        assert_eq!(job.renderer, old);
     }
 
     #[test]

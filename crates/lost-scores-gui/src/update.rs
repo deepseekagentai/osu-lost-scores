@@ -1,20 +1,24 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use lost_scores_app::updates::{self, Download, Platform, Release};
+use lost_scores_app::updates::{self, Download, Installed, Platform, Refusal, Release};
 
-const RELEASES_URL: &str = "https://github.com/kz-lemon4ik/osu-lost-scores/releases/";
 pub const DAY_S: i64 = 24 * 60 * 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     NoReleases,
     Latest,
-    Updated(String),
+    Updated {
+        version: String,
+        installed: Installed,
+    },
     Manual {
         version: String,
         reason: String,
         page: Option<String>,
     },
+    Unverified,
+    Failed(String),
 }
 
 impl Outcome {
@@ -22,18 +26,29 @@ impl Outcome {
         match self {
             Self::NoReleases => "No releases yet".to_owned(),
             Self::Latest => "You have the latest version".to_owned(),
-            Self::Updated(version) => {
+            Self::Updated { version, .. } => {
                 format!("Updated to version {version}; restart the program to use it")
             }
             Self::Manual {
                 version, reason, ..
             } => format!("Version {version} is out, but it was not installed: {reason}"),
+            Self::Unverified => {
+                "An update was found, but it could not be verified, so it was not installed"
+                    .to_owned()
+            }
+            Self::Failed(reason) => format!("Could not check for updates: {reason}"),
         }
+    }
+
+    pub fn quiet(&self) -> bool {
+        matches!(self, Self::NoReleases | Self::Latest | Self::Failed(_))
     }
 }
 
 pub fn official() -> Option<Platform> {
-    option_env!("LOST_SCORES_OFFICIAL").and(Platform::current())
+    option_env!("LOST_SCORES_OFFICIAL")
+        .filter(|value| !value.is_empty())
+        .and(Platform::current())
 }
 
 pub fn due(checked_at: Option<i64>, now: i64) -> bool {
@@ -55,34 +70,35 @@ pub fn update(
         return Outcome::Latest;
     }
     let version = release.tag.trim_start_matches(['v', 'V']).to_owned();
-    let page = release
-        .url
-        .starts_with(RELEASES_URL)
-        .then(|| release.url.clone());
-    let manual = |reason: String| Outcome::Manual {
+    let manual = |reason: &str| Outcome::Manual {
         version: version.clone(),
-        reason,
-        page: page.clone(),
+        reason: reason.to_owned(),
+        page: Some(updates::release_page(&release.tag)),
     };
     let Some(platform) = platform else {
-        return manual("this copy does not update itself".to_owned());
+        return manual("this copy does not update itself");
     };
-    match updates::prepare(&release, current, platform, key, download) {
-        Ok(Some(update)) => match updates::install(platform, program, &update) {
-            Ok(()) => Outcome::Updated(update.version),
-            Err(error) => manual(format!("{error:#}")),
-        },
-        Ok(None) => Outcome::Latest,
-        Err(error) => manual(format!("{error:#}")),
+    let refused = |refusal: Refusal| match refusal {
+        Refusal::Rejected(_) => Outcome::Unverified,
+        Refusal::Network(error) => Outcome::Failed(format!("{error:#}")),
+    };
+    let verified = match updates::verify(&release, platform, key, download) {
+        Ok(verified) => verified,
+        Err(refusal) => return refused(refusal),
+    };
+    if !updates::place_of(platform, program).is_some_and(|dir| updates::writable(&dir)) {
+        return manual("the program's folder cannot be written");
     }
-}
-
-pub fn leftovers(platform: Option<Platform>, program: &Path) -> Vec<PathBuf> {
-    match platform {
-        Some(Platform::Windows) => vec![program.to_path_buf()],
-        Some(Platform::Linux) => vec![program.to_path_buf(), program.with_file_name("lost-scores")],
-        Some(Platform::MacOs) => updates::bundle_of(program).into_iter().collect(),
-        None => Vec::new(),
+    let update = match updates::fetch(&verified, download) {
+        Ok(update) => update,
+        Err(refusal) => return refused(refusal),
+    };
+    match updates::install(platform, program, &update) {
+        Ok(installed) => Outcome::Updated {
+            version: update.version,
+            installed,
+        },
+        Err(error) => manual(&format!("{error:#}")),
     }
 }
 
@@ -93,20 +109,28 @@ mod tests {
     use anyhow::{Result, bail};
     use lost_scores_app::updates::{Asset, Download, PUBLIC_KEY, Platform, Release};
 
-    use super::{DAY_S, Outcome, due, leftovers, update};
+    use super::{DAY_S, Outcome, due, update};
 
     struct Nothing;
 
     impl Download for Nothing {
-        fn bytes(&mut self, url: &str) -> Result<Vec<u8>> {
+        fn bytes(&mut self, url: &str, _limit: u64) -> Result<Vec<u8>> {
             bail!("{url} was not expected")
         }
     }
 
-    fn release(tag: &str, url: &str, names: &[&str]) -> Release {
+    struct Offline;
+
+    impl Download for Offline {
+        fn bytes(&mut self, _url: &str, _limit: u64) -> Result<Vec<u8>> {
+            bail!("no network")
+        }
+    }
+
+    fn release(tag: &str, names: &[&str]) -> Release {
         Release {
             tag: tag.to_owned(),
-            url: url.to_owned(),
+            url: "https://example.com/elsewhere".to_owned(),
             assets: names
                 .iter()
                 .map(|name| Asset {
@@ -117,11 +141,11 @@ mod tests {
         }
     }
 
-    const PAGE: &str = "https://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/v9.0.0";
+    const PROGRAM: &str = "/nowhere/lost-scores-gui.exe";
 
     #[test]
     fn no_release_or_the_same_version_changes_nothing() {
-        let program = Path::new("/nowhere/lost-scores-gui");
+        let program = Path::new(PROGRAM);
         assert_eq!(
             update(
                 None,
@@ -135,7 +159,7 @@ mod tests {
         );
         assert_eq!(
             update(
-                Some(release("v1.0.0", PAGE, &[])),
+                Some(release("v1.0.0", &[])),
                 "1.0.0",
                 Some(Platform::Windows),
                 program,
@@ -147,39 +171,51 @@ mod tests {
     }
 
     #[test]
-    fn an_unsigned_release_is_left_to_the_player() {
+    fn a_release_that_fails_the_check_is_not_named_or_linked() {
         let outcome = update(
             Some(release(
                 "v9.0.0",
-                PAGE,
                 &["lost-scores-9.0.0-windows-x64.exe", "SHA256SUMS"],
             )),
             "1.0.0",
             Some(Platform::Windows),
-            Path::new("/nowhere/lost-scores-gui.exe"),
+            Path::new(PROGRAM),
             PUBLIC_KEY,
             &mut Nothing,
         );
-        let Outcome::Manual {
-            version,
-            reason,
-            page,
-        } = outcome
-        else {
-            panic!("{outcome:?}");
-        };
-        assert_eq!(version, "9.0.0");
-        assert!(reason.contains("not signed"), "{reason}");
-        assert_eq!(page.as_deref(), Some(PAGE));
+        assert_eq!(outcome, Outcome::Unverified);
+        assert!(!outcome.text().contains("9.0.0"));
+        assert!(!outcome.quiet());
     }
 
     #[test]
-    fn a_copy_built_from_source_only_points_at_the_release() {
+    fn no_network_is_quiet() {
         let outcome = update(
-            Some(release("v9.0.0", "https://example.com/v9.0.0", &[])),
+            Some(release(
+                "v9.0.0",
+                &[
+                    "lost-scores-9.0.0-windows-x64.exe",
+                    "SHA256SUMS",
+                    "SHA256SUMS.minisig",
+                ],
+            )),
+            "1.0.0",
+            Some(Platform::Windows),
+            Path::new(PROGRAM),
+            PUBLIC_KEY,
+            &mut Offline,
+        );
+        assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+        assert!(outcome.quiet());
+    }
+
+    #[test]
+    fn a_copy_built_from_source_points_at_the_release_page_built_from_the_tag() {
+        let outcome = update(
+            Some(release("v9.0.0", &[])),
             "1.0.0",
             None,
-            Path::new("/nowhere/lost-scores-gui"),
+            Path::new(PROGRAM),
             PUBLIC_KEY,
             &mut Nothing,
         );
@@ -188,12 +224,10 @@ mod tests {
             Outcome::Manual {
                 version: "9.0.0".to_owned(),
                 reason: "this copy does not update itself".to_owned(),
-                page: None,
+                page: Some(
+                    "https://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/v9.0.0".to_owned()
+                ),
             }
-        );
-        assert_eq!(
-            outcome.text(),
-            "Version 9.0.0 is out, but it was not installed: this copy does not update itself"
         );
     }
 
@@ -204,22 +238,5 @@ mod tests {
         assert!(!due(Some(now - 3600), now));
         assert!(due(Some(now - DAY_S), now));
         assert!(due(Some(now + 3600), now));
-    }
-
-    #[test]
-    fn leftovers_of_an_update_are_looked_for_beside_the_program() {
-        let program = Path::new("/apps/Lost Scores.app/Contents/MacOS/lost-scores-gui");
-        assert_eq!(
-            leftovers(Some(Platform::MacOs), program),
-            [Path::new("/apps/Lost Scores.app")]
-        );
-        assert_eq!(
-            leftovers(Some(Platform::Linux), Path::new("/bin/lost-scores-gui")),
-            [
-                Path::new("/bin/lost-scores-gui"),
-                Path::new("/bin/lost-scores")
-            ]
-        );
-        assert!(leftovers(None, program).is_empty());
     }
 }
