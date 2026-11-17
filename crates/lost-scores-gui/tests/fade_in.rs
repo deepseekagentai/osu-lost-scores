@@ -1,5 +1,5 @@
+use std::cell::Cell;
 use std::rc::Rc;
-use std::thread;
 use std::time::Duration;
 
 use lost_scores_gui::{MainWindow, State};
@@ -13,11 +13,18 @@ use slint::platform::{Platform, WindowAdapter, WindowEvent};
 const WIDTH: u32 = 650;
 const HEIGHT: u32 = 800;
 
-struct Offscreen(Rc<MinimalSoftwareWindow>);
+struct Offscreen {
+    surface: Rc<MinimalSoftwareWindow>,
+    now: Rc<Cell<Duration>>,
+}
 
 impl Platform for Offscreen {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.0.clone())
+        Ok(self.surface.clone())
+    }
+
+    fn duration_since_start(&self) -> Duration {
+        self.now.get()
     }
 }
 
@@ -37,7 +44,12 @@ fn frame(surface: &Rc<MinimalSoftwareWindow>) -> Vec<u8> {
 #[test]
 fn the_about_sheet_fades_in() {
     let surface = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(Offscreen(surface.clone()))).unwrap();
+    let now = Rc::new(Cell::new(Duration::ZERO));
+    slint::platform::set_platform(Box::new(Offscreen {
+        surface: surface.clone(),
+        now: now.clone(),
+    }))
+    .unwrap();
     let window = MainWindow::new().unwrap();
     window.show().unwrap();
     window
@@ -45,13 +57,16 @@ fn the_about_sheet_fades_in() {
         .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
     surface.set_size(PhysicalSize::new(WIDTH, HEIGHT));
     frame(&surface);
+    now.set(Duration::from_secs(5));
+    frame(&surface);
     window.global::<State>().set_about_open(true);
     frame(&surface);
+    now.set(Duration::from_millis(5030));
     let opening = frame(&surface);
-    thread::sleep(Duration::from_millis(400));
+    now.set(Duration::from_secs(6));
     let open = frame(&surface);
-    thread::sleep(Duration::from_millis(400));
+    now.set(Duration::from_secs(7));
     let settled = frame(&surface);
-    assert!(open == settled, "the sheet is still moving after 400 ms");
+    assert!(open == settled, "the sheet is still moving after a second");
     assert!(opening != open, "the sheet popped up without fading in");
 }
