@@ -794,7 +794,11 @@ fn read(mut response: ureq::http::Response<ureq::Body>) -> Result<Response, ApiE
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok());
-    let body = response.body_mut().read_to_vec().map_err(network)?;
+    let body = if matches!(status, 204 | 205 | 304) {
+        Vec::new()
+    } else {
+        response.body_mut().read_to_vec().map_err(network)?
+    };
     Ok(Response {
         status,
         retry_after,
@@ -844,7 +848,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ApiError, Client, Credentials, Login, Response, Score, ScoreBeatmap, ScoreBeatmapset,
+        ApiError, Client, Credentials, Http, Login, Response, Score, ScoreBeatmap, ScoreBeatmapset,
         ScoreStatistics, Server, Submission, SubmissionInfo, Transport, User, UserKey,
         UserStatistics, unix_time, upload_timeout,
     };
@@ -853,6 +857,31 @@ mod tests {
     struct Fake {
         answers: VecDeque<Response>,
         requests: Vec<String>,
+    }
+
+    #[test]
+    fn an_empty_answer_marked_as_gzip_is_read_as_empty() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Encoding: gzip\r\n\r\n")
+                .unwrap();
+        });
+        let answer = Http::new("test")
+            .delete(&format!("http://{address}/api/v1/submissions/x"), "tok")
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(answer.status, 204);
+        assert!(answer.body.is_empty());
     }
 
     impl Fake {
