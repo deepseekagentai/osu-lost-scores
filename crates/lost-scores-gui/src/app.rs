@@ -92,6 +92,7 @@ struct Session {
     offered: RefCell<Option<PathBuf>>,
     declined: RefCell<Option<PathBuf>>,
     publish_next: Cell<bool>,
+    quiet_next: Cell<bool>,
     replays_next: RefCell<Option<PathBuf>>,
     replays_running: RefCell<Option<(PathBuf, Arc<AtomicBool>)>>,
     replays_turned_away: RefCell<Vec<PathBuf>>,
@@ -184,6 +185,7 @@ impl Session {
             offered: RefCell::new(None),
             declined: RefCell::new(None),
             publish_next: Cell::new(false),
+            quiet_next: Cell::new(false),
             replays_next: RefCell::new(None),
             replays_running: RefCell::new(None),
             replays_turned_away: RefCell::new(Vec::new()),
@@ -541,6 +543,8 @@ impl Session {
         let session = self.clone();
         state.on_publish_offer(move || session.publish_offer());
         let session = self.clone();
+        state.on_share(move || session.share());
+        let session = self.clone();
         state.on_dismiss_offer(move || session.dismiss_offer());
         let session = self.clone();
         state.on_cancel_unsend(move || {
@@ -889,7 +893,7 @@ impl Session {
         }
         let offered = self.offered.borrow().clone();
         state.set_offer_shown(
-            sent.is_none()
+            !sent.as_ref().is_some_and(send::published)
                 && self.sending_login().is_some()
                 && offered.is_some()
                 && offered == *self.folder.borrow(),
@@ -920,12 +924,47 @@ impl Session {
         self.show_sent();
     }
 
+    fn share(&self) {
+        let Some(folder) = self.folder.borrow().clone() else {
+            return;
+        };
+        let offered = history::load(&folder)
+            .ok()
+            .filter(|scan| scan.potential.as_ref().and_then(send::offer).is_some());
+        match offered {
+            Some(scan) => {
+                if self.declined.borrow().as_deref() == Some(folder.as_path()) {
+                    *self.declined.borrow_mut() = None;
+                }
+                self.offer(&folder, &scan);
+            }
+            None => self.publish_offer(),
+        }
+    }
+
+    fn save_privately(&self) {
+        if self.sending_login().is_none() || self.shown_sent().is_some() {
+            return;
+        }
+        self.quiet_next.set(true);
+        self.submit_scan();
+        if !self.window.global::<State>().get_sending() {
+            self.quiet_next.set(false);
+        }
+    }
+
     fn publish_offer(&self) {
         let state = self.window.global::<State>();
         let wanted = state.get_offer_with_replays() && !self.top_rows.borrow().is_empty();
         *self.replays_next.borrow_mut() = self.folder.borrow().clone().filter(|_| wanted);
-        self.publish_next.set(true);
-        self.submit_scan();
+        match self.shown_sent() {
+            Some(sent) if !send::published(&sent) => self.send_about(Call::Publish),
+            Some(_) => {}
+            None => {
+                self.publish_next.set(true);
+                self.submit_scan();
+            }
+        }
         if state.get_sending() {
             self.dismiss_offer();
         } else {
@@ -1099,6 +1138,7 @@ impl Session {
 
     fn answered(&self, folder: &Path, result: Result<Reply>) {
         self.window.global::<State>().set_sending(false);
+        let quiet = self.quiet_next.replace(false);
         let replays = self.replays_next.borrow_mut().take().as_deref() == Some(folder);
         let publish_next =
             self.publish_next.replace(false) && self.folder.borrow().as_deref() == Some(folder);
@@ -1131,7 +1171,9 @@ impl Session {
                     }
                     Ok(()) => {
                         self.log(&format!("{done}: {}", sent.id));
-                        self.toast(done);
+                        if !quiet {
+                            self.toast(done);
+                        }
                         if send::published(&sent) && replays {
                             self.queue_top_replays(folder);
                         }
@@ -1157,6 +1199,10 @@ impl Session {
                     self.forget_sent(folder);
                     self.send_failed(&sentence(&error.to_string()));
                 }
+                _ if quiet => self.log(&format!(
+                    "Could not save the scan to your profile: {}",
+                    sentence(&format!("{error:#}"))
+                )),
                 _ => self.send_failed(&sentence(&format!("{error:#}"))),
             },
         }
@@ -2011,6 +2057,7 @@ impl Session {
                 let images = self.window.global::<State>().get_has_images();
                 self.scan.borrow_mut().finish(total, ranked, images);
                 self.open_results_if_narrow();
+                self.save_privately();
             }
             Message::Failed(error) => {
                 self.refreshing.set(false);
@@ -4282,6 +4329,92 @@ mod tests {
         })));
         session.handle(Message::Refreshed(None));
         folder
+    }
+
+    fn last_log(session: &Session) -> String {
+        session
+            .log
+            .row_data(session.log.row_count() - 1)
+            .unwrap()
+            .text
+            .to_string()
+    }
+
+    #[test]
+    fn a_finished_scan_is_saved_to_the_private_profile_quietly() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert_eq!(state.get_sent_state(), "Private");
+        assert!(!state.get_copied());
+        assert!(state.get_offer_shown());
+    }
+
+    #[test]
+    fn with_own_keys_a_finished_scan_stays_on_the_computer() {
+        let (_window, session, root) = session(650.0);
+        let received = record_calls(&session);
+        begin(&session);
+        finished_scan(&session, root.path(), 110.8);
+        assert_eq!(calls(&received, 0), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_refused_save_after_a_scan_only_goes_to_the_log() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        calls(&received, 1);
+        let status = state.get_status();
+        session.answered(&folder, Err(ApiError::TooSoon { retry_after: 1790 }.into()));
+        assert!(!state.get_copied());
+        assert_eq!(state.get_status(), status);
+        assert!(
+            last_log(&session).starts_with("Could not save the scan to your profile"),
+            "{}",
+            last_log(&session)
+        );
+        assert_eq!(state.get_sent_state(), "");
+    }
+
+    #[test]
+    fn share_brings_back_the_publish_card_and_publishes_the_saved_scan() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 110.8);
+        calls(&received, 1);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        state.invoke_dismiss_offer();
+        assert!(!state.get_offer_shown());
+        state.invoke_share();
+        assert!(state.get_offer_shown());
+        state.invoke_publish_offer();
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        assert!(!state.get_offer_shown());
+        assert_eq!(state.get_sent_state(), "Published \u{b7} checking");
+    }
+
+    #[test]
+    fn share_with_nothing_lost_publishes_at_once() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        begin(&session);
+        let folder = finished_scan(&session, root.path(), 0.0);
+        calls(&received, 1);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        state.invoke_share();
+        assert!(!state.get_offer_shown());
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
     }
 
     #[test]
