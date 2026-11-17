@@ -1002,7 +1002,9 @@ mod tests {
             move || calls.borrow_mut().push(name)
         };
         state.on_publish_offer(record("publish-offer"));
-        state.on_submit_scan(record("submit-scan"));
+        state.on_share(record("share"));
+        state.on_unpublish_scan(record("unpublish"));
+        state.on_ask_unsend(record("ask-unsend"));
         state.on_open_scan_folder(record("open-scan-folder"));
         state.set_has_results(true);
         state.set_show_results(true);
@@ -1215,17 +1217,32 @@ mod tests {
     }
 
     #[test]
-    fn an_unsent_scans_share_menu_publishes_or_keeps_it_private() {
+    fn share_unpublish_and_delete_are_buttons() {
         let (window, calls) = results_window();
         let state = window.global::<State>();
-        state.set_send_menu_open(true);
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Delete from the server")
+                .next()
+                .is_none()
+        );
+        activate(&window, "Share");
+        state.set_sent_state("Private".into());
         settle();
-        click_label(&window, "Publish to the Hall of Copium");
-        assert!(!state.get_send_menu_open());
-        state.set_send_menu_open(true);
+        activate(&window, "Delete from the server");
+        state.set_sent_state("Published \u{b7} checking".into());
+        state.set_sent_public(true);
         settle();
-        click_label(&window, "Save to my profile only");
-        assert_eq!(*calls.borrow(), ["publish-offer", "submit-scan"]);
+        assert!(
+            ElementHandle::find_by_accessible_label(&window, "Share")
+                .next()
+                .is_none()
+        );
+        activate(&window, "Unpublish");
+        activate(&window, "Delete from the server");
+        assert_eq!(
+            *calls.borrow(),
+            ["share", "ask-unsend", "unpublish", "ask-unsend"]
+        );
     }
 
     #[test]

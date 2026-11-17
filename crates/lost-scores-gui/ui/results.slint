@@ -643,7 +643,9 @@ component SendPill inherits Rectangle {
     in property <string> tip;
     in property <image> icon;
     in property <bool> enabled: true;
-    in property <bool> menu;
+    in property <bool> marked;
+    in property <color> mark;
+    in property <bool> compact;
     callback clicked;
     width: row.preferred-width + 26px;
     height: 40px;
@@ -651,13 +653,22 @@ component SendPill inherits Rectangle {
     background: T.btn;
     opacity: root.enabled ? 1 : 0.45;
     border-width: 2px;
-    border-color: (root.enabled && ta.has-hover) || (root.menu && State.send-menu-open) ? T.acc : transparent;
+    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
     row := HorizontalLayout {
         x: 13px;
         width: parent.width - 26px;
         spacing: 8px;
         alignment: center;
+        if root.marked: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.mark;
+            }
+        }
         VerticalLayout {
             alignment: center;
             Image {
@@ -668,22 +679,13 @@ component SendPill inherits Rectangle {
                 colorize: #ffffff;
             }
         }
-        Text {
+        if !root.compact: Text {
+            accessible-role: none;
             text: root.text;
             color: #ffffff;
             font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
-        }
-        if root.menu: VerticalLayout {
-            alignment: center;
-            Image {
-                source: @image-url("../assets/i-caret.svg");
-                width: 12px;
-                height: 12px;
-                image-fit: contain;
-                colorize: T.ibicon;
-            }
         }
     }
     ta := TipArea {
@@ -701,78 +703,75 @@ component SendPill inherits Rectangle {
     }
 }
 
-component SendMenuPill inherits Rectangle {
-    width: row.preferred-width + 26px;
+component TrashPill inherits Rectangle {
+    in property <bool> enabled: true;
+    width: 38px;
     height: 40px;
     border-radius: 10px;
     background: T.btn;
-    opacity: State.can-send ? 1 : 0.45;
+    opacity: root.enabled ? 1 : 0.45;
     border-width: 2px;
-    border-color: State.send-menu-open || ta.has-hover ? T.acc : transparent;
+    border-color: root.enabled && ta.has-hover ? T.acc : transparent;
     animate border-color { duration: 150ms; }
-    row := HorizontalLayout {
-        x: 13px;
-        width: parent.width - 26px;
-        spacing: 8px;
-        alignment: center;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: !State.sent-public ? T.k : (State.sent-blocked ? T.down : (State.sent-verified ? T.up : T.acc));
-            }
-        }
-        Text {
-            text: State.sent-public ? "Published" : "Private";
-            color: #ffffff;
-            font-size: 14px;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            Image {
-                source: @image-url("../assets/i-caret.svg");
-                width: 12px;
-                height: 12px;
-                image-fit: contain;
-                colorize: T.ibicon;
-            }
-        }
+    Image {
+        width: 16px;
+        height: 16px;
+        source: @image-url("../assets/i-trash.svg");
+        colorize: #ffffff;
+        image-fit: contain;
     }
     ta := TipArea {
         accessible-role: button;
-        accessible-label: State.sent-state;
-        tip: State.send-menu-open ? "" : State.sent-state;
+        accessible-label: "Delete from the server";
+        tip: "Delete this scan from the Lost Scores server";
         anchor: root.absolute-position;
         anchor-height: root.height;
-        mouse-cursor: MouseCursor.pointer;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
         clicked => {
-            State.send-menu-x = root.absolute-position.x;
-            State.send-menu-y = root.absolute-position.y + root.height + 6px;
-            State.send-menu-open = !State.send-menu-open;
+            if (root.enabled) {
+                State.ask-unsend();
+            }
         }
     }
 }
 
-component SendButton inherits VerticalLayout {
+component SendButton inherits HorizontalLayout {
+    in property <bool> narrow;
     property <bool> ready: State.can-send && !State.busy && !State.sending;
-    alignment: center;
-    if State.sent-state == "": SendPill {
-        text: "Share";
-        icon: @image-url("../assets/i-cloud-up.svg");
-        menu: true;
-        enabled: root.ready;
-        tip: State.share-tip;
-        clicked => {
-            State.send-menu-x = self.absolute-position.x;
-            State.send-menu-y = self.absolute-position.y + self.height + 6px;
-            State.send-menu-open = !State.send-menu-open;
+    spacing: 4px;
+    if !State.sent-public: VerticalLayout {
+        alignment: center;
+        SendPill {
+            text: "Share";
+            icon: @image-url("../assets/i-cloud-up.svg");
+            enabled: root.ready;
+            tip: State.share-tip;
+            clicked => {
+                State.share();
+            }
         }
     }
-    if State.sent-state != "": SendMenuPill { }
+    if State.sent-public: VerticalLayout {
+        alignment: center;
+        SendPill {
+            text: "Unpublish";
+            icon: @image-url("../assets/i-eye-slash.svg");
+            marked: true;
+            mark: State.sent-blocked ? T.down : (State.sent-verified ? T.up : T.acc);
+            compact: root.narrow;
+            enabled: root.ready;
+            tip: State.sent-state;
+            clicked => {
+                State.unpublish-scan();
+            }
+        }
+    }
+    if State.sent-state != "": VerticalLayout {
+        alignment: center;
+        TrashPill {
+            enabled: root.ready;
+        }
+    }
 }
 
 component OfferCard inherits Rectangle {
@@ -1278,7 +1277,9 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
                 if State.has-results && !(root.narrow && self.searching): ScanSelector { }
-                if State.has-results && !(root.narrow && self.searching): SendButton { }
+                if State.has-results && !(root.narrow && self.searching): SendButton {
+                narrow: root.width < 760px;
+            }
                 if !self.searching: Rectangle { horizontal-stretch: 1; }
                 if self.searching: SearchField {
                     horizontal-stretch: 1;
@@ -1480,80 +1481,6 @@ export component ResultsPanel inherits Rectangle {
     if State.scans-open: TouchArea {
         clicked => {
             State.scans-open = false;
-        }
-    }
-    if State.send-menu-open: TouchArea {
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down) {
-                State.send-menu-open = false;
-            }
-        }
-    }
-    if State.send-menu-open: Rectangle {
-        property <float> shown;
-        animate shown {
-            duration: 150ms;
-            easing: ease-out;
-        }
-        init => {
-            self.shown = 1;
-        }
-        opacity: self.shown;
-        x: max(8px, min(State.send-menu-x - root.absolute-position.x, root.width - self.width - 8px));
-        y: State.send-menu-y - root.absolute-position.y - (1 - self.shown) * 6px;
-        width: 236px;
-        height: menu.preferred-height;
-        border-radius: 10px;
-        background: T.card;
-        border-width: 2px;
-        border-color: T.togb;
-        TouchArea { }
-        menu := VerticalLayout {
-            padding: 6px;
-            spacing: 2px;
-            if State.sent-state != "": Rectangle {
-                height: 30px;
-                Text {
-                    x: 12px;
-                    text: State.sent-state;
-                    color: !State.sent-public ? T.k : (State.sent-blocked ? T.down : (State.sent-verified ? T.up : T.acc));
-                    font-size: 13px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-            }
-            if State.sent-state == "": MenuRow {
-                text: "Publish to the Hall of Copium";
-                clicked => {
-                    State.send-menu-open = false;
-                    State.publish-offer();
-                }
-            }
-            if State.sent-state == "": MenuRow {
-                text: "Save to my profile only";
-                clicked => {
-                    State.send-menu-open = false;
-                    State.submit-scan();
-                }
-            }
-            if State.sent-state != "": MenuRow {
-                text: State.sent-public ? "Unpublish" : "Publish to the Hall of Copium";
-                clicked => {
-                    State.send-menu-open = false;
-                    if (State.sent-public) {
-                        State.unpublish-scan();
-                    } else {
-                        State.publish-scan();
-                    }
-                }
-            }
-            if State.sent-state != "": MenuRow {
-                text: "Delete from the server";
-                clicked => {
-                    State.send-menu-open = false;
-                    State.ask-unsend();
-                }
-            }
         }
     }
     if State.picture-menu-index >= 0: TouchArea {

@@ -82,18 +82,22 @@ fn the_results_header_fits_one_row_in_the_narrowest_window() {
         failed.label,
         LINKS_IN_THE_LOG.to_owned(),
     ];
-    for label in labels {
-        state.set_catbox_label(label.as_str().into());
-        thread::sleep(Duration::from_millis(400));
-        slint::platform::update_timers_and_animations();
-        let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
-            .next()
-            .unwrap();
-        let right = switch.absolute_position().x + switch.size().width;
-        assert!(
-            right <= LOGICAL.0 - 26.0 + 0.5,
-            "{label}: right edge {right}"
-        );
+    for (sent, public) in [("Private", false), ("Published \u{b7} checking", true)] {
+        state.set_sent_state(sent.into());
+        state.set_sent_public(public);
+        for label in &labels {
+            state.set_catbox_label(label.as_str().into());
+            thread::sleep(Duration::from_millis(400));
+            slint::platform::update_timers_and_animations();
+            let switch = ElementHandle::find_by_element_type_name(&window, "ModeSwitch")
+                .next()
+                .unwrap();
+            let right = switch.absolute_position().x + switch.size().width;
+            assert!(
+                right <= LOGICAL.0 - 26.0 + 0.5,
+                "{sent} {label}: right edge {right}"
+            );
+        }
     }
 }
 
@@ -686,11 +690,6 @@ fn render_results_snapshots() {
     state.set_images_shown(false);
     state.set_show_results(true);
     draw(&surface, &dir.join("29-results-submit.png"));
-    state.set_send_menu_x(288.0);
-    state.set_send_menu_y(72.0);
-    state.set_send_menu_open(true);
-    draw(&surface, &dir.join("38-share-menu.png"));
-    state.set_send_menu_open(false);
     state.set_scans(ModelRc::new(VecModel::from(vec![
         SharedString::from("3 September 2024 \u{b7} 23:39"),
         SharedString::from("28 August 2024 \u{b7} 18:02"),
@@ -709,16 +708,9 @@ fn render_results_snapshots() {
     state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
     draw(&surface, &dir.join("31-results-published.png"));
-    state.set_send_menu_x(288.0);
-    state.set_send_menu_y(72.0);
-    state.set_send_menu_open(true);
-    draw(&surface, &dir.join("32-results-send-menu.png"));
-    state.set_send_menu_open(false);
     state.set_sent_state("Published \u{b7} hidden".into());
     state.set_sent_blocked(true);
-    state.set_send_menu_open(true);
     draw(&surface, &dir.join("41-results-hidden.png"));
-    state.set_send_menu_open(false);
     state.set_sent_blocked(false);
     state.set_sent_state("Published \u{b7} checking".into());
     draw_sized(&surface, WIDE, &dir.join("33-results-published-wide.png"));

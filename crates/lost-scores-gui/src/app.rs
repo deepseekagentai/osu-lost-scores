@@ -531,8 +531,6 @@ impl Session {
         let session = self.clone();
         state.on_cancel_upload(move || session.cancel_upload());
         let session = self.clone();
-        state.on_submit_scan(move || session.submit_scan());
-        let session = self.clone();
         state.on_publish_scan(move || session.send_about(Call::Publish));
         let session = self.clone();
         state.on_unpublish_scan(move || session.send_about(Call::Unpublish));
@@ -1617,7 +1615,6 @@ impl Session {
     fn close_popups(&self) {
         let state = self.window.global::<State>();
         state.set_scans_open(false);
-        state.set_send_menu_open(false);
     }
 
     fn open_keys(&self) {
@@ -4070,7 +4067,7 @@ mod tests {
         let folder = shown_scan(&session, root.path(), None);
         assert!(state.get_can_send());
         assert_eq!(state.get_sent_state(), "");
-        state.invoke_submit_scan();
+        session.submit_scan();
         assert!(state.get_sending());
         assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
         session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
@@ -4136,7 +4133,7 @@ mod tests {
         let received = record_calls(&session);
         shown_scan(&session, root.path(), None);
         assert!(!state.get_can_send());
-        state.invoke_submit_scan();
+        session.submit_scan();
         assert!(!state.get_sending());
         assert_eq!(calls(&received, 0), Vec::<String>::new());
     }
@@ -4159,7 +4156,7 @@ mod tests {
         state.set_busy(false);
         assert_eq!(
             state.get_share_tip(),
-            "Publish this scan in the Hall of Copium or keep it in your profile"
+            "Publish this scan in the Hall of Copium"
         );
     }
 
@@ -4217,7 +4214,7 @@ mod tests {
         let state = window.global::<State>();
         let received = record_calls(&session);
         let folder = shown_scan(&session, root.path(), None);
-        state.invoke_submit_scan();
+        session.submit_scan();
         calls(&received, 1);
         session.answered(&folder, Err(ApiError::TooSoon { retry_after: 1790 }.into()));
         let said = "You can send five new scans an hour; try again in 30 min";
@@ -4235,7 +4232,7 @@ mod tests {
         let state = window.global::<State>();
         let received = record_calls(&session);
         let folder = shown_scan(&session, root.path(), None);
-        state.invoke_submit_scan();
+        session.submit_scan();
         calls(&received, 1);
         session.answered(&folder, Err(ApiError::LoginRequired.into()));
         assert!(!state.get_connected());
