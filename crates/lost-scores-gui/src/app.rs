@@ -555,7 +555,7 @@ impl Session {
         let session = self.clone();
         state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
         let session = self.clone();
-        state.on_open_hall(move || session.launch("the page", format!("{SITE}/copium").into()));
+        state.on_open_hall(move || session.launch("the page", format!("{SITE}/rankings").into()));
         let session = self.clone();
         state.on_open_profile(move || {
             let page = session
@@ -2984,7 +2984,7 @@ mod tests {
         assert_eq!(
             opened,
             [
-                "https://lost.lemon4ik.kz/copium".to_owned(),
+                "https://lost.lemon4ik.kz/rankings".to_owned(),
                 format!("https://lost.lemon4ik.kz/u/{}", login().osu_id),
             ]
         );
