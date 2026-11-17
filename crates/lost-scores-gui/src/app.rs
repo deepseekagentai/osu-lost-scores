@@ -4173,7 +4173,7 @@ mod tests {
         state.invoke_submit_scan();
         calls(&received, 1);
         session.answered(&folder, Err(ApiError::TooSoon { retry_after: 1790 }.into()));
-        let said = "You can send one new scan an hour; try again in 30 min";
+        let said = "You can send five new scans an hour; try again in 30 min";
         assert!(state.get_copied());
         assert_eq!(state.get_copied_text(), said);
         assert_eq!(state.get_status(), said);

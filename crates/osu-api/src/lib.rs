@@ -72,7 +72,7 @@ pub enum ApiError {
     #[error("your osu! login has expired; log in again")]
     LoginRequired,
     #[error(
-        "you can send one new scan an hour; try again in {} min",
+        "you can send five new scans an hour; try again in {} min",
         .retry_after.div_ceil(60)
     )]
     TooSoon { retry_after: u64 },
@@ -649,7 +649,7 @@ fn from_server<D: DeserializeOwned>(url: &str, body: &[u8]) -> Result<D, ApiErro
 fn refusal(url: &str, response: Response) -> ApiError {
     let told: ServerError = serde_json::from_slice(&response.body).unwrap_or_default();
     match (response.status, told.error.as_deref()) {
-        (429, Some("one_per_hour")) => ApiError::TooSoon {
+        (429, Some("hourly_limit")) => ApiError::TooSoon {
             retry_after: told.retry_after.or(response.retry_after).unwrap_or(HOUR),
         },
         (429, _) => ApiError::Busy {
@@ -1129,7 +1129,7 @@ mod tests {
     #[test]
     fn the_servers_refusals_have_their_own_errors() {
         let fake = Fake::default()
-            .answer(429, r#"{"error":"one_per_hour","retry_after":1790}"#)
+            .answer(429, r#"{"error":"hourly_limit","retry_after":1790}"#)
             .answer(403, r#"{"error":"not_your_scan"}"#)
             .answer(409, r#"{"error":"no_potential_top"}"#)
             .answer(401, r#"{"error":"login_required"}"#);
@@ -1138,7 +1138,7 @@ mod tests {
         assert!(matches!(soon, ApiError::TooSoon { retry_after: 1790 }));
         assert_eq!(
             soon.to_string(),
-            "you can send one new scan an hour; try again in 30 min"
+            "you can send five new scans an hour; try again in 30 min"
         );
         let other = api.submit(b"{}").unwrap_err();
         assert!(matches!(other, ApiError::NotYourScan));
