@@ -150,15 +150,19 @@ pub fn reconcile(sent: &Sent, listed: &[SubmissionInfo]) -> Option<Sent> {
         })
 }
 
-pub fn offer(top: &PotentialResult) -> Option<String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub lost: String,
+    pub before: String,
+    pub after: String,
+}
+
+pub fn offer(top: &PotentialResult) -> Option<Offer> {
     let lost = top.potential_pp - top.current_pp;
-    (lost >= 0.5).then(|| {
-        format!(
-            "You lost {} pp ({} \u{2192} {} pp). Show it to other players?",
-            thousands(lost),
-            thousands(top.current_pp),
-            thousands(top.potential_pp)
-        )
+    (lost >= 0.5).then(|| Offer {
+        lost: thousands(lost),
+        before: thousands(top.current_pp),
+        after: thousands(top.potential_pp),
     })
 }
 

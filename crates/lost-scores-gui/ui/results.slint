@@ -765,7 +765,7 @@ component SendButton inherits VerticalLayout {
         icon: @image-url("../assets/i-cloud-up.svg");
         menu: true;
         enabled: root.ready;
-        tip: !State.can-send ? "Log in with osu! to share scans" : (State.busy ? "Wait for the scan to finish" : "Publish this scan in the Hall of Fame or keep it in your profile");
+        tip: State.share-tip;
         clicked => {
             State.send-menu-x = self.absolute-position.x;
             State.send-menu-y = self.absolute-position.y + self.height + 6px;
@@ -805,11 +805,10 @@ component OfferCard inherits Rectangle {
                 vertical-alignment: center;
             }
         }
-        Text {
-            text: State.offer-text;
-            color: T.ftext;
-            font-size: 17px;
-            wrap: word-wrap;
+        StyledText {
+            text: @markdown("You lost \{State.offer-lost} pp (\{State.offer-before} \u{2192} <font color=\"\{T.up}\">\{State.offer-after} pp</font>). Show it to other players?");
+            default-color: T.ftext;
+            default-font-size: 17px;
         }
         HorizontalLayout {
             spacing: 10px;
@@ -1054,6 +1053,33 @@ component ModeSegment inherits Rectangle {
     }
 }
 
+component TableSegment inherits Rectangle {
+    in property <int> count;
+    in property <bool> active;
+    in property <bool> hovered;
+    property <length> content: 18px + (root.count > 0 ? 6px + number.preferred-width : 0px);
+    width: root.count > 0 ? root.content + 24px : 44px;
+    accessible-role: button;
+    accessible-label: "Table";
+    Image {
+        x: (parent.width - root.content) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        source: @image-url("../assets/i-list.svg");
+        colorize: root.active || root.hovered ? #ffffff : T.k;
+        image-fit: contain;
+    }
+    number := Text {
+        x: (parent.width - root.content) / 2 + 24px;
+        y: (parent.height - self.height) / 2;
+        text: root.count > 0 ? "\{root.count}" : "";
+        color: root.active || root.hovered ? #ffffff : T.k;
+        font-size: 14px;
+        font-weight: 600;
+    }
+}
+
 component ModeThumb inherits Rectangle {
     border-radius: 8px;
     background: T.tog-on;
@@ -1062,17 +1088,18 @@ component ModeThumb inherits Rectangle {
 }
 
 component ModeSwitch inherits Rectangle {
-    property <length> segment: (root.width - 8px) / 2;
-    width: 96px;
+    in property <bool> compact;
+    property <length> segment: 44px;
+    width: 3px + root.segment + 2px + table.width + 3px;
     height: 40px;
     border-radius: 10px;
     background: T.btn;
     ModeThumb {
         x: State.images-shown ? 3px : 5px + root.segment;
         y: 3px;
-        width: root.segment;
+        width: State.images-shown ? root.segment : table.width;
         height: root.height - 6px;
-        animate x {
+        animate x, width {
             duration: 180ms;
             easing: ease-out;
         }
@@ -1081,14 +1108,14 @@ component ModeSwitch inherits Rectangle {
         padding: 3px;
         spacing: 2px;
         ModeSegment {
+            width: root.segment;
             icon: @image-url("../assets/i-image.svg");
             label: "Images";
             active: State.images-shown;
             hovered: ta.has-hover;
         }
-        ModeSegment {
-            icon: @image-url("../assets/i-list.svg");
-            label: "Table";
+        table := TableSegment {
+            count: root.compact ? 0 : State.lost-count;
             active: !State.images-shown;
             hovered: ta.has-hover;
         }
@@ -1158,6 +1185,11 @@ export component ResultsPanel inherits Rectangle {
         easing: ease-in-out;
     }
     property <bool> view-images: root.mode-t > 0.5;
+    property <float> offer-t: State.has-results && State.offer-shown ? 1 : 0;
+    animate offer-t {
+        duration: 220ms;
+        easing: ease-out;
+    }
     property <float> body-fade: Math.abs(root.mode-t - 0.5) * 2;
     init => {
         root.narrow = root.width < 980px;
@@ -1233,33 +1265,47 @@ export component ResultsPanel inherits Rectangle {
         padding-top: 24px;
         padding-bottom: 18px;
         spacing: 12px;
-        HorizontalLayout {
-            spacing: 6px;
+        VerticalLayout {
+            spacing: 0;
             vertical-stretch: 0;
-            property <bool> searching: State.search-open && !root.view-images;
-            if root.show-back: BackButton {
-                clicked => {
-                    State.back();
+            HorizontalLayout {
+                spacing: 6px;
+                vertical-stretch: 0;
+                property <bool> searching: State.search-open && !root.view-images;
+                if root.show-back: BackButton {
+                    clicked => {
+                        State.back();
+                    }
+                }
+                if State.has-results && !(root.narrow && self.searching): ScanSelector { }
+                if State.has-results && !(root.narrow && self.searching): SendButton { }
+                if !self.searching: Rectangle { horizontal-stretch: 1; }
+                if self.searching: SearchField {
+                    horizontal-stretch: 1;
+                    min-width: 120px;
+                    opacity: root.body-fade;
+                }
+                if State.has-results && !root.view-images: SearchToggle {
+                    opacity: root.body-fade;
+                }
+                if State.has-results && root.view-images && State.has-images: CatboxButton {
+                    opacity: root.body-fade;
+                }
+                if State.has-results: ModeSwitch {
+                    compact: root.narrow && State.catbox-label != "";
                 }
             }
-            if State.has-results && !(root.narrow && self.searching): ScanSelector { }
-            if State.has-results && !(root.narrow && self.searching): SendButton { }
-            if !self.searching: Rectangle { horizontal-stretch: 1; }
-            if self.searching: SearchField {
-                horizontal-stretch: 1;
-                min-width: 120px;
-                opacity: root.body-fade;
+            offer-slot := Rectangle {
+                visible: root.offer-t > 0;
+                height: (12px + offer-card.preferred-height) * root.offer-t;
+                clip: true;
+                offer-card := OfferCard {
+                    y: 12px;
+                    width: parent.width;
+                    height: self.preferred-height;
+                    opacity: root.offer-t;
+                }
             }
-            if State.has-results && !root.view-images: SearchToggle {
-                opacity: root.body-fade;
-            }
-            if State.has-results && root.view-images && State.has-images: CatboxButton {
-                opacity: root.body-fade;
-            }
-            if State.has-results: ModeSwitch { }
-        }
-        if State.has-results && State.offer-shown: OfferCard {
-            vertical-stretch: 0;
         }
         if !State.has-results: Text {
             vertical-stretch: 1;

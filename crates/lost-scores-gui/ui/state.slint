@@ -55,7 +55,7 @@ export struct Preview {
 
 export global State {
     in-out property <int> replays-in-top;
-    in-out property <bool> offer-with-replays: true;
+    in-out property <bool> offer-with-replays;
     in-out property <string> osu-dir;
     in-out property <bool> busy;
     in-out property <string> status;
@@ -107,6 +107,7 @@ export global State {
     in-out property <bool> has-results;
     in-out property <bool> show-results;
     in-out property <int> tab;
+    in-out property <int> lost-count;
     in-out property <int> sort-column: 5;
     in-out property <bool> sort-desc: true;
     in-out property <[ScoreRow]> rows;
@@ -151,8 +152,11 @@ export global State {
     in-out property <length> send-menu-x;
     in-out property <length> send-menu-y;
     in-out property <bool> offer-shown;
-    in-out property <string> offer-text;
+    in-out property <string> offer-lost;
+    in-out property <string> offer-before;
+    in-out property <string> offer-after;
     out property <bool> can-send: self.logged-in && !self.own-keys;
+    out property <string> share-tip: self.own-keys ? "Sharing works only with the osu! login" : !self.logged-in ? "Log in with osu! to share scans" : self.busy ? "Wait for the scan to finish" : "Publish this scan in the Hall of Fame or keep it in your profile";
 
     callback pick-folder();
     callback start-scan();

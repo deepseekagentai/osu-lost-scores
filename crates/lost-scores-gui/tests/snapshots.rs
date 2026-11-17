@@ -50,6 +50,7 @@ fn the_results_header_fits_one_row_in_the_narrowest_window() {
     state.set_images_shown(true);
     state.set_sent_state("Published \u{b7} checking".into());
     state.set_sent_public(true);
+    state.set_lost_count(1234);
     let september = jiff::civil::date(2026, 9, 30)
         .at(12, 0, 0, 0)
         .to_zoned(TimeZone::UTC)
@@ -529,6 +530,7 @@ impl Results {
         state.set_scan_date(when_short(scan.made_at, &TimeZone::UTC).into());
         state.set_tab(tab.index() as i32);
         state.set_foot(foot(&self.table.borrow(), tab));
+        state.set_lost_count(self.table.borrow().rows(Tab::Lost).len() as i32);
         self.rows.show(tab);
         let (column, descending) = self.table.borrow().sorting(tab);
         state.set_sort_column(column.index());
@@ -661,15 +663,22 @@ fn render_results_snapshots() {
     state.set_show_results(true);
     state.set_logged_in(true);
     state.set_own_keys(false);
-    state.set_offer_text(
-        "You lost 111 pp (8,557 \u{2192} 8,668 pp). Show it to other players?".into(),
-    );
+    state.set_offer_lost("111".into());
+    state.set_offer_before("8,557".into());
+    state.set_offer_after("8,668".into());
     state.set_offer_shown(true);
     state.set_images_shown(true);
     state.set_has_images(true);
     draw(&surface, &dir.join("27-results-offer.png"));
     draw_sized(&surface, TWO_COLUMNS, &dir.join("28-two-columns-offer.png"));
     state.set_offer_shown(false);
+    state.set_show_results(true);
+    draw(&surface, &dir.join("40-switch-count-images.png"));
+    draw_sized(
+        &surface,
+        WIDE,
+        &dir.join("40b-switch-count-images-wide.png"),
+    );
     state.set_images_shown(false);
     state.set_show_results(true);
     draw(&surface, &dir.join("29-results-submit.png"));

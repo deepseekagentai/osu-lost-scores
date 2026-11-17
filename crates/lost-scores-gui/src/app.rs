@@ -884,15 +884,19 @@ impl Session {
 
     fn offer(&self, folder: &Path, scan: &history::SavedScan) {
         let declined = self.declined.borrow().as_deref() == Some(folder);
-        let text = scan
+        let offer = scan
             .potential
             .as_ref()
             .and_then(send::offer)
             .filter(|_| !declined);
-        *self.offered.borrow_mut() = text.as_ref().map(|_| folder.to_path_buf());
-        self.window
-            .global::<State>()
-            .set_offer_text(text.unwrap_or_default().into());
+        *self.offered.borrow_mut() = offer.as_ref().map(|_| folder.to_path_buf());
+        let state = self.window.global::<State>();
+        state.set_offer_with_replays(false);
+        if let Some(offer) = offer {
+            state.set_offer_lost(offer.lost.into());
+            state.set_offer_before(offer.before.into());
+            state.set_offer_after(offer.after.into());
+        }
         self.show_sent();
     }
 
@@ -1462,6 +1466,7 @@ impl Session {
         let state = self.window.global::<State>();
         state.set_tab(tab.index() as i32);
         state.set_foot(foot(&self.table.borrow(), tab));
+        state.set_lost_count(self.table.borrow().rows(Tab::Lost).len() as i32);
         self.rows.show(tab);
         self.show_sorting();
         state.set_mods_width(mods_width(self.table.borrow().rows(tab)));
@@ -3772,6 +3777,26 @@ mod tests {
     }
 
     #[test]
+    fn the_offer_leaves_the_replays_out_until_asked() {
+        let (window, session, root) = keyless(650.0);
+        let state = window.global::<State>();
+        let received = record_calls(&session);
+        let folder = shown_replay_scan(&session, root.path(), None);
+        state.set_offer_with_replays(true);
+        session.offer(&folder, &replay_scan());
+        assert!(state.get_offer_shown());
+        assert!(!state.get_offer_with_replays());
+        state.invoke_publish_offer();
+        assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
+        assert_eq!(calls(&received, 1), ["tok publish abc"]);
+        session.answered(&folder, Ok(Reply::Sent(answer("public", "unverified"))));
+        let sent = history::submission(&folder, &login().server).unwrap();
+        assert!(sent.queued.is_empty());
+        assert_eq!(calls(&received, 0), Vec::<String>::new());
+    }
+
+    #[test]
     fn publishing_from_the_offer_sends_the_replays_of_the_top() {
         let (window, session, root) = keyless(650.0);
         let state = window.global::<State>();
@@ -3780,7 +3805,7 @@ mod tests {
         session.offer(&folder, &replay_scan());
         assert!(state.get_offer_shown());
         assert_eq!(state.get_replays_in_top(), 2);
-        assert!(state.get_offer_with_replays());
+        state.set_offer_with_replays(true);
         state.invoke_publish_offer();
         assert_eq!(calls(&received, 1), ["tok submit the shown scan"]);
         session.answered(&folder, Ok(Reply::Sent(answer("private", "unverified"))));
@@ -4024,6 +4049,76 @@ mod tests {
     }
 
     #[test]
+    fn the_share_hint_says_why_sharing_is_off() {
+        let (window, _session, _root) = session(650.0);
+        let state = window.global::<State>();
+        state.set_own_keys(true);
+        assert_eq!(
+            state.get_share_tip(),
+            "Sharing works only with the osu! login"
+        );
+        state.set_own_keys(false);
+        state.set_logged_in(false);
+        assert_eq!(state.get_share_tip(), "Log in with osu! to share scans");
+        state.set_logged_in(true);
+        state.set_busy(true);
+        assert_eq!(state.get_share_tip(), "Wait for the scan to finish");
+        state.set_busy(false);
+        assert_eq!(
+            state.get_share_tip(),
+            "Publish this scan in the Hall of Fame or keep it in your profile"
+        );
+    }
+
+    #[test]
+    fn the_table_switch_counts_the_lost_scores_of_the_table() {
+        use lost_scores_app::rows::{Hits, LostRow};
+        use lost_scores_core::grade::Grade;
+        use lost_scores_core::maps::MapStatus;
+        let (window, session, root) = session(650.0);
+        let state = window.global::<State>();
+        let row = |beatmap_id: u32, status: MapStatus| LostRow {
+            pp: 300.0,
+            kept_pp: 150.0,
+            score: 1_234_567,
+            kept_score: 1_300_000,
+            mods: "HD".into(),
+            unix_time: 1_700_000_000,
+            played: "2023-11-14 22:13".into(),
+            status,
+            beatmap_md5: format!("{beatmap_id:032x}"),
+            beatmap_id: Some(beatmap_id),
+            beatmapset_id: None,
+            artist: "A".into(),
+            title: format!("Map {beatmap_id}"),
+            version: "x".into(),
+            file: format!("{beatmap_id}.osr"),
+            creator: "m".into(),
+            hits: Hits {
+                n300: 300,
+                n100: 20,
+                n50: 1,
+                misses: 2,
+            },
+            accuracy: 96.5,
+            grade: Grade::S,
+            max_combo: 500,
+        };
+        let mut scan = saved_scan();
+        scan.lost = vec![
+            row(11, MapStatus::Ranked),
+            row(12, MapStatus::Ranked),
+            row(13, MapStatus::Loved),
+        ];
+        let folder = history::save(root.path(), &scan).unwrap();
+        state.invoke_set_include_all(false);
+        session.show_scan(0, Some(folder), &scan);
+        assert_eq!(state.get_lost_count(), 2);
+        state.invoke_set_include_all(true);
+        assert_eq!(state.get_lost_count(), 3);
+    }
+
+    #[test]
     fn a_too_soon_answer_says_when() {
         let (window, session, root) = keyless(650.0);
         let state = window.global::<State>();
@@ -4152,8 +4247,12 @@ mod tests {
         let folder = finished_scan(&session, root.path(), 110.8);
         assert!(state.get_offer_shown());
         assert_eq!(
-            state.get_offer_text(),
-            "You lost 111 pp (8,557 \u{2192} 8,668 pp). Show it to other players?"
+            (
+                state.get_offer_lost().to_string(),
+                state.get_offer_before().to_string(),
+                state.get_offer_after().to_string()
+            ),
+            ("111".into(), "8,557".into(), "8,668".into())
         );
         state.invoke_dismiss_offer();
         assert!(!state.get_offer_shown());
