@@ -9,7 +9,7 @@ use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 use lost_scores_gui::share::art::backdrop_wide;
 use lost_scores_gui::share::model::{ShareOptions, ShareRow, lost_rows, potential_rows};
-use lost_scores_gui::share::rasters::{STRIP_HEIGHT, STRIP_WIDTH, rounded_square};
+use lost_scores_gui::share::rasters::{CoverKey, STRIP_HEIGHT, STRIP_WIDTH, rounded_square};
 use lost_scores_gui::share::render::{
     BADGE_AVATAR, BADGE_FILE, HEADER_AVATAR, LOST_FILE, POTENTIAL_FILE, Prepared, Rendered,
     render_images, use_offscreen_platform,
@@ -229,11 +229,15 @@ fn synthetic_scan() -> SavedScan {
 }
 
 fn probes(rows: &[ShareRow], prepared: &mut Prepared) {
-    for set in rows.iter().filter_map(|row| row.set_id) {
+    for key in rows.iter().filter_map(|row| row.cover.clone()) {
+        let seed = match &key {
+            CoverKey::Set(set) => u64::from(*set),
+            CoverKey::Map(md5) => md5.bytes().map(u64::from).sum(),
+        };
         prepared
             .strips
-            .entry(set)
-            .or_insert_with(|| pixels(&noise(u64::from(set), STRIP_WIDTH, STRIP_HEIGHT)));
+            .entry(key)
+            .or_insert_with(|| pixels(&noise(seed, STRIP_WIDTH, STRIP_HEIGHT)));
     }
 }
 
@@ -276,11 +280,12 @@ fn row_templates(
                 1,
             );
         }
-        if let Some(strip) = row.set_id.and_then(|set| prepared.strips.get(&set)) {
-            let set = row.set_id.unwrap();
+        if let Some(key) = &row.cover
+            && let Some(strip) = prepared.strips.get(key)
+        {
             add(
                 template(
-                    &format!("cover strip {set}"),
+                    &format!("cover strip {key:?}"),
                     &buffer_image(strip),
                     None,
                     |_, y| {

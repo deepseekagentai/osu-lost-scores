@@ -6,6 +6,7 @@ use lost_scores_app::rows::{mod_acronyms, thousands};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 
+use crate::share::rasters::CoverKey;
 use crate::table::when_short;
 use crate::view::{lost_text, weighted_text};
 
@@ -23,7 +24,7 @@ pub struct ShareOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShareRow {
     pub place: String,
-    pub set_id: Option<u32>,
+    pub cover: Option<CoverKey>,
     pub grade: Grade,
     pub title: String,
     pub artist: String,
@@ -63,15 +64,15 @@ fn ranked_or_all(scan: &SavedScan, options: &ShareOptions) -> Vec<usize> {
     picked
 }
 
-pub fn cover_sets(scan: &SavedScan, options: &ShareOptions) -> Vec<u32> {
-    let mut set_ids: Vec<u32> = lost_rows(scan, options)
-        .iter()
-        .chain(potential_rows(scan, options).iter())
-        .filter_map(|row| row.set_id)
+pub fn cover_keys(scan: &SavedScan, options: &ShareOptions) -> Vec<CoverKey> {
+    let mut keys: Vec<CoverKey> = lost_rows(scan, options)
+        .into_iter()
+        .chain(potential_rows(scan, options))
+        .filter_map(|row| row.cover)
         .collect();
-    set_ids.sort_unstable();
-    set_ids.dedup();
-    set_ids
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 pub fn lost_count(scan: &SavedScan, options: &ShareOptions) -> usize {
@@ -87,7 +88,7 @@ pub fn lost_rows(scan: &SavedScan, options: &ShareOptions) -> Vec<ShareRow> {
             let row = &scan.lost[index];
             ShareRow {
                 place: format!("#{}", position + 1),
-                set_id: row.beatmapset_id,
+                cover: CoverKey::of(row.beatmapset_id, &row.beatmap_md5),
                 grade: row.grade,
                 title: row.title.clone(),
                 artist: row.artist.clone(),
@@ -122,7 +123,7 @@ pub fn potential_rows(scan: &SavedScan, options: &ShareOptions) -> Vec<ShareRow>
         .take(shown)
         .map(|row| ShareRow {
             place: format!("#{}", row.place),
-            set_id: row.beatmapset_id,
+            cover: row.beatmapset_id.map(CoverKey::Set),
             grade: row.grade,
             title: row.title.clone(),
             artist: row.artist.clone(),

@@ -4,4 +4,4 @@ pub mod rasters;
 pub mod render;
 pub mod upload;
 
-pub use model::{ShareOptions, cover_sets};
+pub use model::{ShareOptions, cover_keys};

@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,9 +18,9 @@ use lost_scores_core::maps::MapCatalog;
 use osu_api::ApiError;
 
 use crate::account::lookup_failure;
-use crate::share::rasters::{self, Fetch, HttpFetch};
+use crate::share::rasters::{self, CoverKey, Fetch, HttpFetch, LocalCovers};
 use crate::share::render::{FAILURE_PREFIX, panic_message};
-use crate::share::{ShareOptions, cover_sets};
+use crate::share::{ShareOptions, cover_keys};
 
 const API_HINT: &str = "add your own API keys";
 const PROGRESS_GAP: Duration = Duration::from_millis(33);
@@ -177,11 +178,12 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
         return Ok(Outcome::Closed);
     }
     proceed!();
+    let local = local_covers(&read.songs_dir, &read.scan, &shown);
     create_images(
         job,
         &shown,
         &folder,
-        Some(&read.songs_dir),
+        Some(&local),
         &mut events,
         &mut HttpFetch::new(),
     );
@@ -287,11 +289,36 @@ pub fn render_command(
     command
 }
 
+fn local_covers<'a>(songs: &'a Path, scan: &Scan, saved: &SavedScan) -> LocalCovers<'a> {
+    let maps: HashMap<&str, &Path> = scan
+        .replays
+        .iter()
+        .filter_map(|replay| {
+            let path = replay.beatmap.as_ref()?.path.as_path();
+            path.starts_with(songs)
+                .then_some((replay.header.beatmap_md5.as_str(), path))
+        })
+        .collect();
+    let mut local = LocalCovers {
+        songs: Some(songs),
+        maps: HashMap::new(),
+    };
+    for row in &saved.lost {
+        if let (Some(key), Some(path)) = (
+            CoverKey::of(row.beatmapset_id, &row.beatmap_md5),
+            maps.get(row.beatmap_md5.as_str()),
+        ) {
+            local.maps.entry(key).or_insert_with(|| path.to_path_buf());
+        }
+    }
+    local
+}
+
 pub fn create_images(
     job: &Job,
     scan: &SavedScan,
     folder: &Path,
-    songs: Option<&Path>,
+    local: Option<&LocalCovers>,
     events: &mut dyn FnMut(Event),
     fetch: &mut dyn Fetch,
 ) {
@@ -301,7 +328,7 @@ pub fn create_images(
         show_lost_in_top: job.show_lost_in_top,
     };
     if let Some(dir) = cache::covers_dir() {
-        let sets = cover_sets(scan, &options);
+        let keys = cover_keys(scan, &options);
         let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut progress = |done, total| {
                 events(Event::Progress {
@@ -310,13 +337,13 @@ pub fn create_images(
                     total,
                 });
             };
-            rasters::covers(&sets, &dir, songs, fetch, &mut progress)
+            rasters::covers(&keys, &dir, local, fetch, &mut progress)
         }));
         match attempt {
             Ok(fetched) if fetched.failed > 0 => events(Event::Log(format!(
                 "{} of {} covers could not be used",
                 fetched.failed,
-                sets.len()
+                keys.len()
             ))),
             Ok(_) => {}
             Err(payload) => events(Event::Log(format!(

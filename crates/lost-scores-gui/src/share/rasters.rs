@@ -181,15 +181,43 @@ impl Fetch for CachedCovers<'_> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CoverKey {
+    Set(u32),
+    Map(String),
+}
+
+impl CoverKey {
+    pub fn of(set_id: Option<u32>, md5: &str) -> Option<Self> {
+        set_id.map(Self::Set).or_else(|| {
+            (md5.len() == 32 && md5.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| Self::Map(md5.to_ascii_lowercase()))
+        })
+    }
+
+    fn file(&self, cache_dir: &Path) -> PathBuf {
+        match self {
+            Self::Set(set_id) => cache_dir.join(format!("{set_id}.jpg")),
+            Self::Map(md5) => cache_dir.join(format!("map-{md5}.jpg")),
+        }
+    }
+}
+
 pub struct Covers {
-    pub found: HashMap<u32, Vec<u8>>,
+    pub found: HashMap<CoverKey, Vec<u8>>,
     pub failed: usize,
 }
 
+#[derive(Default)]
+pub struct LocalCovers<'a> {
+    pub songs: Option<&'a Path>,
+    pub maps: HashMap<CoverKey, PathBuf>,
+}
+
 pub fn covers(
-    set_ids: &[u32],
+    keys: &[CoverKey],
     cache_dir: &Path,
-    songs: Option<&Path>,
+    local: Option<&LocalCovers>,
     fetch: &mut dyn Fetch,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Covers {
@@ -197,90 +225,96 @@ pub fn covers(
         found: HashMap::new(),
         failed: 0,
     };
-    let total = set_ids.len();
+    let total = keys.len();
     let mut done = 0;
-    let mut wanted = Vec::new();
-    for &set_id in set_ids {
-        if covers.found.contains_key(&set_id) || wanted.contains(&set_id) {
+    let mut wanted: Vec<&CoverKey> = Vec::new();
+    for key in keys {
+        if covers.found.contains_key(key) || wanted.contains(&key) {
             done += 1;
             progress(done, total);
             continue;
         }
-        let kept = fs::read(cover_file(cache_dir, set_id))
+        let kept = fs::read(key.file(cache_dir))
             .ok()
             .filter(|bytes| image::load_from_memory(bytes).is_ok());
         match kept {
             Some(bytes) => {
-                covers.found.insert(set_id, bytes);
+                covers.found.insert(key.clone(), bytes);
                 done += 1;
                 progress(done, total);
             }
-            None => wanted.push(set_id),
+            None => wanted.push(key),
         }
     }
-    if let Some(songs) = songs {
-        let folders = set_folders(songs);
+    if let Some(local) = local {
+        let searched = wanted
+            .iter()
+            .any(|key| matches!(key, CoverKey::Set(_)) && !local.maps.contains_key(*key));
+        let folders = match local.songs {
+            Some(songs) if searched => set_folders(songs),
+            _ => HashMap::new(),
+        };
+        let cut = |key: &CoverKey| {
+            local
+                .maps
+                .get(key)
+                .and_then(|map| map_cover(map))
+                .or_else(|| match key {
+                    CoverKey::Set(set_id) => local_cover(&folders, *set_id),
+                    CoverKey::Map(_) => None,
+                })
+        };
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(LOCAL_THREADS)
             .build()
             .ok();
         let mut remote = Vec::new();
         for chunk in wanted.chunks(LOCAL_CHUNK) {
-            let cut = || -> Vec<(u32, Option<Vec<u8>>)> {
-                chunk
-                    .par_iter()
-                    .map(|&set_id| (set_id, local_cover(&folders, set_id)))
-                    .collect()
+            let made: Vec<(&CoverKey, Option<Vec<u8>>)> = match &pool {
+                Some(pool) => {
+                    pool.install(|| chunk.par_iter().map(|&key| (key, cut(key))).collect())
+                }
+                None => chunk.iter().map(|&key| (key, cut(key))).collect(),
             };
-            let made = match &pool {
-                Some(pool) => pool.install(cut),
-                None => chunk
-                    .iter()
-                    .map(|&set_id| (set_id, local_cover(&folders, set_id)))
-                    .collect(),
-            };
-            for (set_id, bytes) in made {
+            for (key, bytes) in made {
                 match bytes {
                     Some(bytes) => {
-                        if keep(&cover_file(cache_dir, set_id), &bytes).is_err() {
+                        if keep(&key.file(cache_dir), &bytes).is_err() {
                             covers.failed += 1;
                         }
-                        covers.found.insert(set_id, bytes);
+                        covers.found.insert(key.clone(), bytes);
                         done += 1;
                         progress(done, total);
                     }
-                    None => remote.push(set_id),
+                    None => remote.push(key),
                 }
             }
         }
         wanted = remote;
     }
     let mut offline = false;
-    for set_id in wanted {
-        let file = cover_file(cache_dir, set_id);
-        let download = || {
-            if offline {
-                bail!("the network is not answering");
+    for key in wanted {
+        if let CoverKey::Set(set_id) = key {
+            let download = || {
+                if offline {
+                    bail!("the network is not answering");
+                }
+                let answer = fetch.get(&cover_url(*set_id));
+                offline = answer.is_err();
+                answer
+            };
+            match cached(Some(&key.file(cache_dir)), download) {
+                Ok(Some(bytes)) => {
+                    covers.found.insert(key.clone(), bytes);
+                }
+                Ok(None) => {}
+                Err(_) => covers.failed += 1,
             }
-            let answer = fetch.get(&cover_url(set_id));
-            offline = answer.is_err();
-            answer
-        };
-        match cached(Some(&file), download) {
-            Ok(Some(bytes)) => {
-                covers.found.insert(set_id, bytes);
-            }
-            Ok(None) => {}
-            Err(_) => covers.failed += 1,
         }
         done += 1;
         progress(done, total);
     }
     covers
-}
-
-fn cover_file(cache_dir: &Path, set_id: u32) -> PathBuf {
-    cache_dir.join(format!("{set_id}.jpg"))
 }
 
 fn set_folders(songs: &Path) -> HashMap<u32, Vec<PathBuf>> {
@@ -304,30 +338,47 @@ fn set_folders(songs: &Path) -> HashMap<u32, Vec<PathBuf>> {
 }
 
 fn local_cover(folders: &HashMap<u32, Vec<PathBuf>>, set_id: u32) -> Option<Vec<u8>> {
-    folders.get(&set_id)?.iter().find_map(|folder| {
-        let background = background_in(folder)?;
-        if fs::metadata(&background).ok()?.len() > MAX_BACKGROUND_BYTES {
-            return None;
-        }
-        let mut reader = image::ImageReader::open(background)
+    folders
+        .get(&set_id)?
+        .iter()
+        .find_map(|folder| decode_cover(&background_in(folder)?))
+}
+
+fn map_cover(map: &Path) -> Option<Vec<u8>> {
+    let folder = map.parent()?;
+    let files = listing(folder)?;
+    let background = background_of(folder, map, &files).or_else(|| background_in(folder))?;
+    decode_cover(&background)
+}
+
+fn decode_cover(background: &Path) -> Option<Vec<u8>> {
+    if fs::metadata(background).ok()?.len() > MAX_BACKGROUND_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::open(background)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_BACKGROUND_SIDE);
+    limits.max_image_height = Some(MAX_BACKGROUND_SIDE);
+    limits.max_alloc = Some(MAX_BACKGROUND_ALLOC);
+    reader.limits(limits);
+    cut_cover(&reader.decode().ok()?)
+}
+
+fn listing(folder: &Path) -> Option<Vec<PathBuf>> {
+    Some(
+        fs::read_dir(folder)
             .ok()?
-            .with_guessed_format()
-            .ok()?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(MAX_BACKGROUND_SIDE);
-        limits.max_image_height = Some(MAX_BACKGROUND_SIDE);
-        limits.max_alloc = Some(MAX_BACKGROUND_ALLOC);
-        reader.limits(limits);
-        cut_cover(&reader.decode().ok()?)
-    })
+            .flatten()
+            .map(|entry| entry.path())
+            .collect(),
+    )
 }
 
 fn background_in(folder: &Path) -> Option<PathBuf> {
-    let files: Vec<PathBuf> = fs::read_dir(folder)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
+    let files = listing(folder)?;
     let mut maps: Vec<&PathBuf> = files
         .iter()
         .filter(|file| {
@@ -336,34 +387,37 @@ fn background_in(folder: &Path) -> Option<PathBuf> {
         })
         .collect();
     maps.sort();
-    maps.into_iter().find_map(|map| {
-        let mut text = Vec::new();
-        File::open(map)
-            .ok()?
-            .take(MAX_MAP_BYTES)
-            .read_to_end(&mut text)
-            .ok()?;
-        let name = background_name(&String::from_utf8_lossy(&text))?;
-        if !Path::new(&name)
-            .components()
-            .all(|part| matches!(part, Component::Normal(_)))
-        {
-            return None;
-        }
-        let wanted = folder.join(&name);
-        let found = if wanted.is_file() {
-            wanted
-        } else {
-            files
-                .iter()
-                .find(|file| {
-                    file.file_name()
-                        .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
-                })
-                .cloned()?
-        };
-        inside(folder, &found).then_some(found)
-    })
+    maps.into_iter()
+        .find_map(|map| background_of(folder, map, &files))
+}
+
+fn background_of(folder: &Path, map: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let mut text = Vec::new();
+    File::open(map)
+        .ok()?
+        .take(MAX_MAP_BYTES)
+        .read_to_end(&mut text)
+        .ok()?;
+    let name = background_name(&String::from_utf8_lossy(&text))?;
+    if !Path::new(&name)
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return None;
+    }
+    let wanted = folder.join(&name);
+    let found = if wanted.is_file() {
+        wanted
+    } else {
+        files
+            .iter()
+            .find(|file| {
+                file.file_name()
+                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(&name))
+            })
+            .cloned()?
+    };
+    inside(folder, &found).then_some(found)
 }
 
 fn inside(folder: &Path, file: &Path) -> bool {
@@ -466,6 +520,7 @@ fn keep(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
     use std::io::Cursor;
 
@@ -473,8 +528,8 @@ mod tests {
     use image::{ImageFormat, Rgb, RgbImage};
 
     use super::{
-        CachedCovers, Fetch, STRIP_HEIGHT, STRIP_WIDTH, background_name, cover_strip, cover_url,
-        covers, rounded_square,
+        CachedCovers, CoverKey, Fetch, LocalCovers, STRIP_HEIGHT, STRIP_WIDTH, background_name,
+        cover_strip, cover_url, covers, rounded_square,
     };
 
     fn songs_with(
@@ -540,14 +595,17 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         let found = covers(
-            &[123],
+            &[CoverKey::Set(123)],
             cache.path(),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
         assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
-        let cover = image::load_from_memory(&found.found[&123]).unwrap();
+        let cover = image::load_from_memory(&found.found[&CoverKey::Set(123)]).unwrap();
         assert_eq!((cover.width(), cover.height()), (900, 250));
         assert!(cache.path().join("123.jpg").is_file());
     }
@@ -565,23 +623,26 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         let cut = covers(
-            &[123],
+            &[CoverKey::Set(123)],
             &cache,
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
         assert_eq!(cut.failed, 0);
         let mut offline = Counting::new(Vec::new());
         let drawn = covers(
-            &[123],
+            &[CoverKey::Set(123)],
             &cache,
             None,
             &mut CachedCovers(&mut offline),
             &mut |_, _| {},
         );
         assert!(
-            drawn.found.contains_key(&123),
+            drawn.found.contains_key(&CoverKey::Set(123)),
             "the image step got no cover"
         );
         assert!(fetch.calls.is_empty() && offline.calls.is_empty());
@@ -600,9 +661,12 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         let cut = covers(
-            &[123],
+            &[CoverKey::Set(123)],
             &root.path().join("file").join("covers"),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
@@ -621,14 +685,17 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         let found = covers(
-            &[321],
+            &[CoverKey::Set(321)],
             cache.path(),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
         assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
-        assert!(found.found.contains_key(&321));
+        assert!(found.found.contains_key(&CoverKey::Set(321)));
     }
 
     #[test]
@@ -651,9 +718,12 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         covers(
-            &[111, 222],
+            &[CoverKey::Set(111), CoverKey::Set(222)],
             cache.path(),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
@@ -672,9 +742,12 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         covers(
-            &[333],
+            &[CoverKey::Set(333)],
             cache.path(),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
@@ -693,14 +766,166 @@ mod tests {
         );
         let mut fetch = Counting::new(jpeg(900, 250));
         let found = covers(
-            &[456, 789],
+            &[CoverKey::Set(456), CoverKey::Set(789)],
             cache.path(),
-            Some(songs.path()),
+            Some(&LocalCovers {
+                songs: Some(songs.path()),
+                ..LocalCovers::default()
+            }),
             &mut fetch,
             &mut |_, _| {},
         );
         assert_eq!(fetch.calls, [cover_url(456), cover_url(789)]);
         assert_eq!(found.found.len(), 2);
+    }
+
+    const OLD_MD5: &str = "0123456789ABCDEF0123456789abcdef";
+
+    fn plain(color: [u8; 3]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        RgbImage::from_pixel(1600, 900, Rgb(color))
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    fn played(songs: &std::path::Path, folder: &str) -> std::path::PathBuf {
+        songs
+            .join(folder)
+            .join("Artist - Title (Mapper) [Hard].osu")
+    }
+
+    #[test]
+    fn cover_keys_take_only_a_plain_md5() {
+        assert_eq!(CoverKey::of(Some(5), "../x"), Some(CoverKey::Set(5)));
+        assert_eq!(
+            CoverKey::of(None, OLD_MD5),
+            Some(CoverKey::Map(OLD_MD5.to_ascii_lowercase()))
+        );
+        for bad in [
+            "",
+            "../../etc/passwd",
+            "0123456789abcdef0123456789abcde/",
+            "abc",
+        ] {
+            assert_eq!(CoverKey::of(None, bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_map_without_a_set_number_gets_its_cover_from_its_own_folder() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "Old Artist - Old Title",
+            "0,0,\"bg.jpg\",0,0",
+            Some(("bg.jpg", jpeg(1920, 1080))),
+        );
+        let key = CoverKey::of(None, OLD_MD5).unwrap();
+        let local = LocalCovers {
+            songs: Some(songs.path()),
+            maps: HashMap::from([(key.clone(), played(songs.path(), "Old Artist - Old Title"))]),
+        };
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let found = covers(
+            std::slice::from_ref(&key),
+            cache.path(),
+            Some(&local),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
+        assert!(found.found.contains_key(&key));
+        assert!(
+            cache
+                .path()
+                .join(format!("map-{}.jpg", OLD_MD5.to_ascii_lowercase()))
+                .is_file()
+        );
+        let again = covers(
+            std::slice::from_ref(&key),
+            cache.path(),
+            None,
+            &mut CachedCovers(&mut fetch),
+            &mut |_, _| {},
+        );
+        assert!(again.found.contains_key(&key));
+    }
+
+    #[test]
+    fn a_set_in_a_folder_without_its_number_is_cut_from_the_played_map() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        songs_with(
+            songs.path(),
+            "Dancing Kung Fu",
+            "0,0,\"bg.png\",0,0",
+            Some(("bg.png", png(1920, 1080))),
+        );
+        let local = LocalCovers {
+            songs: Some(songs.path()),
+            maps: HashMap::from([(CoverKey::Set(77), played(songs.path(), "Dancing Kung Fu"))]),
+        };
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let found = covers(
+            &[CoverKey::Set(77)],
+            cache.path(),
+            Some(&local),
+            &mut fetch,
+            &mut |_, _| {},
+        );
+        assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
+        assert!(found.found.contains_key(&CoverKey::Set(77)));
+    }
+
+    #[test]
+    fn the_played_difficulty_gives_its_own_background() {
+        let songs = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let folder = songs.path().join("12 Artist - Title");
+        fs::create_dir_all(&folder).unwrap();
+        for (version, background, color) in [
+            ("Easy", "easy.png", [200, 30, 30]),
+            ("Hard", "hard.png", [30, 30, 200]),
+        ] {
+            fs::write(
+                folder.join(format!("Artist - Title (Mapper) [{version}].osu")),
+                format!("osu file format v14\n\n[Events]\n0,0,\"{background}\",0,0\n"),
+            )
+            .unwrap();
+            fs::write(folder.join(background), plain(color)).unwrap();
+        }
+        let local = LocalCovers {
+            songs: Some(songs.path()),
+            maps: HashMap::from([(
+                CoverKey::Set(12),
+                folder.join("Artist - Title (Mapper) [Hard].osu"),
+            )]),
+        };
+        let found = covers(
+            &[CoverKey::Set(12)],
+            cache.path(),
+            Some(&local),
+            &mut Counting::new(Vec::new()),
+            &mut |_, _| {},
+        );
+        let cover = image::load_from_memory(&found.found[&CoverKey::Set(12)])
+            .unwrap()
+            .to_rgb8();
+        let Rgb([red, _, blue]) = *cover.get_pixel(450, 125);
+        assert!(blue > 150 && red < 80, "{red} {blue}");
+    }
+
+    #[test]
+    fn a_map_key_is_never_downloaded() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut fetch = Counting::new(jpeg(900, 250));
+        let key = CoverKey::of(None, OLD_MD5).unwrap();
+        let found = covers(&[key], cache.path(), None, &mut fetch, &mut |_, _| {});
+        assert!(fetch.calls.is_empty(), "{:?}", fetch.calls);
+        assert!(found.found.is_empty());
+        assert_eq!(found.failed, 0);
     }
 
     fn jpeg(width: u32, height: u32) -> Vec<u8> {
@@ -815,17 +1040,27 @@ mod tests {
         fs::write(dir.path().join("7.jpg"), jpeg(20, 10)).unwrap();
         let mut fetch = Counting::new(jpeg(30, 15));
         let mut seen = Vec::new();
-        let found = covers(&[7, 8], dir.path(), None, &mut fetch, &mut |done, total| {
-            seen.push((done, total))
-        });
+        let found = covers(
+            &[CoverKey::Set(7), CoverKey::Set(8)],
+            dir.path(),
+            None,
+            &mut fetch,
+            &mut |done, total| seen.push((done, total)),
+        );
         assert_eq!(fetch.calls, vec![cover_url(8)]);
         assert_eq!(found.found.len(), 2);
-        assert_eq!(found.found[&7], jpeg(20, 10));
+        assert_eq!(found.found[&CoverKey::Set(7)], jpeg(20, 10));
         assert!(dir.path().join("8.jpg").exists());
         assert_eq!(seen.last(), Some(&(2, 2)));
 
         let mut again = Counting::new(Vec::new());
-        let found = covers(&[7, 8], dir.path(), None, &mut again, &mut |_, _| {});
+        let found = covers(
+            &[CoverKey::Set(7), CoverKey::Set(8)],
+            dir.path(),
+            None,
+            &mut again,
+            &mut |_, _| {},
+        );
         assert!(again.calls.is_empty());
         assert_eq!(found.found.len(), 2);
         assert_eq!(found.failed, 0);
@@ -837,7 +1072,13 @@ mod tests {
         let mut fetch = Counting::new(jpeg(30, 15));
         fetch.missing.push(cover_url(1));
         fetch.failing.push(cover_url(2));
-        let found = covers(&[1, 2, 3], dir.path(), None, &mut fetch, &mut |_, _| {});
+        let found = covers(
+            &[CoverKey::Set(1), CoverKey::Set(2), CoverKey::Set(3)],
+            dir.path(),
+            None,
+            &mut fetch,
+            &mut |_, _| {},
+        );
         assert!(found.found.is_empty());
         assert_eq!(found.failed, 2);
         assert!(!dir.path().join("1.jpg").exists());
@@ -852,7 +1093,13 @@ mod tests {
         fetch.failing.push(cover_url(2));
         fetch.missing.push(cover_url(1));
         let found = covers(
-            &[1, 2, 3, 4, 5],
+            &[
+                CoverKey::Set(1),
+                CoverKey::Set(2),
+                CoverKey::Set(3),
+                CoverKey::Set(4),
+                CoverKey::Set(5),
+            ],
             dir.path(),
             None,
             &mut fetch,
@@ -860,7 +1107,10 @@ mod tests {
         );
         assert_eq!(fetch.calls, vec![cover_url(1), cover_url(2)]);
         assert_eq!(found.failed, 3);
-        assert_eq!(found.found.keys().copied().collect::<Vec<_>>(), vec![4]);
+        assert_eq!(
+            found.found.keys().cloned().collect::<Vec<_>>(),
+            vec![CoverKey::Set(4)]
+        );
     }
 
     #[test]
@@ -869,7 +1119,13 @@ mod tests {
         fs::write(dir.path().join("4.jpg"), jpeg(20, 10)).unwrap();
         let mut inner = Counting::new(jpeg(30, 15));
         let mut fetch = CachedCovers(&mut inner);
-        let found = covers(&[3, 4], dir.path(), None, &mut fetch, &mut |_, _| {});
+        let found = covers(
+            &[CoverKey::Set(3), CoverKey::Set(4)],
+            dir.path(),
+            None,
+            &mut fetch,
+            &mut |_, _| {},
+        );
         assert_eq!(found.found.len(), 1);
         assert_eq!(found.failed, 0);
         let avatar = fetch.get("https://a.ppy.sh/7").unwrap();

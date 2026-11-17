@@ -25,10 +25,10 @@ use slint::{
 use crate::avatar;
 use crate::share::art::{self, Art};
 use crate::share::model::{
-    ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_sets, lost_rows, mods_width,
+    ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_keys, lost_rows, mods_width,
     potential_rows, stats, subtitle,
 };
-use crate::share::rasters::{self, CachedCovers, Fetch, HttpFetch};
+use crate::share::rasters::{self, CachedCovers, CoverKey, Fetch, HttpFetch};
 use crate::table::when_day;
 use crate::view::{color, status_chip};
 use crate::{ShareArt, ShareBadge, ShareItem, ShareLost, ShareMod, SharePotential};
@@ -68,7 +68,7 @@ type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
 #[derive(Default)]
 pub struct Prepared {
-    pub strips: HashMap<u32, Pixels>,
+    pub strips: HashMap<CoverKey, Pixels>,
     pub header_avatar: Option<Pixels>,
     pub badge_avatar: Option<Pixels>,
     pub covers_total: usize,
@@ -191,8 +191,9 @@ fn draw<C: ComponentHandle>(
 fn item(row: &ShareRow, prepared: &Prepared, art: &Art) -> ShareItem {
     let chip = status_chip(row.status);
     let cover = row
-        .set_id
-        .and_then(|set| prepared.strips.get(&set))
+        .cover
+        .as_ref()
+        .and_then(|key| prepared.strips.get(key))
         .map(|strip| Image::from_rgba8(strip.clone()));
     let mods: Vec<ShareMod> = row
         .mods
@@ -328,16 +329,16 @@ pub fn prepare(
     caches: &Caches,
     fetch: &mut dyn Fetch,
 ) -> Prepared {
-    let set_ids = cover_sets(scan, options);
+    let keys = cover_keys(scan, options);
     let mut covers_failed = 0;
     let mut strips = HashMap::new();
     if let Some(dir) = caches.covers.as_deref() {
-        let covers = rasters::covers(&set_ids, dir, None, fetch, &mut |_, _| {});
+        let covers = rasters::covers(&keys, dir, None, fetch, &mut |_, _| {});
         covers_failed = covers.failed;
-        for (set, bytes) in covers.found {
+        for (key, bytes) in covers.found {
             match rasters::cover_strip(&bytes) {
                 Ok(strip) => {
-                    strips.insert(set, strip);
+                    strips.insert(key, strip);
                 }
                 Err(_) => covers_failed += 1,
             }
@@ -367,7 +368,7 @@ pub fn prepare(
         strips,
         header_avatar,
         badge_avatar,
-        covers_total: set_ids.len(),
+        covers_total: keys.len(),
         covers_failed,
         avatar_error,
     }
