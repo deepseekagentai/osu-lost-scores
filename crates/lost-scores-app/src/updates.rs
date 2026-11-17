@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +14,7 @@ pub const PUBLIC_KEY: &str = "RWTdGCBD/sd6R9S9//74p+bhwfQvkEoXgmSdC0yoxrBOOo/IcT
 const SUMS: &str = "SHA256SUMS";
 const SIGNATURE: &str = "SHA256SUMS.minisig";
 const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
+const MAX_LIST: u64 = 64 * 1024;
 const WORK: &str = ".lost-scores-update";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,40 +120,66 @@ fn numbers(version: &str) -> Option<Vec<u64>> {
 }
 
 pub fn is_newer(tag: &str, current: &str) -> bool {
-    match (numbers(tag), numbers(current)) {
-        (Some(tag), Some(current)) => tag > current,
-        _ => tag.trim_start_matches(['v', 'V']) != current.trim_start_matches(['v', 'V']),
-    }
+    matches!((numbers(tag), numbers(current)), (Some(tag), Some(current)) if tag > current)
+}
+
+pub fn release_page(tag: &str) -> String {
+    format!("https://github.com/kz-lemon4ik/osu-lost-scores/releases/tag/{tag}")
 }
 
 pub trait Download {
-    fn bytes(&mut self, url: &str) -> Result<Vec<u8>>;
+    fn bytes(&mut self, url: &str, limit: u64) -> Result<Vec<u8>>;
 }
 
 impl Download for ureq::Agent {
-    fn bytes(&mut self, url: &str) -> Result<Vec<u8>> {
+    fn bytes(&mut self, url: &str, limit: u64) -> Result<Vec<u8>> {
         Ok(self
             .get(url)
             .call()?
             .body_mut()
             .with_config()
-            .limit(MAX_DOWNLOAD)
+            .limit(limit)
             .read_to_vec()?)
     }
 }
 
-pub fn verified_sum(sums: &[u8], signature: &str, public_key: &str, file: &str) -> Result<String> {
+#[derive(Debug)]
+pub enum Refusal {
+    Network(anyhow::Error),
+    Rejected(String),
+}
+
+pub fn verified_sum(
+    sums: &[u8],
+    signature: &str,
+    public_key: &str,
+    tag: &str,
+    file: &str,
+) -> Result<String> {
     let key = PublicKey::from_base64(public_key).map_err(|error| anyhow!("{error}"))?;
     let signature = Signature::decode(signature).map_err(|error| anyhow!("{error}"))?;
     key.verify(sums, &signature, false)
         .map_err(|error| anyhow!("the release signature does not match: {error}"))?;
-    std::str::from_utf8(sums)?
-        .lines()
-        .find_map(|line| {
-            let (hash, name) = line.split_once(char::is_whitespace)?;
-            (name.trim_start().trim_start_matches('*') == file).then(|| hash.to_ascii_lowercase())
-        })
-        .with_context(|| format!("the release lists no checksum for {file}"))
+    ensure!(
+        signature.trusted_comment() == format!("lost-scores {tag}"),
+        "the signature belongs to another release"
+    );
+    let mut found = None;
+    for line in std::str::from_utf8(sums)?.lines() {
+        let (hash, name) = line
+            .split_once("  ")
+            .or_else(|| line.split_once(" *"))
+            .context("the checksum list has a malformed line")?;
+        ensure!(
+            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "the checksum list has a malformed line"
+        );
+        if name == file {
+            ensure!(found.is_none(), "the checksum list names {file} twice");
+            found = Some(hash.to_ascii_lowercase());
+        }
+    }
+    found.with_context(|| format!("the release lists no checksum for {file}"))
 }
 
 pub fn check_sum(bytes: &[u8], expected: &str) -> Result<()> {
@@ -166,22 +194,25 @@ pub fn check_sum(bytes: &[u8], expected: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Verified {
+    pub version: String,
+    file_url: String,
+    sum: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Update {
     pub version: String,
     pub bytes: Vec<u8>,
 }
 
-pub fn prepare(
+pub fn verify(
     release: &Release,
-    current: &str,
     platform: Platform,
     public_key: &str,
     download: &mut dyn Download,
-) -> Result<Option<Update>> {
-    if !is_newer(&release.tag, current) {
-        return Ok(None);
-    }
+) -> Result<Verified, Refusal> {
     let version = release.tag.trim_start_matches(['v', 'V']).to_owned();
     let file = platform.file(&version);
     let url = |name: &str| {
@@ -190,16 +221,54 @@ pub fn prepare(
             .iter()
             .find(|asset| asset.name == name)
             .map(|asset| asset.url.clone())
+            .ok_or_else(|| Refusal::Rejected(format!("the release has no {name}")))
     };
-    let signature_url = url(SIGNATURE).context("the release is not signed")?;
-    let sums_url = url(SUMS).context("the release has no checksums")?;
-    let file_url = url(&file).with_context(|| format!("the release has no {file}"))?;
-    let sums = download.bytes(&sums_url)?;
-    let signature = String::from_utf8(download.bytes(&signature_url)?)?;
-    let expected = verified_sum(&sums, &signature, public_key, &file)?;
-    let bytes = download.bytes(&file_url)?;
-    check_sum(&bytes, &expected)?;
-    Ok(Some(Update { version, bytes }))
+    let signature_url = url(SIGNATURE)?;
+    let sums_url = url(SUMS)?;
+    let file_url = url(&file)?;
+    let sums = download
+        .bytes(&sums_url, MAX_LIST)
+        .map_err(Refusal::Network)?;
+    let signature = download
+        .bytes(&signature_url, MAX_LIST)
+        .map_err(Refusal::Network)?;
+    let signature = String::from_utf8(signature)
+        .map_err(|_| Refusal::Rejected("the signature is not text".to_owned()))?;
+    let sum = verified_sum(&sums, &signature, public_key, &release.tag, &file)
+        .map_err(|error| Refusal::Rejected(format!("{error:#}")))?;
+    Ok(Verified {
+        version,
+        file_url,
+        sum,
+    })
+}
+
+pub fn fetch(verified: &Verified, download: &mut dyn Download) -> Result<Update, Refusal> {
+    let bytes = download
+        .bytes(&verified.file_url, MAX_DOWNLOAD)
+        .map_err(Refusal::Network)?;
+    check_sum(&bytes, &verified.sum).map_err(|error| Refusal::Rejected(format!("{error:#}")))?;
+    Ok(Update {
+        version: verified.version.clone(),
+        bytes,
+    })
+}
+
+pub fn place_of(platform: Platform, program: &Path) -> Option<PathBuf> {
+    match platform {
+        Platform::Windows | Platform::Linux => program.parent().map(Path::to_path_buf),
+        Platform::MacOs => bundle_of(program)?.parent().map(Path::to_path_buf),
+    }
+}
+
+pub fn writable(dir: &Path) -> bool {
+    tempfile::NamedTempFile::new_in(dir).is_ok()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installed {
+    pub old_program: PathBuf,
+    pub leftovers: Vec<PathBuf>,
 }
 
 fn beside(path: &Path, suffix: &str) -> PathBuf {
@@ -208,70 +277,118 @@ fn beside(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn executable(path: &Path) -> Result<()> {
+fn stage(target: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let fresh = beside(target, ".new");
+    let mut file =
+        fs::File::create(&fresh).with_context(|| format!("cannot write {}", fresh.display()))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&fresh, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(fresh)
+}
+
+fn swap_in(target: &Path, fresh: &Path) -> Result<PathBuf> {
+    let old = beside(target, ".old");
+    let _ = fs::remove_file(&old);
+    #[cfg(unix)]
+    {
+        fs::hard_link(target, &old).with_context(|| format!("cannot keep {}", target.display()))?;
+        if let Err(error) = fs::rename(fresh, target) {
+            let _ = fs::remove_file(&old);
+            return Err(anyhow!("cannot put the new program in place: {error}"));
+        }
     }
     #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
-pub fn install_file(target: &Path, bytes: &[u8]) -> Result<()> {
-    let fresh = beside(target, ".new");
-    let old = beside(target, ".old");
-    fs::write(&fresh, bytes).with_context(|| format!("cannot write {}", fresh.display()))?;
-    executable(&fresh)?;
-    let _ = fs::remove_file(&old);
-    fs::rename(target, &old).with_context(|| format!("cannot move {}", target.display()))?;
-    if let Err(error) = fs::rename(&fresh, target) {
-        let _ = fs::rename(&old, target);
-        return Err(anyhow!("cannot put the new program in place: {error}"));
-    }
-    Ok(())
-}
-
-fn unpack(work: &Path, tool: &mut Command) -> Result<()> {
-    let status = tool.status().context("cannot start the unpacking tool")?;
-    ensure!(
-        status.success(),
-        "the update could not be unpacked in {}",
-        work.display()
-    );
-    Ok(())
-}
-
-pub fn install_from_tar(target: &Path, archive: &[u8], version: &str) -> Result<()> {
-    let parent = target.parent().context("the program has no folder")?;
-    let work = parent.join(WORK);
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work)?;
-    let result = (|| {
-        let file = work.join("update.tar.gz");
-        fs::write(&file, archive)?;
-        unpack(
-            &work,
-            Command::new("tar")
-                .arg("-xzf")
-                .arg(&file)
-                .arg("-C")
-                .arg(&work),
-        )?;
-        let unpacked = work.join(format!("lost-scores-{version}-linux-x64"));
-        install_file(target, &fs::read(unpacked.join("lost-scores-gui"))?)?;
-        let cli = parent.join("lost-scores");
-        if cli.is_file() {
-            install_file(&cli, &fs::read(unpacked.join("lost-scores"))?)?;
+    {
+        fs::rename(target, &old).with_context(|| format!("cannot move {}", target.display()))?;
+        if let Err(error) = fs::rename(fresh, target) {
+            let _ = fs::rename(&old, target);
+            return Err(anyhow!("cannot put the new program in place: {error}"));
         }
-        Ok(())
-    })();
-    let _ = fs::remove_dir_all(&work);
-    result
+    }
+    Ok(old)
 }
 
-pub fn swap_bundle(bundle: &Path, fresh: &Path) -> Result<()> {
+pub fn install_file(target: &Path, bytes: &[u8]) -> Result<Installed> {
+    let fresh = stage(target, bytes)?;
+    let old = swap_in(target, &fresh).inspect_err(|_| {
+        let _ = fs::remove_file(&fresh);
+    })?;
+    Ok(Installed {
+        old_program: old.clone(),
+        leftovers: vec![old],
+    })
+}
+
+fn work_folder(parent: &Path) -> Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix(WORK)
+        .tempdir_in(parent)
+        .with_context(|| format!("cannot unpack the update in {}", parent.display()))
+}
+
+fn unpack(tool: &mut Command) -> Result<()> {
+    let status = tool.status().context("cannot start the unpacking tool")?;
+    ensure!(status.success(), "the update could not be unpacked");
+    Ok(())
+}
+
+pub fn install_from_tar(target: &Path, archive: &[u8], version: &str) -> Result<Installed> {
+    let parent = target.parent().context("the program has no folder")?;
+    let work = work_folder(parent)?;
+    let file = work.path().join("update.tar.gz");
+    fs::write(&file, archive)?;
+    unpack(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&file)
+            .arg("-C")
+            .arg(work.path()),
+    )?;
+    let unpacked = work.path().join(format!("lost-scores-{version}-linux-x64"));
+    let window = fs::read(unpacked.join("lost-scores-gui"))?;
+    let cli_target = parent.join("lost-scores");
+    let cli = if cli_target.is_file() {
+        Some(fs::read(unpacked.join("lost-scores"))?)
+    } else {
+        None
+    };
+    let fresh_window = stage(target, &window)?;
+    let fresh_cli = match cli.map(|bytes| stage(&cli_target, &bytes)).transpose() {
+        Ok(fresh) => fresh,
+        Err(error) => {
+            let _ = fs::remove_file(&fresh_window);
+            return Err(error);
+        }
+    };
+    let old_window = swap_in(target, &fresh_window).inspect_err(|_| {
+        let _ = fs::remove_file(&fresh_window);
+        if let Some(fresh) = &fresh_cli {
+            let _ = fs::remove_file(fresh);
+        }
+    })?;
+    let mut leftovers = vec![old_window.clone()];
+    if let Some(fresh) = fresh_cli {
+        match swap_in(&cli_target, &fresh) {
+            Ok(old_cli) => leftovers.push(old_cli),
+            Err(error) => {
+                let _ = fs::remove_file(&fresh);
+                let _ = fs::rename(&old_window, target);
+                return Err(error);
+            }
+        }
+    }
+    Ok(Installed {
+        old_program: old_window,
+        leftovers,
+    })
+}
+
+pub fn swap_bundle(bundle: &Path, fresh: &Path) -> Result<PathBuf> {
     let old = beside(bundle, ".old");
     let _ = fs::remove_dir_all(&old);
     fs::rename(bundle, &old).with_context(|| format!("cannot move {}", bundle.display()))?;
@@ -279,28 +396,25 @@ pub fn swap_bundle(bundle: &Path, fresh: &Path) -> Result<()> {
         let _ = fs::rename(&old, bundle);
         return Err(anyhow!("cannot put the new program in place: {error}"));
     }
-    Ok(())
+    Ok(old)
 }
 
-pub fn install_bundle(bundle: &Path, archive: &[u8]) -> Result<()> {
+pub fn install_bundle(bundle: &Path, archive: &[u8]) -> Result<Installed> {
     let parent = bundle.parent().context("the program has no folder")?;
-    let work = parent.join(WORK);
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work)?;
-    let result = (|| {
-        let file = work.join("update.zip");
-        fs::write(&file, archive)?;
-        unpack(
-            &work,
-            Command::new("ditto")
-                .args(["-x", "-k"])
-                .arg(&file)
-                .arg(&work),
-        )?;
-        swap_bundle(bundle, &work.join("Lost Scores.app"))
-    })();
-    let _ = fs::remove_dir_all(&work);
-    result
+    let work = work_folder(parent)?;
+    let file = work.path().join("update.zip");
+    fs::write(&file, archive)?;
+    unpack(
+        Command::new("ditto")
+            .args(["-x", "-k"])
+            .arg(&file)
+            .arg(work.path()),
+    )?;
+    let old = swap_bundle(bundle, &work.path().join("Lost Scores.app"))?;
+    Ok(Installed {
+        old_program: old.join("Contents").join("MacOS").join("lost-scores-gui"),
+        leftovers: vec![old],
+    })
 }
 
 pub fn bundle_of(program: &Path) -> Option<PathBuf> {
@@ -311,7 +425,7 @@ pub fn bundle_of(program: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-pub fn install(platform: Platform, program: &Path, update: &Update) -> Result<()> {
+pub fn install(platform: Platform, program: &Path, update: &Update) -> Result<Installed> {
     match platform {
         Platform::Windows => install_file(program, &update.bytes),
         Platform::Linux => install_from_tar(program, &update.bytes, &update.version),
@@ -322,16 +436,11 @@ pub fn install(platform: Platform, program: &Path, update: &Update) -> Result<()
     }
 }
 
-pub fn clean_up(target: &Path) {
-    let old = beside(target, ".old");
-    if old.is_dir() {
-        let _ = fs::remove_dir_all(&old);
+pub fn remove_leftover(path: &Path) {
+    if path.is_dir() {
+        let _ = fs::remove_dir_all(path);
     } else {
-        let _ = fs::remove_file(&old);
-    }
-    let _ = fs::remove_file(beside(target, ".new"));
-    if let Some(parent) = target.parent() {
-        let _ = fs::remove_dir_all(parent.join(WORK));
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -340,11 +449,12 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    use anyhow::{Result, anyhow};
+    use anyhow::{Result, anyhow, ensure};
 
     use super::{
-        Asset, Download, PUBLIC_KEY, Platform, Release, bundle_of, check_sum, clean_up,
-        install_file, is_newer, parse_release, prepare, swap_bundle, verified_sum,
+        Asset, Download, PUBLIC_KEY, Platform, Refusal, Release, bundle_of, check_sum, fetch,
+        install_file, is_newer, parse_release, place_of, remove_leftover, swap_bundle,
+        verified_sum, verify, writable,
     };
 
     const TEST_KEY: &str = "RWT4qOlmRvAyTEn8Jjsu5Qqzej6v4pYcdTVRWW53SnLBPxbVexasWtfu";
@@ -353,21 +463,28 @@ mod tests {
     const PROGRAM: &[u8] = b"new program 1.2.3\n";
     const EXE: &str = "lost-scores-1.2.3-windows-x64.exe";
 
-    struct Files(HashMap<String, Vec<u8>>);
+    struct Files {
+        files: HashMap<String, Vec<u8>>,
+        limits: Vec<(String, u64)>,
+    }
 
     impl Download for Files {
-        fn bytes(&mut self, url: &str) -> Result<Vec<u8>> {
-            self.0
+        fn bytes(&mut self, url: &str, limit: u64) -> Result<Vec<u8>> {
+            self.limits.push((url.to_owned(), limit));
+            let bytes = self
+                .files
                 .get(url)
                 .cloned()
-                .ok_or_else(|| anyhow!("{url} is missing"))
+                .ok_or_else(|| anyhow!("{url} is missing"))?;
+            ensure!(bytes.len() as u64 <= limit, "{url} is too big");
+            Ok(bytes)
         }
     }
 
-    fn release(names: &[&str]) -> Release {
+    fn release(tag: &str, names: &[&str]) -> Release {
         Release {
-            tag: "v1.2.3".into(),
-            url: "https://github.com/x/y/releases/tag/v1.2.3".into(),
+            tag: tag.into(),
+            url: format!("https://github.com/x/y/releases/tag/{tag}"),
             assets: names
                 .iter()
                 .map(|name| Asset {
@@ -378,106 +495,110 @@ mod tests {
         }
     }
 
-    fn files(program: &[u8]) -> Files {
-        Files(HashMap::from([
-            (
-                "https://files/SHA256SUMS".to_owned(),
-                SUMS.as_bytes().to_vec(),
-            ),
-            (
-                "https://files/SHA256SUMS.minisig".to_owned(),
-                SIGNATURE.as_bytes().to_vec(),
-            ),
-            (format!("https://files/{EXE}"), program.to_vec()),
-        ]))
+    fn files(sums: &[u8], program: &[u8]) -> Files {
+        Files {
+            files: HashMap::from([
+                ("https://files/SHA256SUMS".to_owned(), sums.to_vec()),
+                (
+                    "https://files/SHA256SUMS.minisig".to_owned(),
+                    SIGNATURE.as_bytes().to_vec(),
+                ),
+                (format!("https://files/{EXE}"), program.to_vec()),
+            ]),
+            limits: Vec::new(),
+        }
     }
+
+    const ALL: [&str; 3] = [EXE, "SHA256SUMS", "SHA256SUMS.minisig"];
 
     #[test]
     fn a_signed_list_gives_the_checksum_of_a_file() {
         assert_eq!(
-            verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, EXE).unwrap(),
+            verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v1.2.3", EXE).unwrap(),
             "4715d0af987417a8f4b79e8d8df2c4a7c69d8b9a8ffc801c058bc9739ef1fac5"
         );
-        assert!(verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, "other.exe").is_err());
+        assert!(verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v1.2.3", "other.exe").is_err());
     }
 
     #[test]
-    fn a_list_changed_or_signed_by_another_key_is_refused() {
-        assert!(verified_sum(SUMS.as_bytes(), SIGNATURE, PUBLIC_KEY, EXE).is_err());
+    fn a_list_changed_signed_by_another_key_or_for_another_tag_is_refused() {
+        assert!(verified_sum(SUMS.as_bytes(), SIGNATURE, PUBLIC_KEY, "v1.2.3", EXE).is_err());
         let changed = SUMS.replace("4715", "0000");
-        assert!(verified_sum(changed.as_bytes(), SIGNATURE, TEST_KEY, EXE).is_err());
+        assert!(verified_sum(changed.as_bytes(), SIGNATURE, TEST_KEY, "v1.2.3", EXE).is_err());
+        let other = verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v1.2.4", EXE).unwrap_err();
+        assert!(other.to_string().contains("another release"), "{other}");
     }
 
     #[test]
     fn the_downloaded_file_must_match_its_checksum() {
-        let expected = verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, EXE).unwrap();
+        let expected = verified_sum(SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v1.2.3", EXE).unwrap();
         assert!(check_sum(PROGRAM, &expected).is_ok());
         assert!(check_sum(b"something else", &expected).is_err());
     }
 
     #[test]
-    fn a_newer_signed_release_is_prepared_and_anything_else_is_not() {
-        let all = [EXE, "SHA256SUMS", "SHA256SUMS.minisig"];
-        let update = prepare(
-            &release(&all),
-            "1.2.2",
+    fn a_newer_signed_release_is_verified_then_fetched() {
+        let mut download = files(SUMS.as_bytes(), PROGRAM);
+        let verified = verify(
+            &release("v1.2.3", &ALL),
             Platform::Windows,
             TEST_KEY,
-            &mut files(PROGRAM),
+            &mut download,
         )
-        .unwrap()
         .unwrap();
-        assert_eq!(update.version, "1.2.3");
+        assert_eq!(verified.version, "1.2.3");
+        let update = fetch(&verified, &mut download).unwrap();
         assert_eq!(update.bytes, PROGRAM);
-        assert_eq!(
-            prepare(
-                &release(&all),
-                "1.2.3",
-                Platform::Windows,
-                TEST_KEY,
-                &mut files(PROGRAM)
-            )
-            .unwrap(),
-            None
-        );
-        let unsigned = prepare(
-            &release(&[EXE, "SHA256SUMS"]),
-            "1.2.2",
+        assert_eq!(download.limits[0].1, 64 * 1024);
+        assert_eq!(download.limits[1].1, 64 * 1024);
+        assert_eq!(download.limits[2].1, 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn unsigned_tampered_or_foreign_releases_are_rejected() {
+        let rejected =
+            |result: Result<super::Verified, Refusal>| matches!(result, Err(Refusal::Rejected(_)));
+        let unsigned = release("v1.2.3", &[EXE, "SHA256SUMS"]);
+        assert!(rejected(verify(
+            &unsigned,
             Platform::Windows,
             TEST_KEY,
-            &mut files(PROGRAM),
-        );
-        assert!(unsigned.unwrap_err().to_string().contains("not signed"));
-        assert!(
-            prepare(
-                &release(&all),
-                "1.2.2",
+            &mut files(SUMS.as_bytes(), PROGRAM)
+        )));
+        assert!(rejected(verify(
+            &release("v1.2.3", &ALL),
+            Platform::Windows,
+            PUBLIC_KEY,
+            &mut files(SUMS.as_bytes(), PROGRAM)
+        )));
+        assert!(rejected(verify(
+            &release("v1.2.3", &ALL),
+            Platform::Linux,
+            TEST_KEY,
+            &mut files(SUMS.as_bytes(), PROGRAM)
+        )));
+        let mut download = files(SUMS.as_bytes(), b"tampered");
+        let verified = verify(
+            &release("v1.2.3", &ALL),
+            Platform::Windows,
+            TEST_KEY,
+            &mut download,
+        )
+        .unwrap();
+        assert!(matches!(
+            fetch(&verified, &mut download),
+            Err(Refusal::Rejected(_))
+        ));
+        let huge = vec![b'a'; 64 * 1024 + 1];
+        assert!(matches!(
+            verify(
+                &release("v1.2.3", &ALL),
                 Platform::Windows,
                 TEST_KEY,
-                &mut files(b"tampered")
-            )
-            .is_err()
-        );
-        assert!(
-            prepare(
-                &release(&all),
-                "1.2.2",
-                Platform::Windows,
-                PUBLIC_KEY,
-                &mut files(PROGRAM)
-            )
-            .is_err()
-        );
-        assert!(
-            prepare(
-                &release(&all),
-                "1.2.2",
-                Platform::Linux,
-                TEST_KEY,
-                &mut files(PROGRAM)
-            )
-            .is_err()
-        );
+                &mut files(&huge, PROGRAM)
+            ),
+            Err(Refusal::Network(_))
+        ));
     }
 
     #[test]
@@ -497,26 +618,39 @@ mod tests {
     }
 
     #[test]
-    fn versions_compare_by_their_numbers() {
+    fn only_a_higher_plain_version_is_newer() {
         assert!(is_newer("v0.10.0", "0.9.9"));
         assert!(!is_newer("v0.7.27", "0.7.27"));
         assert!(!is_newer("0.7.26", "0.7.27"));
+        assert!(!is_newer("v1.9.1", "2.0.0-rc.1"));
+        assert!(!is_newer("v0.9.0-beta", "1.4.0"));
+        assert!(!is_newer("v2.0.0-rc.1", "1.0.0"));
     }
 
     #[test]
-    fn the_new_program_takes_the_old_ones_place_until_the_next_start() {
+    fn the_new_program_takes_the_old_ones_place_and_the_old_one_stays_beside_it() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("lost-scores-gui.exe");
         fs::write(&program, b"old program").unwrap();
-        install_file(&program, PROGRAM).unwrap();
+        let installed = install_file(&program, PROGRAM).unwrap();
         assert_eq!(fs::read(&program).unwrap(), PROGRAM);
         assert_eq!(
-            fs::read(dir.path().join("lost-scores-gui.exe.old")).unwrap(),
-            b"old program"
+            installed.old_program,
+            dir.path().join("lost-scores-gui.exe.old")
         );
-        clean_up(&program);
-        assert!(!dir.path().join("lost-scores-gui.exe.old").exists());
-        assert!(program.is_file());
+        assert_eq!(fs::read(&installed.old_program).unwrap(), b"old program");
+        assert!(!dir.path().join("lost-scores-gui.exe.new").exists());
+        assert_eq!(
+            place_of(Platform::Windows, &program).as_deref(),
+            Some(dir.path())
+        );
+        assert!(writable(dir.path()));
+        fs::write(dir.path().join("my backup.old"), b"keep").unwrap();
+        for leftover in &installed.leftovers {
+            remove_leftover(leftover);
+        }
+        assert!(!installed.old_program.exists());
+        assert!(dir.path().join("my backup.old").exists());
     }
 
     #[test]
@@ -537,12 +671,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bundle_of(&program).as_deref(), Some(bundle.as_path()));
-        swap_bundle(&bundle, &fresh).unwrap();
+        assert_eq!(
+            place_of(Platform::MacOs, &program).as_deref(),
+            Some(dir.path())
+        );
+        let old = swap_bundle(&bundle, &fresh).unwrap();
         assert_eq!(fs::read(&program).unwrap(), b"new");
-        assert!(dir.path().join("Lost Scores.app.old").is_dir());
-        clean_up(&bundle);
-        assert!(!dir.path().join("Lost Scores.app.old").exists());
+        assert_eq!(old, dir.path().join("Lost Scores.app.old"));
+        remove_leftover(&old);
+        assert!(!old.exists());
         assert_eq!(bundle_of(&dir.path().join("lost-scores-gui")), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_archive(dir: &std::path::Path, with_cli: bool) -> Vec<u8> {
+        let packed = dir.join("pack").join("lost-scores-1.2.3-linux-x64");
+        fs::create_dir_all(&packed).unwrap();
+        fs::write(packed.join("lost-scores-gui"), b"new window").unwrap();
+        if with_cli {
+            fs::write(packed.join("lost-scores"), b"new cli").unwrap();
+        }
+        let archive = dir.join("update.tar.gz");
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(dir.join("pack"))
+            .arg("lost-scores-1.2.3-linux-x64")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        fs::read(&archive).unwrap()
     }
 
     #[cfg(target_os = "linux")]
@@ -554,24 +713,38 @@ mod tests {
         let program = installed.join("lost-scores-gui");
         fs::write(&program, b"old window").unwrap();
         fs::write(installed.join("lost-scores"), b"old cli").unwrap();
-        let packed = dir.path().join("pack").join("lost-scores-1.2.3-linux-x64");
-        fs::create_dir_all(&packed).unwrap();
-        fs::write(packed.join("lost-scores-gui"), b"new window").unwrap();
-        fs::write(packed.join("lost-scores"), b"new cli").unwrap();
-        let archive = dir.path().join("update.tar.gz");
-        let status = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(dir.path().join("pack"))
-            .arg("lost-scores-1.2.3-linux-x64")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        super::install_from_tar(&program, &fs::read(&archive).unwrap(), "1.2.3").unwrap();
+        let archive = linux_archive(dir.path(), true);
+        let done = super::install_from_tar(&program, &archive, "1.2.3").unwrap();
         assert_eq!(fs::read(&program).unwrap(), b"new window");
         assert_eq!(fs::read(installed.join("lost-scores")).unwrap(), b"new cli");
-        assert!(!installed.join(".lost-scores-update").exists());
+        assert_eq!(fs::read(&done.old_program).unwrap(), b"old window");
+        assert_eq!(done.leftovers.len(), 2);
+        let names: Vec<String> = fs::read_dir(&installed)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.starts_with(".lost-scores-update")),
+            "{names:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linux_archive_without_the_command_line_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("bin");
+        fs::create_dir_all(&installed).unwrap();
+        let program = installed.join("lost-scores-gui");
+        fs::write(&program, b"old window").unwrap();
+        fs::write(installed.join("lost-scores"), b"old cli").unwrap();
+        let archive = linux_archive(dir.path(), false);
+        assert!(super::install_from_tar(&program, &archive, "1.2.3").is_err());
+        assert_eq!(fs::read(&program).unwrap(), b"old window");
+        assert_eq!(fs::read(installed.join("lost-scores")).unwrap(), b"old cli");
+        assert!(!installed.join("lost-scores-gui.new").exists());
     }
 
     #[test]

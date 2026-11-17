@@ -29,6 +29,7 @@ pub struct Settings {
     pub scores_to_show: u16,
     pub catbox_confirmed: bool,
     pub update_checked_at: Option<i64>,
+    pub update_leftovers: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -42,6 +43,7 @@ impl Default for Settings {
             scores_to_show: DEFAULT_SCORES_TO_SHOW,
             catbox_confirmed: false,
             update_checked_at: None,
+            update_leftovers: Vec::new(),
         }
     }
 }
