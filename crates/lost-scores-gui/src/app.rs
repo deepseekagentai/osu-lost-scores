@@ -555,16 +555,14 @@ impl Session {
         let session = self.clone();
         state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
         let session = self.clone();
-        state.on_open_hall(move || {
-            session.launch("the page", format!("{SITE}/hall-of-copium").into())
-        });
+        state.on_open_hall(move || session.launch("the page", format!("{SITE}/copium").into()));
         let session = self.clone();
         state.on_open_profile(move || {
             let page = session
                 .login
                 .borrow()
                 .as_ref()
-                .map(|login| format!("{SITE}/profile/{}", login.osu_id));
+                .map(|login| format!("{SITE}/u/{}", login.osu_id));
             if let Some(page) = page {
                 session.launch("the page", page.into());
             }
@@ -2986,8 +2984,8 @@ mod tests {
         assert_eq!(
             opened,
             [
-                "https://lost.lemon4ik.kz/hall-of-copium".to_owned(),
-                format!("https://lost.lemon4ik.kz/profile/{}", login().osu_id),
+                "https://lost.lemon4ik.kz/copium".to_owned(),
+                format!("https://lost.lemon4ik.kz/u/{}", login().osu_id),
             ]
         );
     }
