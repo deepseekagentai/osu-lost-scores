@@ -40,12 +40,14 @@ pub struct ScanState {
     pub progress: f32,
     pub status: String,
     pub log: Vec<String>,
+    check_missing: bool,
 }
 
 impl ScanState {
-    pub fn start(&mut self) {
+    pub fn start(&mut self, check_missing: bool) {
         self.phase = Phase::Scanning;
         self.progress = 0.0;
+        self.check_missing = check_missing;
         self.status = "Starting scan...".to_owned();
     }
 
@@ -54,7 +56,7 @@ impl ScanState {
             Event::Log(text) => self.log.push(stamp(clock, text)),
             Event::Progress { step, done, total } => {
                 self.status = status_text(*step, *done, *total);
-                self.progress = self.progress.max(progress_value(*step, *done, *total));
+                self.progress = self.progress.max(self.position(*step, *done, *total));
             }
         }
     }
@@ -65,7 +67,7 @@ impl ScanState {
 
     pub fn saving(&mut self) {
         self.status = "Saving results...".to_owned();
-        self.progress = 1.0;
+        self.progress = self.progress.max(self.span(Step::Covers).0);
     }
 
     pub fn finish(&mut self, lost_total: usize, lost_ranked: usize, images: bool) {
@@ -111,34 +113,55 @@ pub fn status_text(step: Step, done: usize, total: usize) -> String {
     }
 }
 
-fn span(step: Step) -> (f32, f32) {
-    match step {
-        Step::Songs => (0.0, 0.15),
-        Step::Replays => (0.15, 0.10),
-        Step::MissingMaps => (0.25, 0.15),
-        Step::Pp => (0.40, 0.25),
-        Step::Catalog => (0.65, 0.25),
-        Step::OnlineTop => (0.90, 0.05),
-        Step::Potential => (0.95, 0.05),
-        Step::Refresh | Step::Covers | Step::Images => (1.0, 0.0),
-    }
-}
+const BAR: [(Step, f32); 10] = [
+    (Step::Songs, 10.0),
+    (Step::Replays, 6.0),
+    (Step::MissingMaps, 14.0),
+    (Step::Pp, 20.0),
+    (Step::Catalog, 14.0),
+    (Step::OnlineTop, 6.0),
+    (Step::Potential, 4.0),
+    (Step::Covers, 14.0),
+    (Step::Images, 8.0),
+    (Step::Refresh, 4.0),
+];
 
-pub fn progress_value(step: Step, done: usize, total: usize) -> f32 {
-    let (start, weight) = span(step);
-    let fraction = if total == 0 {
-        1.0
-    } else {
-        (done as f32 / total as f32).clamp(0.0, 1.0)
-    };
-    start + weight * fraction
+impl ScanState {
+    fn span(&self, step: Step) -> (f32, f32) {
+        let weight = |candidate: Step, weight: f32| {
+            if candidate == Step::MissingMaps && !self.check_missing {
+                0.0
+            } else {
+                weight
+            }
+        };
+        let whole: f32 = BAR.iter().map(|&(step, w)| weight(step, w)).sum();
+        let mut start = 0.0;
+        for &(candidate, w) in &BAR {
+            if candidate == step {
+                return (start / whole, weight(candidate, w) / whole);
+            }
+            start += weight(candidate, w);
+        }
+        (1.0, 0.0)
+    }
+
+    fn position(&self, step: Step, done: usize, total: usize) -> f32 {
+        let (start, weight) = self.span(step);
+        let fraction = if total == 0 {
+            1.0
+        } else {
+            (done as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        start + weight * fraction
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use lost_scores_app::pipeline::{Event, Step};
 
-    use super::{Phase, ScanState, check_folders, progress_value, status_text};
+    use super::{Phase, ScanState, check_folders, status_text};
 
     const CLOCK: (u8, u8, u8) = (9, 30, 5);
 
@@ -149,7 +172,7 @@ mod tests {
     #[test]
     fn a_finished_scan_with_images_says_so() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.finish(340, 238, true);
         assert_eq!(
             state.status,
@@ -160,7 +183,7 @@ mod tests {
     #[test]
     fn a_failed_scan_returns_to_idle_with_the_error_in_the_log() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.apply(&progress(Step::Pp, 5, 10), CLOCK);
         state.fail("the osu! API answered 401", CLOCK);
         assert_eq!(state.phase, Phase::Failed);
@@ -231,7 +254,7 @@ mod tests {
     #[test]
     fn a_wait_in_the_shared_queue_shows_in_the_status_line() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.apply(&progress(Step::Catalog, 1, 15), CLOCK);
         let reached = state.progress;
         state.queued(12);
@@ -244,7 +267,7 @@ mod tests {
     #[test]
     fn progress_never_goes_back_within_a_scan() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.apply(&progress(Step::Pp, 50, 100), CLOCK);
         let reached = state.progress;
         state.apply(&progress(Step::Replays, 1, 100), CLOCK);
@@ -255,28 +278,88 @@ mod tests {
 
     #[test]
     fn step_weights_add_up_to_the_whole_bar() {
-        assert_eq!(progress_value(Step::Songs, 0, 10), 0.0);
-        assert!((progress_value(Step::Songs, 10, 10) - 0.15).abs() < 1e-6);
-        assert!((progress_value(Step::Replays, 10, 10) - 0.25).abs() < 1e-6);
-        assert!((progress_value(Step::MissingMaps, 10, 10) - 0.40).abs() < 1e-6);
-        assert!((progress_value(Step::Pp, 10, 10) - 0.65).abs() < 1e-6);
-        assert!((progress_value(Step::Catalog, 10, 10) - 0.90).abs() < 1e-6);
-        assert!((progress_value(Step::OnlineTop, 1, 1) - 0.95).abs() < 1e-6);
-        assert!((progress_value(Step::Potential, 1, 1) - 1.0).abs() < 1e-6);
+        for check_missing in [false, true] {
+            let mut state = ScanState::default();
+            state.start(check_missing);
+            let mut reached = 0.0;
+            for step in [
+                Step::Songs,
+                Step::Replays,
+                Step::MissingMaps,
+                Step::Pp,
+                Step::Catalog,
+                Step::OnlineTop,
+                Step::Potential,
+                Step::Covers,
+                Step::Images,
+                Step::Refresh,
+            ] {
+                state.apply(&progress(step, 0, 4), CLOCK);
+                assert!(
+                    (state.progress - reached).abs() < 1e-6,
+                    "{step:?} starts at {}",
+                    state.progress
+                );
+                state.apply(&progress(step, 4, 4), CLOCK);
+                reached = state.progress;
+            }
+            assert!((reached - 1.0).abs() < 1e-6, "{reached}");
+        }
+    }
+
+    #[test]
+    fn missing_maps_take_a_part_of_the_bar_only_when_they_are_looked_up() {
+        let mut off = ScanState::default();
+        off.start(false);
+        off.apply(&progress(Step::Replays, 10, 10), CLOCK);
+        let replays = off.progress;
+        off.apply(&progress(Step::Pp, 0, 10), CLOCK);
+        assert!((off.progress - replays).abs() < 1e-6);
+        let mut on = ScanState::default();
+        on.start(true);
+        on.apply(&progress(Step::Replays, 10, 10), CLOCK);
+        let before = on.progress;
+        on.apply(&progress(Step::MissingMaps, 5, 10), CLOCK);
+        assert!(on.progress > before);
+    }
+
+    #[test]
+    fn the_bar_fills_only_when_the_pictures_and_statuses_are_done() {
+        let mut state = ScanState::default();
+        state.start(false);
+        state.apply(&progress(Step::Potential, 1, 1), CLOCK);
+        let scanned = state.progress;
+        assert!(scanned < 0.8, "{scanned}");
+        state.saving();
+        assert!((state.progress - scanned).abs() < 1e-6);
+        state.apply(&progress(Step::Covers, 160, 319), CLOCK);
+        let covers = state.progress;
+        assert!(covers > scanned && covers < 1.0, "{covers}");
+        assert_eq!(state.status, "Preparing covers: 160 of 319");
+        state.apply(&progress(Step::Images, 0, 1), CLOCK);
+        assert!(state.progress > covers && state.progress < 1.0);
+        state.apply(&progress(Step::Refresh, 1, 2), CLOCK);
+        assert!(state.progress < 1.0);
+        state.finish(339, 239, true);
+        assert_eq!(state.progress, 1.0);
     }
 
     #[test]
     fn an_empty_stage_counts_as_complete_and_never_divides_by_zero() {
-        let value = progress_value(Step::Pp, 0, 0);
-        assert!(value.is_finite());
-        assert!((value - 0.65).abs() < 1e-6);
+        let mut state = ScanState::default();
+        state.start(false);
+        state.apply(&progress(Step::Pp, 0, 0), CLOCK);
+        let empty = state.progress;
+        state.apply(&progress(Step::Catalog, 0, 1), CLOCK);
+        assert!(empty.is_finite());
+        assert!((state.progress - empty).abs() < 1e-6);
         assert_eq!(status_text(Step::Pp, 0, 0), "Calculating pp: 0 of 0");
     }
 
     #[test]
     fn log_lines_get_a_timestamp() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.apply(&Event::Log("player: Lemon".into()), CLOCK);
         assert_eq!(state.log, ["[09:30:05] player: Lemon"]);
     }
@@ -286,7 +369,7 @@ mod tests {
         let mut state = ScanState::default();
         assert!(!state.can_start(false));
         assert!(state.can_start(true));
-        state.start();
+        state.start(false);
         assert_eq!(state.status, "Starting scan...");
         assert!(!state.can_start(true));
     }
@@ -303,7 +386,7 @@ mod tests {
     #[test]
     fn a_finished_scan_reports_its_counts() {
         let mut state = ScanState::default();
-        state.start();
+        state.start(false);
         state.finish(340, 238, false);
         assert_eq!(state.phase, Phase::Idle);
         assert_eq!(state.progress, 1.0);

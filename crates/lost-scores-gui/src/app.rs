@@ -1888,7 +1888,8 @@ impl Session {
     }
 
     fn begin_scan(&self) {
-        self.scan.borrow_mut().start();
+        let check_missing = self.settings.borrow().check_missing;
+        self.scan.borrow_mut().start(check_missing);
         let showing = self.window.global::<State>().get_show_results();
         self.opens_results
             .set(!self.window.get_two_columns() && !showing);
@@ -1971,9 +1972,6 @@ impl Session {
                 self.refreshing.set(true);
                 self.counts
                     .set((done.scan.lost_total, done.scan.lost_ranked));
-                self.scan
-                    .borrow_mut()
-                    .finish(done.scan.lost_total, done.scan.lost_ranked, false);
                 self.show_results(&done.scan);
                 self.images_view.set(true);
                 self.register(&done.folder, &done.scan);
