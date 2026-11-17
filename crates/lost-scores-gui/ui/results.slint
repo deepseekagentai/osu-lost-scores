@@ -1176,6 +1176,7 @@ export component ResultsPanel inherits Rectangle {
     in property <bool> show-back: false;
     property <bool> narrow: true;
     property <bool> switch-up: false;
+    property <bool> tight: true;
     property <bool> split-foot: root.narrow && State.foot.length > 3;
     property <int> jump: State.jump-serial;
     property <float> mode-t: State.images-shown ? 1 : 0;
@@ -1192,11 +1193,13 @@ export component ResultsPanel inherits Rectangle {
     property <float> body-fade: Math.abs(root.mode-t - 0.5) * 2;
     init => {
         root.narrow = root.width < 980px;
+        root.tight = root.width < 760px;
         root.switch-up = root.width >= 800px;
         State.preview-room-changed(root.width - 66px);
     }
     changed width => {
         root.narrow = root.width < 980px;
+        root.tight = root.width < 760px;
         root.switch-up = root.width >= 800px;
         State.preview-room-changed(root.width - 66px);
     }
@@ -1278,7 +1281,7 @@ export component ResultsPanel inherits Rectangle {
                 }
                 if State.has-results && !(root.narrow && self.searching): ScanSelector { }
                 if State.has-results && !(root.narrow && self.searching): SendButton {
-                narrow: root.width < 760px;
+                narrow: root.tight;
             }
                 if !self.searching: Rectangle { horizontal-stretch: 1; }
                 if self.searching: SearchField {
