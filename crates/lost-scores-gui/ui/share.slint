@@ -593,6 +593,7 @@ export component ShareBadge inherits Window {
     in property <string> lost;
     in property <string> rank-date;
     out property <length> image-height: 140px;
+    out property <bool> lost-fits: lost-text.preferred-width <= lost-text.width;
     width: 520px;
     height: 140px;
     background: transparent;
@@ -688,7 +689,7 @@ export component ShareBadge inherits Window {
             }
             HorizontalLayout {
                 spacing: 8px;
-                Text {
+                lost-text := Text {
                     text: root.lost;
                     color: T.meta;
                     font-size: 12.5px;

@@ -6,7 +6,7 @@ use lost_scores_app::rows::{mod_acronyms, thousands};
 use lost_scores_core::grade::Grade;
 use lost_scores_core::maps::MapStatus;
 
-use crate::table::when_day;
+use crate::table::when_short;
 use crate::view::{lost_text, weighted_text};
 
 pub const MAX_IMAGE_ROWS: usize = 250;
@@ -176,7 +176,7 @@ pub fn badge_lost_line(scan: &SavedScan, options: &ShareOptions) -> String {
     let plural = |count: usize| if count == 1 { "play" } else { "plays" };
     if options.include_all {
         format!(
-            "{} lost {}, {} on ranked maps",
+            "{} lost {}, {} ranked",
             scan.lost.len(),
             plural(scan.lost.len()),
             ranked
@@ -187,7 +187,7 @@ pub fn badge_lost_line(scan: &SavedScan, options: &ShareOptions) -> String {
 }
 
 pub fn badge_when_line(scan: &SavedScan, zone: &TimeZone) -> String {
-    let day = when_day(scan.made_at, zone);
+    let day = when_short(scan.made_at, zone);
     match scan.potential.as_ref().and_then(|p| p.global_rank) {
         Some(rank) => format!("#{} · {day}", thousands(f64::from(rank))),
         None => day,
@@ -485,16 +485,13 @@ mod tests {
         );
         assert_eq!(
             badge_lost_line(&plain, &options(10, true, false)),
-            "3 lost plays, 2 on ranked maps"
+            "3 lost plays, 2 ranked"
         );
         assert_eq!(
             badge_when_line(&plain, &TimeZone::UTC),
-            "#1,234 · 14 November 2026"
+            "#1,234 · 14 Nov 2026"
         );
         let unranked = scan(Vec::new(), Some(potential(Vec::new(), None)));
-        assert_eq!(
-            badge_when_line(&unranked, &TimeZone::UTC),
-            "14 November 2026"
-        );
+        assert_eq!(badge_when_line(&unranked, &TimeZone::UTC), "14 Nov 2026");
     }
 }
