@@ -136,4 +136,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.meta.outputs.version }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "osu! Lost Scores Analyzer $VERSION" --notes-file "docs/releases/$VERSION.md"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "osu! Lost Scores $VERSION" --notes-file "docs/releases/$VERSION.md"

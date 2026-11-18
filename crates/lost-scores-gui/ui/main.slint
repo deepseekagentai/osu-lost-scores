@@ -16,7 +16,7 @@ export { ShareLost, SharePotential, ShareBadge, ShareItem, ShareMod, ShareArt }
 export { State }
 
 export component MainWindow inherits Window {
-    out property <string> product: "osu! Lost Scores Analyzer";
+    out property <string> product: "osu! Lost Scores";
     in-out property <bool> compact: false;
     in-out property <bool> two-columns: false;
     property <float> overlay-t: State.show-results && !root.two-columns ? 1 : 0;
@@ -167,6 +167,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     spacing: 10px;
                     Text {
+                        accessible-role: none;
                         text: "osu!";
                         color: T.osu;
                         font-size: 36px;
@@ -174,7 +175,8 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
                     Text {
-                        text: "Lost Scores Analyzer";
+                        accessible-role: none;
+                        text: "Lost Scores";
                         color: #ffffff;
                         font-size: 36px;
                         font-weight: 600;
@@ -183,6 +185,8 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         alignment: center;
                         Image {
+                            accessible-role: text;
+                            accessible-label: root.product;
                             source: @image-url("../assets/lemon.svg");
                             width: 40px;
                             height: 40px;

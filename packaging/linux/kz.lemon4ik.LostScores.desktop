@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=osu! Lost Scores Analyzer
+Name=osu! Lost Scores
 Comment=Find the osu!stable plays that ScoreV1 overwrote
 Exec=lost-scores-gui
 Icon=kz.lemon4ik.LostScores

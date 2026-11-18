@@ -1,4 +1,4 @@
-# osu! Lost Scores Analyzer
+# osu! Lost Scores
 
 Finds your osu!stable plays that ScoreV1 overwrote and the pp they were worth.
 

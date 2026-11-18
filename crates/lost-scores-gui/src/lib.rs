@@ -1411,6 +1411,14 @@ mod tests {
     fn the_window_builds() {
         i_slint_backend_testing::init_no_event_loop();
         let window = MainWindow::new().unwrap();
-        assert_eq!(window.get_product(), "osu! Lost Scores Analyzer");
+        assert_eq!(window.get_product(), "osu! Lost Scores");
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "osu! Lost Scores").count(),
+            1
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&window, "Lost Scores").count(),
+            0
+        );
     }
 }
