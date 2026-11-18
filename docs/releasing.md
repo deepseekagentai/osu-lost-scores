@@ -6,6 +6,7 @@
 4. Tag the rosu-pp commit that `crates/lost-scores-core/Cargo.toml` pins in kz-lemon4ik/rosu-pp as `lost-scores-<version>` and push that tag. A fork branch can be deleted or rewritten; the tag keeps the commit, so the release can always be built from source. Two releases on the same commit simply give it two tags.
 5. Push the tag `v<version>`. The Release workflow checks that the tag matches `Cargo.toml`, builds the files and creates a draft release with them, `SHA256SUMS` and the notes file.
 6. Check the files of the draft (below), sign it with `scripts/sign-release.sh v<version>`, then publish the draft by hand. The script downloads `SHA256SUMS` of the draft, signs it with the minisign key in `~/.minisign/minisign.key` (it asks for the key's password) and attaches `SHA256SUMS.minisig`. The window installs only releases whose `SHA256SUMS` carries this signature and whose file matches its checksum; an unsigned release is shown to players as a link only.
+7. Mirror the published release with `scripts/mirror-release.sh v<version>`. The script downloads the files of the release, checks the signature and the checksums, and uploads them with a `latest.json` manifest to the R2 bucket `lost-scores-releases`, which the Worker serves at `https://lost.lemon4ik.kz/dl/`. When GitHub cannot be reached, the window reads the manifest and downloads the update from the mirror; it still installs only files that match the signed `SHA256SUMS`. The script needs `gh`, `minisign`, `python3` and a wrangler login.
 
 The files:
 

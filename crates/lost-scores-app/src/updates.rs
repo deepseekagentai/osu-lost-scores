@@ -10,6 +10,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const LATEST: &str = "https://api.github.com/repos/kz-lemon4ik/osu-lost-scores/releases/latest";
+const MIRROR: &str = "https://lost.lemon4ik.kz/dl/latest.json";
 pub const PUBLIC_KEY: &str = "RWTdGCBD/sd6R9S9//74p+bhwfQvkEoXgmSdC0yoxrBOOo/IcTOfMyud";
 const SUMS: &str = "SHA256SUMS";
 const SIGNATURE: &str = "SHA256SUMS.minisig";
@@ -45,19 +46,30 @@ struct Latest {
 }
 
 pub fn latest_release(agent: &ureq::Agent) -> Result<Option<Release>> {
-    let response = agent
-        .get(LATEST)
-        .header("Accept", "application/vnd.github+json")
-        .call();
-    let (status, body) = match response {
-        Ok(mut response) => (
-            response.status().as_u16(),
-            response.body_mut().read_to_string()?,
-        ),
-        Err(ureq::Error::StatusCode(status)) => (status, String::new()),
-        Err(error) => return Err(error.into()),
-    };
-    parse_release(status, &body)
+    latest_from(|url| {
+        let response = agent
+            .get(url)
+            .header("Accept", "application/vnd.github+json")
+            .call();
+        match response {
+            Ok(mut response) => Ok((
+                response.status().as_u16(),
+                response.body_mut().read_to_string()?,
+            )),
+            Err(ureq::Error::StatusCode(status)) => Ok((status, String::new())),
+            Err(error) => Err(error.into()),
+        }
+    })
+}
+
+pub fn latest_from(mut get: impl FnMut(&str) -> Result<(u16, String)>) -> Result<Option<Release>> {
+    let first = get(LATEST).and_then(|(status, body)| parse_release(status, &body));
+    if first.is_ok() {
+        return first;
+    }
+    get(MIRROR)
+        .and_then(|(status, body)| parse_release(status, &body))
+        .or(first)
 }
 
 pub fn parse_release(status: u16, body: &str) -> Result<Option<Release>> {
@@ -449,12 +461,12 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    use anyhow::{Result, anyhow, ensure};
+    use anyhow::{Result, anyhow, bail, ensure};
 
     use super::{
-        Asset, Download, PUBLIC_KEY, Platform, Refusal, Release, bundle_of, check_sum, fetch,
-        install_file, is_newer, parse_release, place_of, remove_leftover, swap_bundle,
-        verified_sum, verify, writable,
+        Asset, Download, LATEST, MIRROR, PUBLIC_KEY, Platform, Refusal, Release, bundle_of,
+        check_sum, fetch, install_file, is_newer, latest_from, parse_release, place_of,
+        remove_leftover, swap_bundle, verified_sum, verify, writable,
     };
 
     const TEST_KEY: &str = "RWT4qOlmRvAyTEn8Jjsu5Qqzej6v4pYcdTVRWW53SnLBPxbVexasWtfu";
@@ -761,6 +773,61 @@ mod tests {
         let release = parse_release(200, body).unwrap().unwrap();
         assert_eq!(release.tag, "v1.5.0");
         assert_eq!(release.url, "https://github.com/x/y/releases/tag/v1.5.0");
+    }
+
+    const MIRRORED: &str = r#"{"tag_name":"v1.5.0","html_url":"https://github.com/x/y/releases/tag/v1.5.0","assets":[{"name":"SHA256SUMS","browser_download_url":"https://lost.lemon4ik.kz/dl/v1.5.0/SHA256SUMS","size":10}]}"#;
+
+    #[test]
+    fn the_mirror_answers_when_github_cannot() {
+        let mut asked = Vec::new();
+        let release = latest_from(|url| {
+            asked.push(url.to_owned());
+            if url == LATEST {
+                bail!("offline")
+            }
+            Ok((200, MIRRORED.to_owned()))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(asked, [LATEST, MIRROR]);
+        assert_eq!(
+            release.assets[0].url,
+            "https://lost.lemon4ik.kz/dl/v1.5.0/SHA256SUMS"
+        );
+        let limited = latest_from(|url| {
+            Ok(if url == LATEST {
+                (403, String::new())
+            } else {
+                (200, MIRRORED.to_owned())
+            })
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(limited.tag, "v1.5.0");
+    }
+
+    #[test]
+    fn github_is_asked_first_and_trusted_when_it_has_no_release() {
+        let mut asked = Vec::new();
+        let found = latest_from(|url| {
+            asked.push(url.to_owned());
+            Ok((404, String::new()))
+        })
+        .unwrap();
+        assert_eq!(found, None);
+        assert_eq!(asked, [LATEST]);
+    }
+
+    #[test]
+    fn when_both_fail_the_github_error_is_kept() {
+        let error = latest_from(|url| {
+            if url == LATEST {
+                bail!("offline")
+            }
+            Ok((500, String::new()))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("offline"));
     }
 
     #[test]
