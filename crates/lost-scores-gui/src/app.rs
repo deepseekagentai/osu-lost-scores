@@ -579,7 +579,13 @@ impl Session {
         let session = self.clone();
         state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
         let session = self.clone();
-        state.on_open_hall(move || session.launch("the page", format!("{SITE}/rankings").into()));
+        state.on_open_hall(move || {
+            let page = match session.login.borrow().as_ref() {
+                Some(login) => format!("{SITE}/rankings?me={}", login.osu_id),
+                None => format!("{SITE}/rankings"),
+            };
+            session.launch("the page", page.into());
+        });
         let session = self.clone();
         state.on_open_profile(move || {
             let page = session
@@ -3153,7 +3159,7 @@ mod tests {
         assert_eq!(
             opened,
             [
-                "https://lost.lemon4ik.kz/rankings".to_owned(),
+                format!("https://lost.lemon4ik.kz/rankings?me={}", login().osu_id),
                 format!("https://lost.lemon4ik.kz/u/{}", login().osu_id),
             ]
         );
