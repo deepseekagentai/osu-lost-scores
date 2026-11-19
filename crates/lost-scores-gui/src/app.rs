@@ -368,11 +368,11 @@ impl Session {
         let epoch = self.login_epoch.get();
         state.set_logging_in(true);
         state.set_status("Log in with osu! in the browser".into());
-        self.log(&format!(
-            "If the browser did not open, open this address in it: {}",
-            pending.url
-        ));
-        self.launch("the browser", pending.url.clone().into());
+        self.launch_or(
+            "the browser",
+            pending.url.clone().into(),
+            Some(login_fallback(&pending.url)),
+        );
         let weak = self.weak.clone();
         thread::spawn(move || {
             let result = loopback::wait(&mut server, pending, loopback::LIMIT);
@@ -1428,18 +1428,27 @@ impl Session {
     }
 
     fn launch(&self, what: &'static str, target: OsString) {
+        self.launch_or(what, target, None);
+    }
+
+    fn launch_or(&self, what: &'static str, target: OsString, fallback: Option<String>) {
         let opener = self.opener.borrow().clone();
         let weak = self.weak.clone();
         thread::spawn(move || {
             if let Err(error) = opener(&target) {
                 let reason = error.to_string();
-                on_ui(&weak, move |app| app.open_failed(what, &reason));
+                on_ui(&weak, move |app| {
+                    app.open_failed(what, &reason, fallback.as_deref());
+                });
             }
         });
     }
 
-    fn open_failed(&self, what: &str, reason: &str) {
+    fn open_failed(&self, what: &str, reason: &str, fallback: Option<&str>) {
         self.log(&format!("Could not open {what}: {reason}"));
+        if let Some(line) = fallback {
+            self.log(line);
+        }
         self.toast(&format!("Could not open {what}: see the log"));
     }
 
@@ -2404,6 +2413,10 @@ fn set_catbox(state: &State, label: &str, tone: i32, busy: bool, error: &str) {
     state.set_catbox_error(error.into());
 }
 
+fn login_fallback(url: &str) -> String {
+    format!("Open this address in a browser to log in: {url}")
+}
+
 fn on_ui(weak: &Weak<MainWindow>, action: impl FnOnce(&Rc<Session>) + Send + 'static) {
     let _ = weak.upgrade_in_event_loop(move |_| {
         if let Some(app) = SESSION.with(|slot| slot.borrow().clone()) {
@@ -2477,7 +2490,7 @@ mod tests {
     use lost_scores_app::pipeline::PotentialResult;
     use lost_scores_app::session::{self as stored, Session as Login};
 
-    use super::{Access, Lookup, Session};
+    use super::{Access, Lookup, Session, login_fallback};
     use crate::account::Profile;
     use crate::scan::{LOGIN_EXPIRED, NEEDS_ACCOUNT};
     use crate::send::{Call, Reply};
@@ -2810,16 +2823,51 @@ mod tests {
     }
 
     #[test]
-    fn a_login_writes_its_address_in_the_log_for_a_browser_that_did_not_open() {
-        let (_window, session, _root) = nobody(650.0);
-        *session.opener.borrow_mut() = std::sync::Arc::new(|_| Ok(()));
+    fn a_login_keeps_its_address_out_of_the_log_when_the_browser_opens() {
+        let (window, session, _root) = nobody(650.0);
+        let (sent, received) = std::sync::mpsc::channel();
+        *session.opener.borrow_mut() = std::sync::Arc::new(move |target| {
+            sent.send(target.to_owned()).unwrap();
+            Ok(())
+        });
         session.log_in();
+        let opened = received
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(opened.to_string_lossy().contains("/api/v1/auth/start"));
         let lines: Vec<String> = (0..session.log.row_count())
             .map(|i| session.log.row_data(i).unwrap().text.to_string())
             .collect();
         assert!(
-            lines.iter().any(|line| line.contains("/api/v1/auth/start")),
+            !lines.iter().any(|line| line.contains("/api/v1/auth/start")),
             "{lines:?}"
+        );
+        assert_eq!(
+            window.global::<State>().get_status(),
+            "Log in with osu! in the browser"
+        );
+    }
+
+    #[test]
+    fn a_browser_that_did_not_open_gets_the_login_address_in_the_log() {
+        let (window, session, _root) = nobody(650.0);
+        let address = "https://lost.test/api/v1/auth/start?challenge=00&port=1";
+        session.open_failed(
+            "the browser",
+            "no browser installed",
+            Some(&login_fallback(address)),
+        );
+        let lines: Vec<String> = (0..session.log.row_count())
+            .map(|i| session.log.row_data(i).unwrap().text.to_string())
+            .collect();
+        let reason = lines
+            .iter()
+            .position(|line| line.contains("Could not open the browser: no browser installed"))
+            .unwrap();
+        assert!(lines[reason + 1].contains(address), "{lines:?}");
+        assert_eq!(
+            window.global::<State>().get_copied_text(),
+            "Could not open the browser: see the log"
         );
     }
 
@@ -3225,7 +3273,7 @@ mod tests {
     #[test]
     fn a_failed_open_is_logged_and_toasted() {
         let (window, session, _root) = session(650.0);
-        session.open_failed("the image", "no viewer installed");
+        session.open_failed("the image", "no viewer installed", None);
         let state = window.global::<State>();
         assert!(state.get_copied());
         assert_eq!(
