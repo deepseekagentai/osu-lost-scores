@@ -114,7 +114,7 @@ With the osu! login every scan goes to your private profile on the Lost Scores s
 - [Slint](https://slint.dev) (GPLv3), the window toolkit.
 - [Fredoka](https://fonts.google.com/specimen/Fredoka) (OFL 1.1, the licence is in `crates/lost-scores-gui/assets/OFL.txt`).
 - [Font Awesome Free](https://fontawesome.com) (CC BY 4.0), the icons.
-- [Twemoji](https://github.com/jdecked/twemoji) (CC BY 4.0), the lemon.
+- [Twemoji](https://github.com/jdecked/twemoji) (CC BY 4.0), the lemon; the app icon adds a violet shadow behind it.
 
 ## License
 

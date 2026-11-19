@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 PNG_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
+SMALL_MAX = 32
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 ICNS_TYPES = (
     (b"icp4", 16),
@@ -19,12 +20,13 @@ ICNS_TYPES = (
 )
 
 
-def render(svg, icon_dir):
+def render(svg, small, icon_dir):
     icon_dir.mkdir(parents=True, exist_ok=True)
     for size in PNG_SIZES:
         target = icon_dir / f"lemon-{size}.png"
+        source = small if size <= SMALL_MAX else svg
         subprocess.run(
-            ["resvg", "-w", str(size), "-h", str(size), str(svg), str(target)],
+            ["resvg", "-w", str(size), "-h", str(size), str(source), str(target)],
             check=True,
         )
 
@@ -55,6 +57,7 @@ def build_icns(icon_dir, output):
 if __name__ == "__main__":
     svg = Path(sys.argv[1])
     folder = Path(sys.argv[2])
-    render(svg, folder)
+    small = Path(sys.argv[3]) if len(sys.argv) > 3 else svg
+    render(svg, small, folder)
     build_ico(folder, folder / "lemon.ico")
     build_icns(folder, folder / "lemon.icns")
