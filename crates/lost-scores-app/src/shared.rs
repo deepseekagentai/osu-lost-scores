@@ -22,11 +22,17 @@ pub fn server_url() -> String {
         .unwrap_or_else(|| SERVER_URL.to_owned())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Left {
+    pub pending: usize,
+    pub asked: usize,
+}
+
 pub struct Shared<T = Http> {
     server: Server<T>,
     last_file: Option<Instant>,
     sleep: Box<dyn FnMut(Duration) + Send>,
-    notice: Box<dyn FnMut(u64, Option<usize>) + Send>,
+    notice: Box<dyn FnMut(u64, Option<Left>) + Send>,
 }
 
 impl Shared<Http> {
@@ -60,7 +66,7 @@ impl<T: Transport> Shared<T> {
         self
     }
 
-    pub fn on_wait(mut self, notice: impl FnMut(u64, Option<usize>) + Send + 'static) -> Self {
+    pub fn on_wait(mut self, notice: impl FnMut(u64, Option<Left>) + Send + 'static) -> Self {
         self.notice = Box::new(notice);
         self
     }
@@ -88,7 +94,7 @@ impl<T: Transport> Shared<T> {
         &mut self,
         idle: &mut Duration,
         seconds: u64,
-        maps: Option<usize>,
+        maps: Option<Left>,
     ) -> Result<(), ApiError> {
         let seconds = seconds.max(MIN_WAIT_S);
         let pause = Duration::from_secs(seconds);
@@ -110,8 +116,9 @@ impl<T: Transport> Shared<T> {
         let mut ids = ids.to_vec();
         let mut md5s = md5s.to_vec();
         let mut idle = Duration::ZERO;
+        let asked = ids.len() + md5s.len();
         loop {
-            let asked = ids.len() + md5s.len();
+            let remaining = ids.len() + md5s.len();
             let mut pending_ids = Vec::new();
             let mut pending_md5s = Vec::new();
             let mut wait = 0;
@@ -131,10 +138,10 @@ impl<T: Transport> Shared<T> {
             if pending == 0 {
                 return Ok(found);
             }
-            if pending < asked {
+            if pending < remaining {
                 idle = Duration::ZERO;
             }
-            self.wait(&mut idle, wait, Some(pending))?;
+            self.wait(&mut idle, wait, Some(Left { pending, asked }))?;
             ids = pending_ids;
             md5s = pending_md5s;
         }
@@ -217,7 +224,7 @@ mod tests {
     use lost_scores_core::missing::OsuFiles;
     use osu_api::{ApiError, Response, Transport};
 
-    use super::{Shared, WAIT_CAP};
+    use super::{Left, Shared, WAIT_CAP};
     use crate::pipeline::Api;
 
     type Log<T> = Arc<Mutex<Vec<T>>>;
@@ -314,7 +321,7 @@ mod tests {
         )
     }
 
-    type Notices = Log<(u64, Option<usize>)>;
+    type Notices = Log<(u64, Option<Left>)>;
 
     fn shared(fake: &Fake) -> (Shared<Fake>, Notices, Log<Duration>) {
         let notices = Arc::new(Mutex::new(Vec::new()));
@@ -337,7 +344,16 @@ mod tests {
         let ids: Vec<u32> = maps.iter().filter_map(|map| map.info.beatmap_id).collect();
         assert_eq!(ids, [1, 2]);
         assert_eq!(maps[0].info.status, MapStatus::Ranked);
-        assert_eq!(notices.lock().unwrap()[0], (9, Some(1)));
+        assert_eq!(
+            notices.lock().unwrap()[0],
+            (
+                9,
+                Some(Left {
+                    pending: 1,
+                    asked: 2
+                })
+            )
+        );
         let waited: Duration = sleeps.lock().unwrap().iter().sum();
         assert_eq!(waited, Duration::from_secs(9));
         assert_eq!(
@@ -407,7 +423,13 @@ mod tests {
         api.batch(&[1]).unwrap();
         assert_eq!(
             *notices.lock().unwrap(),
-            [(3, Some(1)), (2, Some(1)), (1, Some(1))]
+            [3, 2, 1].map(|seconds| (
+                seconds,
+                Some(Left {
+                    pending: 1,
+                    asked: 1
+                })
+            ))
         );
         assert_eq!(*sleeps.lock().unwrap(), [Duration::from_secs(1); 3]);
     }
@@ -422,7 +444,36 @@ mod tests {
         api.batch(&[1, 2, 3]).unwrap();
         assert_eq!(
             *notices.lock().unwrap(),
-            [(2, Some(2)), (1, Some(2)), (2, Some(1)), (1, Some(1))]
+            [
+                (
+                    2,
+                    Some(Left {
+                        pending: 2,
+                        asked: 3
+                    })
+                ),
+                (
+                    1,
+                    Some(Left {
+                        pending: 2,
+                        asked: 3
+                    })
+                ),
+                (
+                    2,
+                    Some(Left {
+                        pending: 1,
+                        asked: 3
+                    })
+                ),
+                (
+                    1,
+                    Some(Left {
+                        pending: 1,
+                        asked: 3
+                    })
+                )
+            ]
         );
     }
 

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use lost_scores_app::pipeline::{Event, Step};
+use lost_scores_app::shared::Left;
 
 #[derive(Default)]
 struct Shown {
@@ -13,11 +14,11 @@ struct Shown {
 pub struct Notes(Arc<Mutex<Shown>>);
 
 impl Notes {
-    pub fn waiting(&self, seconds: u64, maps: Option<usize>) {
+    pub fn waiting(&self, seconds: u64, maps: Option<Left>) {
         let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let fresh = shown.last_wait.is_none_or(|last| seconds > last);
         shown.last_wait = Some(seconds);
-        let left = match maps {
+        let left = match maps.map(|left| left.pending) {
             Some(1) => "1 map left, next check in ".to_owned(),
             Some(count) => format!("{count} maps left, next check in "),
             None => String::new(),
@@ -126,6 +127,7 @@ fn bar(label: &'static str) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use lost_scores_app::pipeline::{Event, Step};
+    use lost_scores_app::shared::Left;
 
     use super::Printer;
 
@@ -144,7 +146,13 @@ mod tests {
         });
         notes.waiting(12, None);
         assert_eq!(message(&printer), "map statuses, shared queue: 12 s");
-        notes.waiting(11, Some(40));
+        notes.waiting(
+            11,
+            Some(Left {
+                pending: 40,
+                asked: 100,
+            }),
+        );
         assert_eq!(
             message(&printer),
             "map statuses, shared queue: 40 maps left, next check in 11 s"

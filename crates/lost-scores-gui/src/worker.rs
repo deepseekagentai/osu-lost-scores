@@ -12,6 +12,7 @@ use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
     self, Api, Event, PlayerLookup, Source, Step, find, load_catalog, lost, read, refresh_statuses,
 };
+use lost_scores_app::shared::Left;
 use lost_scores_app::timings::Timings;
 use lost_scores_core::Scan;
 use lost_scores_core::maps::MapCatalog;
@@ -41,7 +42,7 @@ pub struct Finished {
 
 pub enum Message {
     Event(Event),
-    Queue(u64, Option<usize>),
+    Queue(u64, Option<Left>),
     Saving,
     Finished(Box<Finished>),
     Refreshed(Option<Box<Finished>>),

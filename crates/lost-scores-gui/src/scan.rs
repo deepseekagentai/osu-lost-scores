@@ -2,6 +2,7 @@ use std::path::Path;
 
 use lost_scores_app::pipeline::{Event, Step};
 use lost_scores_app::rows::thousands;
+use lost_scores_app::shared::Left;
 use lost_scores_app::{detect, setup};
 
 use crate::log::stamp;
@@ -41,6 +42,7 @@ pub struct ScanState {
     pub status: String,
     pub log: Vec<String>,
     check_missing: bool,
+    maps: Option<(Step, usize, usize)>,
 }
 
 impl ScanState {
@@ -48,6 +50,7 @@ impl ScanState {
         self.phase = Phase::Scanning;
         self.progress = 0.0;
         self.check_missing = check_missing;
+        self.maps = None;
         self.status = "Starting scan...".to_owned();
     }
 
@@ -55,21 +58,34 @@ impl ScanState {
         match event {
             Event::Log(text) => self.log.push(stamp(clock, text)),
             Event::Progress { step, done, total } => {
+                if matches!(step, Step::Catalog | Step::Refresh) {
+                    self.maps = Some((*step, *done, *total));
+                }
                 self.status = status_text(*step, *done, *total);
                 self.progress = self.progress.max(self.position(*step, *done, *total));
             }
         }
     }
 
-    pub fn queued(&mut self, seconds: u64, maps: Option<usize>) {
-        self.status = match maps {
-            Some(1) => {
+    pub fn queued(&mut self, seconds: u64, left: Option<Left>) {
+        self.status = match (left, self.maps) {
+            (None, _) => format!("Waiting in the shared queue: {seconds} s"),
+            (Some(left), Some((step, done, total))) => {
+                let ready = (done + left.asked.saturating_sub(left.pending)).min(total);
+                self.progress = self.progress.max(self.position(step, ready, total));
+                format!(
+                    "Shared queue: {} of {} maps ready, next check in {seconds} s",
+                    thousands(ready as f64),
+                    thousands(total as f64)
+                )
+            }
+            (Some(Left { pending: 1, .. }), None) => {
                 format!("Waiting in the shared queue: 1 map left, next check in {seconds} s")
             }
-            Some(count) => {
-                format!("Waiting in the shared queue: {count} maps left, next check in {seconds} s")
-            }
-            None => format!("Waiting in the shared queue: {seconds} s"),
+            (Some(left), None) => format!(
+                "Waiting in the shared queue: {} maps left, next check in {seconds} s",
+                left.pending
+            ),
         };
     }
 
@@ -169,6 +185,8 @@ impl ScanState {
 mod tests {
     use lost_scores_app::pipeline::{Event, Step};
 
+    use lost_scores_app::shared::Left;
+
     use super::{Phase, ScanState, check_folders, status_text};
 
     const CLOCK: (u8, u8, u8) = (9, 30, 5);
@@ -263,23 +281,53 @@ mod tests {
     fn a_wait_in_the_shared_queue_shows_in_the_status_line() {
         let mut state = ScanState::default();
         state.start(false);
-        state.apply(&progress(Step::Catalog, 1, 15), CLOCK);
-        let reached = state.progress;
         state.queued(12, None);
         assert_eq!(state.status, "Waiting in the shared queue: 12 s");
-        state.queued(12, Some(120));
+        state.queued(
+            12,
+            Some(Left {
+                pending: 120,
+                asked: 500,
+            }),
+        );
         assert_eq!(
             state.status,
             "Waiting in the shared queue: 120 maps left, next check in 12 s"
         );
-        state.queued(3, Some(1));
+        state.queued(
+            3,
+            Some(Left {
+                pending: 1,
+                asked: 500,
+            }),
+        );
         assert_eq!(
             state.status,
             "Waiting in the shared queue: 1 map left, next check in 3 s"
         );
-        assert_eq!(state.progress, reached);
-        state.apply(&progress(Step::Catalog, 2, 15), CLOCK);
-        assert_eq!(state.status, "Fetching map statuses: 2 of 15");
+    }
+
+    #[test]
+    fn a_wait_for_maps_counts_every_map_of_the_scan_and_moves_the_bar() {
+        let mut state = ScanState::default();
+        state.start(false);
+        state.apply(&progress(Step::Catalog, 500, 2522), CLOCK);
+        let reached = state.progress;
+        let left = Left {
+            pending: 120,
+            asked: 500,
+        };
+        state.queued(2, Some(left));
+        assert_eq!(
+            state.status,
+            "Shared queue: 880 of 2,522 maps ready, next check in 2 s"
+        );
+        assert!(state.progress > reached);
+        let moved = state.progress;
+        state.queued(1, Some(left));
+        assert_eq!(state.progress, moved);
+        state.apply(&progress(Step::Catalog, 1000, 2522), CLOCK);
+        assert_eq!(state.status, "Fetching map statuses: 1,000 of 2,522");
     }
 
     #[test]
