@@ -1,6 +1,29 @@
-# osu! Lost Scores
+<p align="center">
+  <img src="crates/lost-scores-gui/assets/lemon.svg" width="88" alt="">
+</p>
 
-Finds your osu!stable plays that ScoreV1 overwrote and the pp they were worth.
+<h1 align="center">osu! Lost Scores</h1>
+
+<p align="center">Finds your osu!stable plays that ScoreV1 overwrote and the pp they were worth.</p>
+
+<p align="center">
+  <a href="https://github.com/kz-lemon4ik/osu-lost-scores/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kz-lemon4ik/osu-lost-scores?label=release&color=a28aea"></a>
+  <a href="https://github.com/kz-lemon4ik/osu-lost-scores/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/kz-lemon4ik/osu-lost-scores/total?color=a28aea"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/kz-lemon4ik/osu-lost-scores?color=a28aea"></a>
+  <a href="https://github.com/kz-lemon4ik/osu-lost-scores/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/kz-lemon4ik/osu-lost-scores/ci.yml?branch=main&label=CI"></a>
+  <a href="https://lost.lemon4ik.kz"><img alt="Website" src="https://img.shields.io/badge/website-lost.lemon4ik.kz-ff66aa"></a>
+</p>
+
+<p align="center">
+  <a href="https://lost.lemon4ik.kz">Website</a> ·
+  <a href="https://lost.lemon4ik.kz/download">Download</a> ·
+  <a href="https://lost.lemon4ik.kz/rankings">Hall of Copium</a> ·
+  <a href="https://lost.lemon4ik.kz/faq">FAQ</a> ·
+  <a href="https://lost.lemon4ik.kz/privacy">Privacy</a> ·
+  <a href="https://lost.lemon4ik.kz/terms">Terms</a>
+</p>
+
+<p align="center"><img src="docs/images/window.webp" width="900" alt="The window after a scan: the account card with the pp the lost plays would add, and the lost plays with the pp each one lost"></p>
 
 Until October 2024 the osu!stable server kept one play per beatmap and mod combination: the one with the highest score. A new play with a higher score replaced the old one even when the old play was worth more pp, and a play that scored less than your record was not kept at all. That pp disappeared from your profile. Your local replays still have those plays, and this tool reads them back.
 
@@ -48,6 +71,11 @@ After every scan the window saves three pictures into the scan's folder:
 - `lost_scores.png`: your lost plays on ranked maps, or on all maps when the scan included unranked and loved ones;
 - `potential_top.png`: your top 200 as it would be with the lost plays kept, with the pp and accuracy it would give.
 
+<p align="center">
+  <img src="docs/images/summary-badge.webp" width="520" alt="The summary badge: the pp and accuracy now and with the lost plays kept"><br>
+  <img src="docs/images/potential-top.webp" width="700" alt="The Potential Top picture: the top plays with the lost ones kept, each with its weight">
+</p>
+
 "Scores to show" sets how many plays the two big pictures list, up to 250. "Ensure at least one lost score is visible" extends the Potential Top down to its first lost play. The pictures are drawn at twice their size from images prepared at exactly that size, so they stay sharp when a chat shows them in full.
 
 The Images mode shows the three pictures of the shown scan one under the other, in that order. A click on a picture opens it in your image viewer, and a right click offers Copy image and Open. The arrows in the corner jump to the previous or the next picture.
@@ -63,6 +91,12 @@ Covers come from assets.ppy.sh and are cached; Clear cache removes them.
 Every finished scan is kept, and the scan list in the results view opens any earlier one. In a narrow window the results open by themselves when a scan ends.
 
 The cross next to an older scan, or "Delete older scans" at the bottom of the list, deletes scans for good after a confirmation. The newest scan always stays.
+
+## Hall of Copium
+
+Published scans go to the Hall of Copium on [lost.lemon4ik.kz](https://lost.lemon4ik.kz/rankings). It ranks players by the pp they lost and single plays by the pp they lost on one map, and every player has a page with the lost plays, the Potential Top and the lost plays fixed since, with medals along the way. Every published scan is checked against osu!, and the rankings show whether the check passed.
+
+<p align="center"><img src="docs/images/site-profile.webp" width="900" alt="A player's page on the website: the potential rank and pp, the medals and the lost plays"></p>
 
 ## Command line
 
@@ -88,11 +122,11 @@ The program has no telemetry. It goes online for these things and nothing else:
 - a scan asks about your player, your online top and the statuses of your maps; the check for missing beatmap IDs also downloads the `.osu` files of the maps you no longer have from osu.ppy.sh;
 - with your keys these questions go to the osu! API; without them they go to the Lost Scores server at lost.lemon4ik.kz, which gets the player name and the beatmap ids and md5 hashes of the maps that can hold a lost play, and asks osu! for them. The server keeps the map statuses for everybody and the player answers for five minutes, and counts the requests of each account per day to share the queue fairly;
 - the results load the map covers from assets.ppy.sh;
-- "Check for updates" asks GitHub for the latest release;
+- once a day, and from Check for updates in About, the window asks GitHub for the latest release, or the mirror at lost.lemon4ik.kz/dl when GitHub does not answer, and downloads a newer signed release from there;
 - the catbox button uploads the pictures of the shown scan to catbox.moe;
-- sending a scan uploads it to the Lost Scores server: your player, your lost plays and the Potential Top. The server keeps it until you delete it and shows it to others only after you publish it.
+- with the osu! login every finished scan goes to your private profile on the Lost Scores server: your player, your lost plays and the Potential Top. Only you see it until you publish it, and replays go out only when you share them. The server keeps your 20 newest private scans, and the trash button next to Share deletes a scan.
 
-Your keys and settings stay on your computer, and so do your scans unless you send them.
+Your keys and settings stay on your computer, and with your own API keys so do your scans. The full [privacy policy](https://lost.lemon4ik.kz/privacy) and the [terms of use](https://lost.lemon4ik.kz/terms) are on the website; logging in with osu! accepts both.
 
 ## Build from source
 
@@ -102,10 +136,6 @@ With the current stable Rust:
     cargo install --locked --path crates/lost-scores-cli
 
 On Linux the window needs the fontconfig development files (`libfontconfig1-dev` on Debian and Ubuntu). After installing, `packaging/linux/install.sh` adds the launcher entry and the icons.
-
-## Privacy
-
-With the osu! login every scan goes to your private profile on the Lost Scores server: the lost plays, the Potential Top and your osu! id and name. Only you see it until you publish it, and replays go out only when you choose to share them. The server keeps your 20 newest private scans, and the trash button next to Share deletes a scan from it. With your own API keys nothing leaves your computer.
 
 ## Credits
 
