@@ -2,6 +2,8 @@
 set -eu
 tag="${1:?usage: scripts/sign-release.sh v<version>}"
 version="${tag#v}"
+GH_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+export GH_REPO
 key=$(sed -n 's/^pub const PUBLIC_KEY: &str = "\(.*\)";$/\1/p' crates/lost-scores-app/src/updates.rs)
 [ -n "$key" ] || { echo "cannot read PUBLIC_KEY from the code" >&2; exit 1; }
 [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "true" ] || { echo "$tag is not a draft release" >&2; exit 1; }
