@@ -12,6 +12,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/kz-lemon4ik/osu-lost-scores?color=a28aea"></a>
   <a href="https://github.com/kz-lemon4ik/osu-lost-scores/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/kz-lemon4ik/osu-lost-scores/ci.yml?branch=main&label=CI"></a>
   <a href="https://lost.lemon4ik.kz"><img alt="Website" src="https://img.shields.io/badge/website-lost.lemon4ik.kz-ff66aa"></a>
+  <a href="https://discord.gg/bAs5wr9Skv"><img alt="Discord" src="https://img.shields.io/badge/Discord-join-5865f2?logo=discord&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -19,6 +20,7 @@
   <a href="https://lost.lemon4ik.kz/download">Download</a> ·
   <a href="https://lost.lemon4ik.kz/rankings">Hall of Copium</a> ·
   <a href="https://lost.lemon4ik.kz/faq">FAQ</a> ·
+  <a href="https://discord.gg/bAs5wr9Skv">Discord</a> ·
   <a href="https://lost.lemon4ik.kz/privacy">Privacy</a> ·
   <a href="https://lost.lemon4ik.kz/terms">Terms</a>
 </p>
