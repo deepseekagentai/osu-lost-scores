@@ -2059,9 +2059,11 @@ impl Session {
                 worker::run(&job, &mut Online::new(credentials), &sink);
             }
             Access::Login(token) => {
-                let mut api = Shared::new().with_session(&token).on_wait(move |seconds| {
-                    queue.send(Message::Queue(seconds));
-                });
+                let mut api = Shared::new()
+                    .with_session(&token)
+                    .on_wait(move |seconds, maps| {
+                        queue.send(Message::Queue(seconds, maps));
+                    });
                 worker::run(&job, &mut api, &sink);
             }
         });
@@ -2155,7 +2157,7 @@ impl Session {
     fn handle(&self, message: Message) {
         match message {
             Message::Event(event) => self.scan.borrow_mut().apply(&event, clock_now()),
-            Message::Queue(seconds) => self.scan.borrow_mut().queued(seconds),
+            Message::Queue(seconds, maps) => self.scan.borrow_mut().queued(seconds, maps),
             Message::Saving => self.scan.borrow_mut().saving(),
             Message::Finished(done) => {
                 self.refreshing.set(true);
@@ -3029,7 +3031,7 @@ mod tests {
     fn a_wait_in_the_shared_queue_reaches_the_status_line() {
         let (window, session, _root) = keyless(650.0);
         begin(&session);
-        session.handle(Message::Queue(42));
+        session.handle(Message::Queue(42, None));
         assert_eq!(
             window.global::<State>().get_status(),
             "Waiting in the shared queue: 42 s"

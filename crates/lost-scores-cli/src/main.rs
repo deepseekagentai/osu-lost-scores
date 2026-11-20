@@ -332,7 +332,7 @@ fn client(
     };
     let api = Shared::at(&base)
         .with_session(&session.token)
-        .on_wait(move |seconds| notes.waiting(seconds));
+        .on_wait(move |seconds, maps| notes.waiting(seconds, maps));
     (Some(Box::new(api)), OFFLINE_HINT)
 }
 

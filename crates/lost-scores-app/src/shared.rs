@@ -26,7 +26,7 @@ pub struct Shared<T = Http> {
     server: Server<T>,
     last_file: Option<Instant>,
     sleep: Box<dyn FnMut(Duration) + Send>,
-    notice: Box<dyn FnMut(u64) + Send>,
+    notice: Box<dyn FnMut(u64, Option<usize>) + Send>,
 }
 
 impl Shared<Http> {
@@ -51,7 +51,7 @@ impl<T: Transport> Shared<T> {
             server: Server::new(transport, base),
             last_file: None,
             sleep: Box::new(thread::sleep),
-            notice: Box::new(|_| {}),
+            notice: Box::new(|_, _| {}),
         }
     }
 
@@ -60,7 +60,7 @@ impl<T: Transport> Shared<T> {
         self
     }
 
-    pub fn on_wait(mut self, notice: impl FnMut(u64) + Send + 'static) -> Self {
+    pub fn on_wait(mut self, notice: impl FnMut(u64, Option<usize>) + Send + 'static) -> Self {
         self.notice = Box::new(notice);
         self
     }
@@ -78,13 +78,18 @@ impl<T: Transport> Shared<T> {
         let mut idle = Duration::ZERO;
         loop {
             match call(&mut self.server) {
-                Err(ApiError::Busy { retry_after }) => self.wait(&mut idle, retry_after)?,
+                Err(ApiError::Busy { retry_after }) => self.wait(&mut idle, retry_after, None)?,
                 result => return result,
             }
         }
     }
 
-    fn wait(&mut self, idle: &mut Duration, seconds: u64) -> Result<(), ApiError> {
+    fn wait(
+        &mut self,
+        idle: &mut Duration,
+        seconds: u64,
+        maps: Option<usize>,
+    ) -> Result<(), ApiError> {
         let seconds = seconds.max(MIN_WAIT_S);
         let pause = Duration::from_secs(seconds);
         if *idle + pause > WAIT_CAP {
@@ -93,7 +98,7 @@ impl<T: Transport> Shared<T> {
             });
         }
         for left in (1..=seconds).rev() {
-            (self.notice)(left);
+            (self.notice)(left, maps);
             (self.sleep)(Duration::from_secs(1));
         }
         *idle += pause;
@@ -129,7 +134,7 @@ impl<T: Transport> Shared<T> {
             if pending < asked {
                 idle = Duration::ZERO;
             }
-            self.wait(&mut idle, wait)?;
+            self.wait(&mut idle, wait, Some(pending))?;
             ids = pending_ids;
             md5s = pending_md5s;
         }
@@ -309,12 +314,14 @@ mod tests {
         )
     }
 
-    fn shared(fake: &Fake) -> (Shared<Fake>, Log<u64>, Log<Duration>) {
+    type Notices = Log<(u64, Option<usize>)>;
+
+    fn shared(fake: &Fake) -> (Shared<Fake>, Notices, Log<Duration>) {
         let notices = Arc::new(Mutex::new(Vec::new()));
         let sleeps = Arc::new(Mutex::new(Vec::new()));
         let mut api = Shared::with_transport(fake.clone(), "https://api.test");
         let seen = notices.clone();
-        api = api.on_wait(move |seconds| seen.lock().unwrap().push(seconds));
+        api = api.on_wait(move |seconds, maps| seen.lock().unwrap().push((seconds, maps)));
         let slept = sleeps.clone();
         api.sleep = Box::new(move |duration| slept.lock().unwrap().push(duration));
         (api, notices, sleeps)
@@ -330,7 +337,7 @@ mod tests {
         let ids: Vec<u32> = maps.iter().filter_map(|map| map.info.beatmap_id).collect();
         assert_eq!(ids, [1, 2]);
         assert_eq!(maps[0].info.status, MapStatus::Ranked);
-        assert_eq!(notices.lock().unwrap()[0], 9);
+        assert_eq!(notices.lock().unwrap()[0], (9, Some(1)));
         let waited: Duration = sleeps.lock().unwrap().iter().sum();
         assert_eq!(waited, Duration::from_secs(9));
         assert_eq!(
@@ -386,7 +393,7 @@ mod tests {
             .answer(200, USER);
         let (mut api, notices, sleeps) = shared(&fake);
         assert_eq!(api.player("Synthetic").unwrap().id, 7);
-        assert_eq!(notices.lock().unwrap()[0], 5);
+        assert_eq!(notices.lock().unwrap()[0], (5, None));
         let waited: Duration = sleeps.lock().unwrap().iter().sum();
         assert_eq!(waited, Duration::from_secs(5));
     }
@@ -398,8 +405,25 @@ mod tests {
             .answer(200, &answer(&[1], &[], None));
         let (mut api, notices, sleeps) = shared(&fake);
         api.batch(&[1]).unwrap();
-        assert_eq!(*notices.lock().unwrap(), [3, 2, 1]);
+        assert_eq!(
+            *notices.lock().unwrap(),
+            [(3, Some(1)), (2, Some(1)), (1, Some(1))]
+        );
         assert_eq!(*sleeps.lock().unwrap(), [Duration::from_secs(1); 3]);
+    }
+
+    #[test]
+    fn a_wait_for_maps_says_how_many_are_still_pending() {
+        let fake = Fake::default()
+            .answer(200, &answer(&[1], &[2, 3], Some(2)))
+            .answer(200, &answer(&[2], &[3], Some(2)))
+            .answer(200, &answer(&[3], &[], None));
+        let (mut api, notices, _) = shared(&fake);
+        api.batch(&[1, 2, 3]).unwrap();
+        assert_eq!(
+            *notices.lock().unwrap(),
+            [(2, Some(2)), (1, Some(2)), (2, Some(1)), (1, Some(1))]
+        );
     }
 
     #[test]

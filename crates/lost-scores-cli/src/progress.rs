@@ -13,14 +13,23 @@ struct Shown {
 pub struct Notes(Arc<Mutex<Shown>>);
 
 impl Notes {
-    pub fn waiting(&self, seconds: u64) {
+    pub fn waiting(&self, seconds: u64, maps: Option<usize>) {
         let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let fresh = shown.last_wait.is_none_or(|last| seconds > last);
         shown.last_wait = Some(seconds);
+        let left = match maps {
+            Some(1) => "1 map left, next check in ".to_owned(),
+            Some(count) => format!("{count} maps left, next check in "),
+            None => String::new(),
+        };
         match &shown.bar {
-            Some((label, bar)) => bar.set_message(format!("{label}, shared queue: {seconds} s")),
+            Some((label, bar)) => {
+                bar.set_message(format!("{label}, shared queue: {left}{seconds} s"))
+            }
             None if fresh => {
-                eprintln!("waiting in the shared queue of the Lost Scores server: {seconds} s");
+                eprintln!(
+                    "waiting in the shared queue of the Lost Scores server: {left}{seconds} s"
+                );
             }
             None => {}
         }
@@ -133,10 +142,13 @@ mod tests {
             done: 0,
             total: 5,
         });
-        notes.waiting(12);
+        notes.waiting(12, None);
         assert_eq!(message(&printer), "map statuses, shared queue: 12 s");
-        notes.waiting(11);
-        assert_eq!(message(&printer), "map statuses, shared queue: 11 s");
+        notes.waiting(11, Some(40));
+        assert_eq!(
+            message(&printer),
+            "map statuses, shared queue: 40 maps left, next check in 11 s"
+        );
         printer.handle(Event::Progress {
             step: Step::Catalog,
             done: 1,
