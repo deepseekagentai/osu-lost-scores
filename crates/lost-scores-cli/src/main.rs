@@ -666,10 +666,7 @@ fn log_in_with<T: Transport>(
     open: impl FnOnce(&str) -> io::Result<()> + Send + 'static,
 ) -> Result<Session> {
     let pending = login::begin(&server).context("cannot listen for the browser")?;
-    eprintln!(
-        "Log in with osu! in the browser. If it does not open, go to:\n  {}",
-        pending.url
-    );
+    eprintln!("{}", login_prompt(&pending.url));
     let url = pending.url.clone();
     thread::spawn(move || {
         if open(&url).is_err() {
@@ -677,6 +674,14 @@ fn log_in_with<T: Transport>(
         }
     });
     Ok(login::wait(&mut server, pending, login::LIMIT)?)
+}
+
+fn login_prompt(url: &str) -> String {
+    format!(
+        "By logging in, you accept the terms of use ({}) and the privacy policy ({}).\nLog in with osu! in the browser. If it does not open, go to:\n  {url}",
+        login::TERMS_URL,
+        login::PRIVACY_URL
+    )
 }
 
 fn save_keys() -> Result<()> {
@@ -758,7 +763,7 @@ mod tests {
     use lost_scores_app::session::Session;
     use osu_api::{ApiError, Credentials, Response, Server, Transport};
 
-    use super::{Cli, Command, LOGIN_HINT, OFFLINE_HINT, client, log_in_with};
+    use super::{Cli, Command, LOGIN_HINT, OFFLINE_HINT, client, log_in_with, login_prompt};
     use crate::progress::Notes;
 
     #[test]
@@ -916,6 +921,14 @@ mod tests {
         let outcome = finished.recv_timeout(Duration::from_secs(10));
         drop(stop);
         assert_eq!(outcome, Ok(Ok(7)), "the login waited for the opener");
+    }
+
+    #[test]
+    fn the_login_prompt_names_the_terms_and_the_privacy_policy() {
+        let prompt = login_prompt("http://127.0.0.1:1/start");
+        assert!(prompt.contains("http://127.0.0.1:1/start"));
+        assert!(prompt.contains("https://lost.lemon4ik.kz/terms"));
+        assert!(prompt.contains("https://lost.lemon4ik.kz/privacy"));
     }
 
     #[test]

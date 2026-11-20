@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::session::Session;
 
 pub const LIMIT: Duration = Duration::from_secs(10 * 60);
+pub const TERMS_URL: &str = "https://lost.lemon4ik.kz/terms";
+pub const PRIVACY_URL: &str = "https://lost.lemon4ik.kz/privacy";
 const SITE_URL: &str = "https://lost.lemon4ik.kz";
 const HEAD_LIMIT: usize = 8 * 1024;
 const POLL: Duration = Duration::from_millis(50);

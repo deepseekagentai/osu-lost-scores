@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use jiff::tz::TimeZone;
-use lost_scores_app::login::{self as loopback, LoginError};
+use lost_scores_app::login::{self as loopback, LoginError, PRIVACY_URL, TERMS_URL};
 use lost_scores_app::online::{Online, Player, USER_AGENT};
 use lost_scores_app::pipeline::{self, PotentialResult, Source};
 use lost_scores_app::rows::thousands;
@@ -578,6 +578,10 @@ impl Session {
     fn bind_extras(self: &Rc<Self>, state: &State<'_>) {
         let session = self.clone();
         state.on_open_developer_site(move || session.launch("the page", DEVELOPER_SITE.into()));
+        let session = self.clone();
+        state.on_open_terms(move || session.launch("the page", TERMS_URL.into()));
+        let session = self.clone();
+        state.on_open_privacy(move || session.launch("the page", PRIVACY_URL.into()));
         let session = self.clone();
         state.on_open_hall(move || {
             let page = match session.login.borrow().as_ref() {

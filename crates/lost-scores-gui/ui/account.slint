@@ -1,6 +1,6 @@
 import { T } from "theme.slint";
 import { State } from "state.slint";
-import { HoverBox, IconButton, PrimaryButton, SecondaryButton, Stat, Toggle, ScoresBox, HintArea } from "widgets.slint";
+import { HoverBox, IconButton, Link, PrimaryButton, SecondaryButton, Stat, Toggle, ScoresBox, HintArea } from "widgets.slint";
 
 component StatValue inherits HorizontalLayout {
     in property <string> now;
@@ -113,6 +113,32 @@ component Connect inherits HorizontalLayout {
             tip: State.logging-in ? "Finish the login in the browser, or click to open it again" : "Log in with your osu! account in the browser";
             clicked => {
                 State.log-in();
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            Text {
+                text: "By logging in, you accept the";
+                color: T.k;
+                font-size: 13px;
+            }
+            Link {
+                text: "Terms";
+                clicked => {
+                    State.open-terms();
+                }
+            }
+            Text {
+                text: "and";
+                color: T.k;
+                font-size: 13px;
+            }
+            Link {
+                text: "Privacy policy";
+                clicked => {
+                    State.open-privacy();
+                }
             }
         }
         Text {

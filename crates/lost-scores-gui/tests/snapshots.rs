@@ -674,8 +674,8 @@ fn render_results_snapshots() {
     );
     draw_sized(
         &surface,
-        (1480.0, 660.0),
-        &dir.join("24-two-columns-660-high.png"),
+        (1480.0, 680.0),
+        &dir.join("24-two-columns-680-high.png"),
     );
     state.set_keys_open(true);
     state.set_keys_user("SamplePlayer".into());
@@ -684,7 +684,7 @@ fn render_results_snapshots() {
     draw(&surface, &dir.join("25-keys-sheet.png"));
     draw_sized(
         &surface,
-        (650.0, 660.0),
+        (650.0, 680.0),
         &dir.join("26-keys-sheet-short.png"),
     );
 
