@@ -360,6 +360,7 @@ fn every_prepared_image_appears_pixel_for_pixel() {
     ));
     wanted.push((wide_backdrop(find(LOST_FILE)), 1));
     check(find(LOST_FILE), wanted, &mut failures);
+    backdrop_reaches_below_the_first_row(find(LOST_FILE));
 
     let mut wanted = row_templates(&potential, &prepared, false);
     wanted.push((
@@ -372,6 +373,7 @@ fn every_prepared_image_appears_pixel_for_pixel() {
     ));
     wanted.push((wide_backdrop(find(POTENTIAL_FILE)), 1));
     check(find(POTENTIAL_FILE), wanted, &mut failures);
+    backdrop_reaches_below_the_first_row(find(POTENTIAL_FILE));
 
     let badge_backdrop = template(
         "badge backdrop",
@@ -396,6 +398,26 @@ fn every_prepared_image_appears_pixel_for_pixel() {
         failures.is_empty(),
         "not drawn pixel for pixel:\n{}",
         failures.join("\n")
+    );
+}
+
+fn backdrop_reaches_below_the_first_row(image: &Rendered) {
+    let backdrop = buffer_image(&backdrop_wide(image.height));
+    let (x, y) = (47u32, 510u32);
+    let expected = backdrop.get_pixel(x, y).0;
+    assert_ne!(
+        &expected[..3],
+        &PAGE[..],
+        "{}: the sampled backdrop pixel is the page colour",
+        image.file
+    );
+    let at = ((y * image.width + x) * 4) as usize;
+    assert_eq!(
+        &image.rgba[at..at + 3],
+        &expected[..3],
+        "{}: the backdrop stops above ({x}, {y}) of a {}px picture",
+        image.file,
+        image.height
     );
 }
 
