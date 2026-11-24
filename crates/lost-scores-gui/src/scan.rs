@@ -94,11 +94,19 @@ impl ScanState {
         self.progress = self.progress.max(self.span(Step::Covers).0);
     }
 
-    pub fn finish(&mut self, lost_total: usize, lost_ranked: usize, images: bool) {
+    pub fn finish(
+        &mut self,
+        lost_total: usize,
+        lost_ranked: usize,
+        images: bool,
+        reason: Option<&str>,
+    ) {
         self.phase = Phase::Idle;
         self.progress = 1.0;
-        self.status =
-            format!("Scan finished: {lost_total} lost plays, {lost_ranked} on ranked maps");
+        self.status = match reason {
+            Some(reason) => format!("Scan finished. {reason}"),
+            None => format!("Scan finished: {lost_total} lost plays, {lost_ranked} on ranked maps"),
+        };
         if images {
             self.status.push_str(" \u{b7} images ready");
         }
@@ -196,10 +204,26 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_scan_with_nothing_to_show_says_why() {
+        let mut state = ScanState::default();
+        state.start(false);
+        state.finish(
+            3,
+            3,
+            true,
+            Some("3 lost plays, but none would enter your top 200"),
+        );
+        assert_eq!(
+            state.status,
+            "Scan finished. 3 lost plays, but none would enter your top 200 \u{b7} images ready"
+        );
+    }
+
+    #[test]
     fn a_finished_scan_with_images_says_so() {
         let mut state = ScanState::default();
         state.start(false);
-        state.finish(340, 238, true);
+        state.finish(340, 238, true, None);
         assert_eq!(
             state.status,
             "Scan finished: 340 lost plays, 238 on ranked maps \u{b7} images ready"
@@ -406,7 +430,7 @@ mod tests {
         assert!(state.progress > covers && state.progress < 1.0);
         state.apply(&progress(Step::Refresh, 1, 2), CLOCK);
         assert!(state.progress < 1.0);
-        state.finish(339, 239, true);
+        state.finish(339, 239, true, None);
         assert_eq!(state.progress, 1.0);
     }
 
@@ -453,7 +477,7 @@ mod tests {
     fn a_finished_scan_reports_its_counts() {
         let mut state = ScanState::default();
         state.start(false);
-        state.finish(340, 238, false);
+        state.finish(340, 238, false, None);
         assert_eq!(state.phase, Phase::Idle);
         assert_eq!(state.progress, 1.0);
         assert_eq!(

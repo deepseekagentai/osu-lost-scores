@@ -215,6 +215,7 @@ fn synthetic_scan() -> SavedScan {
         check_missing: false,
         lost_total: lost_rows.len(),
         lost_ranked: lost_rows.len(),
+        before_cutoff: None,
         lost: lost_rows,
         potential: Some(PotentialResult {
             current_pp: 5000.0,

@@ -94,6 +94,7 @@ pub struct Lost {
     pub rows: Vec<LostRow>,
     pub total: usize,
     pub ranked: usize,
+    pub before_cutoff: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -415,11 +416,16 @@ pub fn find<'a>(scan: &'a Scan, catalog: &MapCatalog, timings: &mut Timings) -> 
     timings.time("lost scores", || find_lost::find(&scan.replays, catalog))
 }
 
-pub fn lost(found: &[LostScore<'_>], catalog: &MapCatalog) -> Lost {
+pub fn lost(scan: &Scan, found: &[LostScore<'_>], catalog: &MapCatalog) -> Lost {
     Lost {
         total: found.len(),
         ranked: found.iter().filter(|l| l.status.gives_pp()).count(),
         rows: lost_rows(found, catalog),
+        before_cutoff: scan
+            .replays
+            .iter()
+            .filter(|replay| replay.header.unix_time() < find_lost::SCORE_V1_END)
+            .count(),
     }
 }
 
@@ -520,6 +526,7 @@ pub fn saved(
         lost_total: found.total,
         lost_ranked: found.ranked,
         potential: top,
+        before_cutoff: Some(found.before_cutoff),
     }
 }
 

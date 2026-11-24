@@ -172,9 +172,25 @@ pub fn subtitle(scan: &SavedScan, options: &ShareOptions) -> String {
     )
 }
 
+const NO_LOST: &str = "No lost plays found";
+
+pub fn lost_empty_text(scan: &SavedScan) -> String {
+    scan.zero_reason().unwrap_or_else(|| NO_LOST.to_owned())
+}
+
 pub fn badge_lost_line(scan: &SavedScan, options: &ShareOptions) -> String {
     let ranked = scan.lost.iter().filter(|row| row.status.gives_pp()).count();
     let plural = |count: usize| if count == 1 { "play" } else { "plays" };
+    if scan.lost.is_empty() && scan.before_cutoff == Some(0) {
+        return "No replays before 9 Oct 2024".to_owned();
+    }
+    let outside_top = scan
+        .potential
+        .as_ref()
+        .is_some_and(|top| top.lost_in_top == 0);
+    if !options.include_all && ranked > 0 && outside_top {
+        return format!("{ranked} lost {}, none in your top 200", plural(ranked));
+    }
     if options.include_all {
         format!(
             "{} lost {}, {} ranked",
@@ -205,8 +221,8 @@ mod tests {
     use lost_scores_core::maps::MapStatus;
 
     use super::{
-        MAX_IMAGE_ROWS, ShareOptions, badge_lost_line, badge_when_line, lost_count, lost_rows,
-        mods_width, potential_rows, stats, subtitle,
+        MAX_IMAGE_ROWS, ShareOptions, badge_lost_line, badge_when_line, lost_count,
+        lost_empty_text, lost_rows, mods_width, potential_rows, stats, subtitle,
     };
 
     const MADE_AT: i64 = 1_794_649_471;
@@ -294,6 +310,7 @@ mod tests {
             check_missing: false,
             lost_total: lost.len(),
             lost_ranked: lost.iter().filter(|row| row.status.gives_pp()).count(),
+            before_cutoff: None,
             lost,
             potential,
         }
@@ -424,6 +441,47 @@ mod tests {
         assert_eq!(mods_width(&rows), 3.0 * 30.0 + 2.0 * 2.0);
         assert_eq!(mods_width(&rows[..1]), 30.0);
         assert_eq!(mods_width(&[]), 0.0);
+    }
+
+    #[test]
+    fn an_empty_picture_and_the_badge_say_why_nothing_was_lost() {
+        let mut scan = scan(Vec::new(), None);
+        assert_eq!(lost_empty_text(&scan), "No lost plays found");
+        scan.before_cutoff = Some(0);
+        assert_eq!(
+            lost_empty_text(&scan),
+            "No replays from before 9 October 2024, when osu! stopped deleting beaten scores"
+        );
+        assert_eq!(
+            badge_lost_line(&scan, &options(10, false, false)),
+            "No replays before 9 Oct 2024"
+        );
+        scan.before_cutoff = Some(812);
+        assert_eq!(
+            lost_empty_text(&scan),
+            "No lost plays among your 812 replays from before 9 October 2024"
+        );
+        assert_eq!(
+            badge_lost_line(&scan, &options(10, false, false)),
+            "0 lost plays on ranked maps"
+        );
+    }
+
+    #[test]
+    fn lost_plays_outside_the_top_show_on_the_badge() {
+        let mut top = potential(Vec::new(), None);
+        top.lost_in_top = 0;
+        let scan = scan(
+            vec![
+                lost(300.0, MapStatus::Ranked, ""),
+                lost(280.0, MapStatus::Ranked, "HD"),
+            ],
+            Some(top),
+        );
+        assert_eq!(
+            badge_lost_line(&scan, &options(10, false, false)),
+            "2 lost plays, none in your top 200"
+        );
     }
 
     #[test]

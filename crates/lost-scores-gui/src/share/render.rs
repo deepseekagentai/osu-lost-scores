@@ -25,8 +25,8 @@ use slint::{
 use crate::avatar;
 use crate::share::art::{self, Art};
 use crate::share::model::{
-    ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_keys, lost_rows, mods_width,
-    potential_rows, stats, subtitle,
+    ShareOptions, ShareRow, badge_lost_line, badge_when_line, cover_keys, lost_empty_text,
+    lost_rows, mods_width, potential_rows, stats, subtitle,
 };
 use crate::share::rasters::{self, CachedCovers, CoverKey, Fetch, HttpFetch};
 use crate::table::when_day;
@@ -275,6 +275,7 @@ pub fn render_images(
     lost.set_art(share_art(&art));
     lost.set_mods_width(mods_width(&rows));
     lost.set_rows(items(&rows, prepared, &art));
+    lost.set_empty_text(lost_empty_text(scan).into());
     lost.set_backdrop(wide_backdrop(lost.get_image_height()));
     lost.set_backdrop_height(backdrop_height(lost.get_image_height()));
     lost.set_nick(SharedString::from(scan.player_name.as_str()));

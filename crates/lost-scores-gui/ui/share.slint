@@ -446,6 +446,7 @@ export component ShareLost inherits Window {
     in property <string> nick;
     in property <string> subtitle;
     in property <string> date;
+    in property <string> empty-text: "No lost plays found";
     out property <length> image-height: 150px + max(root.rows.length, 1) * 64px;
     width: 980px;
     height: root.image-height;
@@ -470,7 +471,7 @@ export component ShareLost inherits Window {
             rows: root.rows;
             art: root.art;
             mods-width: root.mods-width;
-            empty-text: "No lost plays found";
+            empty-text: root.empty-text;
         }
         ShareFooter {
             x: 24px;

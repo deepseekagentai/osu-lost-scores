@@ -409,7 +409,7 @@ fn show_lost(
         )?;
     }
     let scores = pipeline::find(&read.scan, &catalog, timings);
-    let found = pipeline::lost(&scores, &catalog);
+    let found = pipeline::lost(&read.scan, &scores, &catalog);
     let show_all = view.all || catalog.is_empty();
     let mut rows = found.rows;
     rows.retain(|row| show_all || row.status.gives_pp());
@@ -439,6 +439,15 @@ fn show_lost(
             "{} lost plays on ranked maps; {} with loved and unranked maps (--all)",
             found.ranked, found.total
         );
+    }
+    if let Some(reason) = history::zero_reason(
+        found.total,
+        found.ranked,
+        show_all,
+        Some(found.before_cutoff),
+        None,
+    ) {
+        eprintln!("{reason}");
     }
     Ok(())
 }
@@ -559,7 +568,7 @@ fn submit(
         events,
     )?;
     let scores = pipeline::find(&read.scan, &catalog, timings);
-    let found = pipeline::lost(&scores, &catalog);
+    let found = pipeline::lost(&read.scan, &scores, &catalog);
     let top = pipeline::potential_top(api.as_mut(), &player, &scores, &catalog, timings, events)?;
     let include_all =
         setup::config_file().is_some_and(|path| setup::load_settings(&path).include_all);
@@ -578,6 +587,9 @@ fn submit(
         history::remember(&folder, &record)?;
     }
     println!("sent scan {}: {}", sent.id, state(&sent));
+    if let Some(reason) = scan.zero_reason() {
+        eprintln!("{reason}");
+    }
     if share_replays {
         record.queued.extend(replays::in_top(&scan));
         let replays_dir = read.osu_dir.join("Data").join("r");

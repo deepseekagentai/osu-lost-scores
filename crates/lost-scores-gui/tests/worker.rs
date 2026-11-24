@@ -518,6 +518,7 @@ fn one_lost_play() -> SavedScan {
         check_missing: false,
         lost_total: 1,
         lost_ranked: 1,
+        before_cutoff: None,
         lost: vec![LostRow {
             pp: 400.0,
             kept_pp: 380.0,

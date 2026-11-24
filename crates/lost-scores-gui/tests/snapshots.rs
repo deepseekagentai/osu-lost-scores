@@ -523,6 +523,7 @@ fn fake_scan(unicode: bool) -> SavedScan {
         check_missing: false,
         lost_total: lost.len(),
         lost_ranked: lost.len() - 3,
+        before_cutoff: None,
         lost,
         potential: Some(PotentialResult {
             current_pp: 8557.4,

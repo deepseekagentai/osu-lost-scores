@@ -268,6 +268,7 @@ mod tests {
             lost: Vec::new(),
             lost_total: 0,
             lost_ranked: 0,
+            before_cutoff: None,
             potential: None,
         };
         scan.potential = Some(lost_scores_app::pipeline::PotentialResult {
@@ -400,6 +401,7 @@ mod tests {
             lost: vec![lost],
             lost_total: 1,
             lost_ranked: 0,
+            before_cutoff: None,
             potential: None,
         };
         let table = Table::in_zone(&scan, &TimeZone::UTC);
@@ -454,6 +456,7 @@ mod tests {
             lost: vec![lost],
             lost_total: 1,
             lost_ranked: 1,
+            before_cutoff: None,
             potential: None,
         };
         let table = Table::in_zone(&scan, &TimeZone::UTC);
@@ -487,6 +490,7 @@ mod tests {
             lost: rows,
             lost_total: 0,
             lost_ranked: 0,
+            before_cutoff: None,
             potential: None,
         };
         let table = Table::in_zone(

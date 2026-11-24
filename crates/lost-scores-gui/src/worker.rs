@@ -157,7 +157,7 @@ fn execute(job: &Job, api: &mut dyn Api, sink: &dyn Sink) -> Result<Outcome> {
     )?;
     proceed!();
     let scores = find(&read.scan, &catalog, &mut timings);
-    let mut found = lost(&scores, &catalog);
+    let mut found = lost(&read.scan, &scores, &catalog);
     pipeline::fill_set_ids(
         job.source.maps.as_deref(),
         &mut found,
@@ -242,7 +242,7 @@ fn refresh(
         return Ok(None);
     }
     let scores = find(scan, catalog, timings);
-    let found = lost(&scores, catalog);
+    let found = lost(scan, &scores, catalog);
     let result = match pipeline::potential_top(api, player, &scores, catalog, timings, events) {
         Ok(result) => result,
         Err(error) if expired(&error) => return Err(error),

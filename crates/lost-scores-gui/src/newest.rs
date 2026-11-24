@@ -69,6 +69,7 @@ mod tests {
             lost: Vec::new(),
             lost_total: 0,
             lost_ranked: 0,
+            before_cutoff: None,
             potential: None,
         }
     }

@@ -475,8 +475,9 @@ fn potential_merges_the_fake_online_top() {
     )
     .unwrap();
     let scores = find(&read.scan, &catalog, &mut timings);
-    let found = lost(&scores, &catalog);
+    let found = lost(&read.scan, &scores, &catalog);
     assert_eq!((found.total, found.ranked, found.rows.len()), (1, 1, 1));
+    assert_eq!(found.before_cutoff, 2);
     let mut events = Vec::new();
     let player = read.player.unwrap();
     let result = potential(
@@ -807,6 +808,7 @@ fn the_window_and_the_command_line_build_the_same_saved_scan() {
         rows: Vec::new(),
         total: 3,
         ranked: 2,
+        before_cutoff: 5,
     };
     let mut from = source(Path::new("/osu"), None);
     from.check_missing = true;
@@ -817,6 +819,7 @@ fn the_window_and_the_command_line_build_the_same_saved_scan() {
     assert_eq!((scan.player_id, scan.player_name.as_str()), (7, "Lemon"));
     assert!(scan.include_all && scan.check_missing);
     assert_eq!((scan.lost_total, scan.lost_ranked), (3, 2));
+    assert_eq!(scan.before_cutoff, Some(5));
     assert!(scan.lost.is_empty() && scan.potential.is_none());
 }
 
@@ -865,6 +868,7 @@ fn the_saved_scan_counts_what_the_online_top_shows_on_the_map() {
         rows: vec![in_top, below],
         total: 2,
         ranked: 2,
+        before_cutoff: 0,
     };
     let top = PotentialResult {
         current_pp: 1000.0,
@@ -973,6 +977,7 @@ fn lost_plays_without_a_set_number_get_one_in_a_single_request() {
         ],
         total: 3,
         ranked: 2,
+        before_cutoff: 0,
     };
     let mut events = Vec::new();
     fill_set_ids(

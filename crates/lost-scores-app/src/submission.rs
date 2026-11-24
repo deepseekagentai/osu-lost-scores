@@ -38,6 +38,7 @@ mod tests {
             lost: Vec::new(),
             lost_total: 3,
             lost_ranked: 2,
+            before_cutoff: None,
             potential: None,
         };
         let sent: serde_json::Value = serde_json::from_slice(&body(&scan).unwrap()).unwrap();

@@ -70,6 +70,7 @@ struct Session {
     shown: Cell<usize>,
     refreshing: Cell<bool>,
     counts: Cell<(usize, usize)>,
+    reason: RefCell<Option<String>>,
     closed: Arc<AtomicBool>,
     settings: RefCell<Settings>,
     player: Cell<Option<u32>>,
@@ -221,6 +222,7 @@ impl Session {
             shown: Cell::new(0),
             refreshing: Cell::new(false),
             counts: Cell::new((0, 0)),
+            reason: RefCell::new(None),
             closed: Arc::new(AtomicBool::new(false)),
             settings: RefCell::new(Settings::default()),
             player: Cell::new(None),
@@ -2163,6 +2165,7 @@ impl Session {
                 self.refreshing.set(true);
                 self.counts
                     .set((done.scan.lost_total, done.scan.lost_ranked));
+                self.reason.replace(done.scan.zero_reason());
                 self.show_results(&done.scan);
                 self.images_view.set(true);
                 self.register(&done.folder, &done.scan);
@@ -2173,6 +2176,7 @@ impl Session {
                 if let Some(done) = updated {
                     self.counts
                         .set((done.scan.lost_total, done.scan.lost_ranked));
+                    self.reason.replace(done.scan.zero_reason());
                     self.show_results(&done.scan);
                     self.register(&done.folder, &done.scan);
                     self.offer(&done.folder, &done.scan);
@@ -2181,7 +2185,10 @@ impl Session {
                 self.show_images();
                 let (total, ranked) = self.counts.get();
                 let images = self.window.global::<State>().get_has_images();
-                self.scan.borrow_mut().finish(total, ranked, images);
+                let reason = self.reason.borrow().clone();
+                self.scan
+                    .borrow_mut()
+                    .finish(total, ranked, images, reason.as_deref());
                 self.open_results_if_narrow();
                 self.save_privately();
             }
@@ -3370,6 +3377,7 @@ mod tests {
             lost: Vec::new(),
             lost_total: 0,
             lost_ranked: 0,
+            before_cutoff: None,
             potential: None,
         }
     }

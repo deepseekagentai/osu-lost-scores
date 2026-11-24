@@ -363,6 +363,7 @@ mod tests {
             lost: files.iter().map(|file| row(file)).collect(),
             lost_total: files.len(),
             lost_ranked: files.len(),
+            before_cutoff: None,
             potential: None,
         }
     }

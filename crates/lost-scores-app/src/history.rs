@@ -32,6 +32,53 @@ pub struct SavedScan {
     pub lost_total: usize,
     pub lost_ranked: usize,
     pub potential: Option<PotentialResult>,
+    #[serde(default)]
+    pub before_cutoff: Option<usize>,
+}
+
+impl SavedScan {
+    pub fn zero_reason(&self) -> Option<String> {
+        zero_reason(
+            self.lost_total,
+            self.lost_ranked,
+            self.include_all,
+            self.before_cutoff,
+            self.potential.as_ref().map(|top| top.lost_in_top),
+        )
+    }
+}
+
+pub fn zero_reason(
+    lost_total: usize,
+    lost_ranked: usize,
+    include_all: bool,
+    before_cutoff: Option<usize>,
+    lost_in_top: Option<usize>,
+) -> Option<String> {
+    let shown = if include_all { lost_total } else { lost_ranked };
+    if lost_total == 0 {
+        return Some(match before_cutoff? {
+            0 => "No replays from before 9 October 2024, when osu! stopped deleting beaten scores"
+                .to_owned(),
+            1 => "No lost plays among your 1 replay from before 9 October 2024".to_owned(),
+            count => format!("No lost plays among your {count} replays from before 9 October 2024"),
+        });
+    }
+    if shown == 0 {
+        return Some(if lost_total == 1 {
+            "1 lost play, on a map that gives no pp".to_owned()
+        } else {
+            format!("{lost_total} lost plays, all on maps that give no pp")
+        });
+    }
+    match lost_in_top {
+        Some(0) => Some(if shown == 1 {
+            "1 lost play, but it would not enter your top 200".to_owned()
+        } else {
+            format!("{shown} lost plays, but none would enter your top 200")
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,8 +367,87 @@ mod tests {
             lost: vec![row()],
             lost_total: 12,
             lost_ranked: 9,
+            before_cutoff: None,
             potential: None,
         }
+    }
+
+    fn empty(before_cutoff: Option<usize>, lost: usize, lost_in_top: Option<usize>) -> SavedScan {
+        let mut scan = scan(1_700_000_000);
+        scan.include_all = false;
+        scan.lost = Vec::new();
+        scan.lost_total = lost;
+        scan.lost_ranked = lost;
+        scan.before_cutoff = before_cutoff;
+        scan.potential = lost_in_top.map(|lost_in_top| PotentialResult {
+            current_pp: 5000.0,
+            potential_pp: 5000.0,
+            current_accuracy: 98.0,
+            potential_accuracy: 98.0,
+            global_rank: None,
+            lost_in_top,
+            rows: Vec::new(),
+            online: Vec::new(),
+        });
+        scan
+    }
+
+    #[test]
+    fn a_scan_without_old_replays_says_so() {
+        assert_eq!(
+            empty(Some(0), 0, Some(0)).zero_reason().as_deref(),
+            Some("No replays from before 9 October 2024, when osu! stopped deleting beaten scores")
+        );
+    }
+
+    #[test]
+    fn a_scan_with_old_replays_but_no_losses_counts_them() {
+        assert_eq!(
+            empty(Some(1), 0, Some(0)).zero_reason().as_deref(),
+            Some("No lost plays among your 1 replay from before 9 October 2024")
+        );
+        assert_eq!(
+            empty(Some(812), 0, Some(0)).zero_reason().as_deref(),
+            Some("No lost plays among your 812 replays from before 9 October 2024")
+        );
+    }
+
+    #[test]
+    fn lost_plays_outside_the_top_are_named() {
+        assert_eq!(
+            empty(Some(812), 3, Some(0)).zero_reason().as_deref(),
+            Some("3 lost plays, but none would enter your top 200")
+        );
+        assert_eq!(
+            empty(Some(812), 1, Some(0)).zero_reason().as_deref(),
+            Some("1 lost play, but it would not enter your top 200")
+        );
+    }
+
+    #[test]
+    fn lost_plays_only_on_maps_without_pp_are_named() {
+        let mut scan = empty(Some(812), 0, Some(0));
+        scan.lost_total = 3;
+        assert_eq!(
+            scan.zero_reason().as_deref(),
+            Some("3 lost plays, all on maps that give no pp")
+        );
+        scan.lost_total = 1;
+        assert_eq!(
+            scan.zero_reason().as_deref(),
+            Some("1 lost play, on a map that gives no pp")
+        );
+    }
+
+    #[test]
+    fn a_scan_with_lost_plays_in_the_top_needs_no_reason() {
+        assert_eq!(empty(Some(812), 3, Some(2)).zero_reason(), None);
+        assert_eq!(empty(Some(812), 3, None).zero_reason(), None);
+    }
+
+    #[test]
+    fn a_scan_saved_before_the_count_gives_no_reason_for_zero() {
+        assert_eq!(empty(None, 0, Some(0)).zero_reason(), None);
     }
 
     #[test]

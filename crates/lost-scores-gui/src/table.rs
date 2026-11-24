@@ -700,6 +700,7 @@ mod tests {
             check_missing: false,
             lost_total: rows.len(),
             lost_ranked: rows.len() - 1,
+            before_cutoff: None,
             lost: rows,
             potential,
         }

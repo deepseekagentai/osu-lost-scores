@@ -230,6 +230,12 @@ fn an_empty_osu_folder_lists_no_lost_plays() {
     let log = text(&output.stderr);
     assert!(log.contains("0 replays read"));
     assert!(log.contains("total"));
+    assert!(
+        log.contains(
+            "No replays from before 9 October 2024, when osu! stopped deleting beaten scores"
+        ),
+        "{log}"
+    );
 }
 
 fn check_missing_offline(home: &Path) -> String {
