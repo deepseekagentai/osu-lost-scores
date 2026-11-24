@@ -99,7 +99,7 @@ pub fn lost_rows(scan: &SavedScan, options: &ShareOptions) -> Vec<ShareRow> {
                 accuracy: format!("{:.2}%", row.accuracy),
                 pp: format!("{:.0}", row.pp),
                 sub: String::new(),
-                sub_red: lost_text(row.pp, row.kept_pp),
+                sub_red: lost_text(row.pp, row.counted()),
                 lost: false,
                 status: Some(row.status),
             }
@@ -224,6 +224,7 @@ mod tests {
         LostRow {
             pp,
             kept_pp: pp - 10.0,
+            counted_pp: None,
             score: 1_000_000,
             kept_score: 900_000,
             mods: mods.into(),
@@ -304,6 +305,15 @@ mod tests {
             include_all,
             show_lost_in_top,
         }
+    }
+
+    #[test]
+    fn the_lost_image_measures_the_loss_against_what_osu_counts_now() {
+        let mut row = lost(356.0, MapStatus::Ranked, "HD");
+        row.kept_pp = 240.0;
+        row.counted_pp = Some(320.0);
+        let rows = lost_rows(&scan(vec![row], None), &options(10, false, false));
+        assert_eq!(rows[0].sub_red, "-36.0pp");
     }
 
     #[test]

@@ -3923,6 +3923,7 @@ mod tests {
         let row = |file: &str, beatmap_id: u32, pp: f64| LostRow {
             pp,
             kept_pp: 150.0,
+            counted_pp: None,
             score: 1_234_567,
             kept_score: 1_300_000,
             mods: "HDDT".into(),
@@ -4355,6 +4356,7 @@ mod tests {
         let row = |beatmap_id: u32, status: MapStatus| LostRow {
             pp: 300.0,
             kept_pp: 150.0,
+            counted_pp: None,
             score: 1_234_567,
             kept_score: 1_300_000,
             mods: "HD".into(),

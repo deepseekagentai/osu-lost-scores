@@ -48,6 +48,7 @@ fn lost(index: u32, status: MapStatus, mods: &str) -> LostRow {
     LostRow {
         pp: 400.0 - f64::from(index),
         kept_pp: 380.0 - f64::from(index),
+        counted_pp: None,
         score: 900_000,
         kept_score: 800_000,
         mods: mods.into(),

@@ -153,6 +153,7 @@ fn lost(index: usize) -> LostRow {
     LostRow {
         pp: 500.0 - index as f64,
         kept_pp: 480.0 - index as f64,
+        counted_pp: None,
         score: 900_000,
         kept_score: 800_000,
         mods: MOD_LISTS[index % MOD_LISTS.len()].into(),

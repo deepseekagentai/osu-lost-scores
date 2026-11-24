@@ -67,6 +67,14 @@ pub fn lost_text(pp: f64, kept: f64) -> String {
     format!("-{:.1}pp", (pp - kept).max(0.0))
 }
 
+fn kept_tip(kept: f64, counted: f64) -> String {
+    if counted - kept >= 0.005 {
+        format!("Kept by the server: {kept:.2}pp \u{b7} osu! counts {counted:.2}pp now")
+    } else {
+        format!("Kept by the server: {kept:.2}pp")
+    }
+}
+
 pub const MOD_PILL_WIDTH: f32 = 26.0;
 pub const MOD_PILL_GAP: f32 = 3.0;
 
@@ -97,11 +105,14 @@ pub fn row(item: &Item) -> ScoreRow {
         })
         .collect();
     let (place, sub, sub_red, kept_tip, lost) = match &item.detail {
-        Detail::Lost { kept_pp } => (
+        Detail::Lost {
+            kept_pp,
+            counted_pp,
+        } => (
             String::new(),
             String::new(),
-            lost_text(item.pp, *kept_pp),
-            format!("Kept by the server: {kept_pp:.2}pp"),
+            lost_text(item.pp, *counted_pp),
+            kept_tip(*kept_pp, *counted_pp),
             false,
         ),
         Detail::Weighted {
@@ -354,6 +365,7 @@ mod tests {
         let lost = LostRow {
             pp: 111.87,
             kept_pp: 100.0,
+            counted_pp: None,
             score: 1_234_567,
             kept_score: 1_000_000,
             mods: "HDDT".into(),
@@ -403,6 +415,62 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_row_is_measured_against_what_osu_counts_now() {
+        let lost = LostRow {
+            pp: 356.0,
+            kept_pp: 240.0,
+            counted_pp: Some(320.0),
+            score: 9_000_000,
+            kept_score: 9_500_000,
+            mods: "HD".into(),
+            unix_time: 1_700_000_000,
+            played: "2023-11-14".into(),
+            status: MapStatus::Ranked,
+            beatmap_md5: "0b577cbe9bc774600d20cfa17c0aa94c".into(),
+            beatmap_id: Some(6),
+            beatmapset_id: None,
+            artist: "A".into(),
+            title: "T".into(),
+            version: "V".into(),
+            file: "b.osr".into(),
+            creator: "M".into(),
+            hits: Hits {
+                n300: 400,
+                n100: 2,
+                n50: 0,
+                misses: 0,
+            },
+            accuracy: 99.6,
+            grade: Grade::S,
+            max_combo: 600,
+        };
+        let scan = SavedScan {
+            version: VERSION,
+            made_at: 1_725_406_740,
+            player_id: 1,
+            player_name: "Player".into(),
+            include_all: false,
+            check_missing: false,
+            lost: vec![lost],
+            lost_total: 1,
+            lost_ranked: 1,
+            potential: None,
+        };
+        let table = Table::in_zone(&scan, &TimeZone::UTC);
+        let shown = row(&table.rows(Tab::Lost)[0]);
+        assert_eq!(shown.sub_red, "-36.0pp");
+        assert_eq!(
+            shown.kept_tip,
+            "Kept by the server: 240.00pp \u{b7} osu! counts 320.00pp now"
+        );
+        assert!(
+            table
+                .footer(Tab::Lost)
+                .contains(&("Average pp lost".to_owned(), "36.00".to_owned()))
+        );
+    }
+
+    #[test]
     fn mods_column_fits_the_longest_list() {
         let with = |mods: &str| {
             let mut row = lost_row();
@@ -437,6 +505,7 @@ mod tests {
         LostRow {
             pp: 1.0,
             kept_pp: 0.0,
+            counted_pp: None,
             score: 1,
             kept_score: 0,
             mods: String::new(),

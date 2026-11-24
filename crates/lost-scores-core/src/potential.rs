@@ -201,6 +201,7 @@ mod tests {
         LostScore {
             play: replay,
             kept: replay,
+            counted: replay.pp.unwrap_or_default(),
             status,
         }
     }

@@ -30,6 +30,8 @@ impl Hits {
 pub struct LostRow {
     pub pp: f64,
     pub kept_pp: f64,
+    #[serde(default)]
+    pub counted_pp: Option<f64>,
     pub score: u32,
     pub kept_score: u32,
     pub mods: String,
@@ -51,6 +53,12 @@ pub struct LostRow {
     pub max_combo: u32,
 }
 
+impl LostRow {
+    pub fn counted(&self) -> f64 {
+        self.counted_pp.unwrap_or(self.kept_pp)
+    }
+}
+
 pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
     lost.iter()
         .map(|score| {
@@ -59,6 +67,7 @@ pub fn rows(lost: &[LostScore], catalog: &MapCatalog) -> Vec<LostRow> {
             LostRow {
                 pp: score.play.pp.unwrap_or_default(),
                 kept_pp: score.kept.pp.unwrap_or_default(),
+                counted_pp: Some(score.counted),
                 score: header.score,
                 kept_score: score.kept.header.score,
                 mods: header.mods.acronyms(),
@@ -478,6 +487,7 @@ mod tests {
         let lost = [LostScore {
             play: &play,
             kept: &kept,
+            counted: kept.pp.unwrap_or_default(),
             status: MapStatus::Loved,
         }];
         let row = &rows(&lost, &MapCatalog::default())[0];
@@ -494,6 +504,39 @@ mod tests {
         assert_eq!(row.grade, Grade::B);
         assert_eq!(row.max_combo, 321);
         assert_eq!(row.creator, "m");
+    }
+
+    #[test]
+    fn lost_rows_carry_what_osu_counts_now_next_to_the_kept_play() {
+        let play = replay("p.osr", 10_000_000, 300.0, 1_728_470_722);
+        let kept = replay("k.osr", 11_000_000, 250.0, 1_728_000_000);
+        let lost = [LostScore {
+            play: &play,
+            kept: &kept,
+            counted: 280.0,
+            status: MapStatus::Ranked,
+        }];
+        let row = &rows(&lost, &MapCatalog::default())[0];
+        assert_eq!(row.kept_pp, 250.0);
+        assert_eq!(row.counted_pp, Some(280.0));
+        assert_eq!(row.counted(), 280.0);
+    }
+
+    #[test]
+    fn a_row_saved_without_the_counted_pp_counts_the_kept_play() {
+        let play = replay("p.osr", 10_000_000, 300.0, 1_728_470_722);
+        let kept = replay("k.osr", 11_000_000, 250.0, 1_728_000_000);
+        let lost = [LostScore {
+            play: &play,
+            kept: &kept,
+            counted: 280.0,
+            status: MapStatus::Ranked,
+        }];
+        let mut saved = serde_json::to_value(&rows(&lost, &MapCatalog::default())[0]).unwrap();
+        saved.as_object_mut().unwrap().remove("counted_pp");
+        let row: LostRow = serde_json::from_value(saved).unwrap();
+        assert_eq!(row.counted_pp, None);
+        assert_eq!(row.counted(), 250.0);
     }
 
     #[test]
@@ -553,6 +596,7 @@ mod tests {
         let lost = [LostScore {
             play: &play,
             kept: &kept,
+            counted: kept.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         assert_eq!(
@@ -560,6 +604,7 @@ mod tests {
             [LostRow {
                 pp: 300.0,
                 kept_pp: 250.0,
+                counted_pp: Some(250.0),
                 score: 10_000_000,
                 kept_score: 11_000_000,
                 mods: "HDDT".into(),
@@ -593,6 +638,7 @@ mod tests {
         let found = [LostScore {
             play: &played,
             kept: &played,
+            counted: played.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         let lost = [(0, potential.top[1].play)];
@@ -638,6 +684,7 @@ mod tests {
         let lost = [LostScore {
             play: &play,
             kept: &play,
+            counted: play.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         assert_eq!(
@@ -649,6 +696,7 @@ mod tests {
         let missing = [LostScore {
             play: &bare,
             kept: &bare,
+            counted: bare.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         assert_eq!(
@@ -674,6 +722,7 @@ mod tests {
         let old = [LostScore {
             play: &old_file,
             kept: &old_file,
+            counted: old_file.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         assert_eq!(rows(&old, &catalog)[0].beatmapset_id, Some(44));
@@ -682,6 +731,7 @@ mod tests {
         let found = [LostScore {
             play: &played,
             kept: &played,
+            counted: played.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         let lost_plays = [(0, potential.top[1].play)];
@@ -701,6 +751,7 @@ mod tests {
         let bare_found = [LostScore {
             play: &bare_played,
             kept: &bare_played,
+            counted: bare_played.pp.unwrap_or_default(),
             status: MapStatus::Ranked,
         }];
         let from_catalog = super::potential_rows(

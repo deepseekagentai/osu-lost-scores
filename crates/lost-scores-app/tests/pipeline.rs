@@ -7,10 +7,10 @@ use common::{Isolated, Replay, isolate_environment, write};
 use lost_scores_app::history;
 use lost_scores_app::online::Player;
 use lost_scores_app::pipeline::{
-    Api, Event, Lost, PlayerLookup, Source, Step, fill_set_ids, find, load_catalog, lost,
-    potential, read, refresh_statuses, saved, unix_now,
+    Api, Event, Lost, PlayerLookup, PotentialResult, Source, Step, fill_set_ids, find,
+    load_catalog, lost, potential, read, refresh_statuses, saved, unix_now,
 };
-use lost_scores_app::rows::{Hits, LostRow};
+use lost_scores_app::rows::{Hits, LostRow, OnlineRow};
 use lost_scores_app::setup;
 use lost_scores_app::timings::Timings;
 use lost_scores_core::grade::Grade;
@@ -848,10 +848,77 @@ fn read_maps_scan_progress_to_the_songs_replays_and_pp_steps() {
     assert_eq!(last(Step::MissingMaps), None);
 }
 
+#[test]
+fn the_saved_scan_counts_what_the_online_top_shows_on_the_map() {
+    let player = Player {
+        id: 7,
+        names: vec!["Lemon".into()],
+        pp: Some(1000.0),
+        accuracy: Some(98.5),
+        global_rank: Some(12),
+    };
+    let mut in_top = lost_row("a", 5, None);
+    in_top.counted_pp = Some(210.0);
+    let mut below = lost_row("b", 6, None);
+    below.counted_pp = Some(220.0);
+    let found = Lost {
+        rows: vec![in_top, below],
+        total: 2,
+        ranked: 2,
+    };
+    let top = PotentialResult {
+        current_pp: 1000.0,
+        potential_pp: 1090.0,
+        current_accuracy: 98.5,
+        potential_accuracy: 98.6,
+        global_rank: Some(12),
+        lost_in_top: 1,
+        rows: Vec::new(),
+        online: vec![online_row(5, 260.0)],
+    };
+    let scan = saved(
+        &source(Path::new("/osu"), None),
+        false,
+        &player,
+        found,
+        Some(top),
+    );
+    assert_eq!(scan.lost[0].counted_pp, Some(260.0));
+    assert_eq!(scan.lost[1].counted_pp, Some(220.0));
+}
+
+fn online_row(beatmap_id: u32, pp: f64) -> OnlineRow {
+    OnlineRow {
+        place: 1,
+        pp,
+        weight: 1.0,
+        weighted: pp,
+        beatmap_id,
+        beatmapset_id: None,
+        artist: "A".into(),
+        title: "T".into(),
+        version: "V".into(),
+        creator: "M".into(),
+        mods: String::new(),
+        accuracy: 99.0,
+        grade: Grade::S,
+        hits: Hits {
+            n300: 300,
+            n100: 2,
+            n50: 0,
+            misses: 0,
+        },
+        score: 1_000_000,
+        unix_time: 1_700_000_000,
+        played: "2023-11-14 22:13".into(),
+    }
+}
+
 fn lost_row(md5: &str, beatmap_id: u32, beatmapset_id: Option<u32>) -> LostRow {
     LostRow {
         pp: 300.0,
         kept_pp: 200.0,
+        counted_pp: None,
         score: 1_000_000,
         kept_score: 900_000,
         mods: String::new(),

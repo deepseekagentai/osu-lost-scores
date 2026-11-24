@@ -521,6 +521,7 @@ fn one_lost_play() -> SavedScan {
         lost: vec![LostRow {
             pp: 400.0,
             kept_pp: 380.0,
+            counted_pp: None,
             score: 900_000,
             kept_score: 800_000,
             mods: String::new(),

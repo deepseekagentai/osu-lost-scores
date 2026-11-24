@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -493,9 +494,21 @@ pub fn saved(
     source: &Source,
     include_all: bool,
     player: &Player,
-    found: Lost,
+    mut found: Lost,
     top: Option<PotentialResult>,
 ) -> SavedScan {
+    if let Some(top) = &top {
+        let online: HashMap<u32, f64> = top
+            .online
+            .iter()
+            .map(|row| (row.beatmap_id, row.pp))
+            .collect();
+        for row in &mut found.rows {
+            if let Some(pp) = row.beatmap_id.and_then(|id| online.get(&id)) {
+                row.counted_pp = Some(*pp);
+            }
+        }
+    }
     SavedScan {
         version: history::VERSION,
         made_at: unix_now(),

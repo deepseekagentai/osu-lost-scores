@@ -12,6 +12,7 @@ pub const SCORE_V1_END: i64 = 1_728_470_822;
 pub struct LostScore<'a> {
     pub play: &'a ScannedReplay,
     pub kept: &'a ScannedReplay,
+    pub counted: f64,
     pub status: MapStatus,
 }
 
@@ -42,6 +43,30 @@ pub fn find<'a>(replays: &'a [ScannedReplay], catalog: &MapCatalog) -> Vec<LostS
             .or_insert(play);
     }
 
+    let mut counted: HashMap<&str, f64> = HashMap::new();
+    for ((md5, _), plays) in &groups {
+        let kept = first_max(
+            plays
+                .iter()
+                .filter(|play| play.0.header.unix_time() < SCORE_V1_END),
+            by_score,
+        );
+        let later = plays
+            .iter()
+            .filter(|play| play.0.header.unix_time() >= SCORE_V1_END);
+        if let Some(pp) = kept
+            .into_iter()
+            .chain(later)
+            .map(|play| play.1)
+            .reduce(f64::max)
+        {
+            counted
+                .entry(md5)
+                .and_modify(|best| *best = best.max(pp))
+                .or_insert(pp);
+        }
+    }
+
     let mut lost = Vec::new();
     for ((md5, _), plays) in &groups {
         let Some(candidate) = first_max(plays.iter(), by_pp) else {
@@ -64,6 +89,7 @@ pub fn find<'a>(replays: &'a [ScannedReplay], catalog: &MapCatalog) -> Vec<LostS
             lost.push(LostScore {
                 play: candidate.0,
                 kept: kept.0,
+                counted: counted.get(md5).copied().unwrap_or(kept.1),
                 status: catalog
                     .get(md5)
                     .map_or(MapStatus::Unknown, |info| info.status),
@@ -222,6 +248,41 @@ mod tests {
             lost_names(&replays, &MapCatalog::default()),
             pairs(&[("p", "k")])
         );
+    }
+
+    #[test]
+    fn osu_counts_a_later_play_on_the_map_since_the_switch() {
+        let replays = [
+            play("p", "m", 0, 10_000_000, Some(300.0), BEFORE),
+            play("k", "m", 0, 11_000_000, Some(250.0), BEFORE + 100),
+            play("later", "m", 0, 10_500_000, Some(280.0), AFTER),
+        ];
+        let lost = find(&replays, &MapCatalog::default());
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].kept.file_name, "k");
+        assert_eq!(lost[0].counted, 280.0);
+    }
+
+    #[test]
+    fn osu_counts_the_kept_play_of_another_mod_group() {
+        let replays = [
+            play("p", "m", 0, 10_000_000, Some(300.0), BEFORE),
+            play("k", "m", 0, 11_000_000, Some(250.0), BEFORE + 100),
+            play("hd", "m", HD, 9_000_000, Some(290.0), BEFORE + 200),
+            play("other", "x", 0, 9_000_000, Some(299.0), AFTER),
+        ];
+        let lost = find(&replays, &MapCatalog::default());
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].counted, 290.0);
+    }
+
+    #[test]
+    fn osu_counts_the_kept_play_when_nothing_else_is_there() {
+        let replays = [
+            play("p", "m", 0, 10_000_000, Some(300.0), BEFORE),
+            play("k", "m", 0, 11_000_000, Some(250.0), BEFORE + 100),
+        ];
+        assert_eq!(find(&replays, &MapCatalog::default())[0].counted, 250.0);
     }
 
     #[test]

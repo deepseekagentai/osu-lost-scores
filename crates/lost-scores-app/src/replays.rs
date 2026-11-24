@@ -325,6 +325,7 @@ mod tests {
         LostRow {
             pp: 321.5,
             kept_pp: 300.25,
+            counted_pp: None,
             score: 1_234_567,
             kept_score: 1_300_000,
             mods: "HDDT".into(),

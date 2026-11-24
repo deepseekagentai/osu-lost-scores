@@ -18,7 +18,7 @@ pub fn table(rows: &[LostRow], limit: usize, with_status: bool) -> String {
         "{:>4}  {:>7}  {:>7}  {:<6}  {:<10}{}  beatmap",
         "#",
         "pp",
-        "kept",
+        "counted",
         "mods",
         "played",
         status_column("status")
@@ -29,7 +29,7 @@ pub fn table(rows: &[LostRow], limit: usize, with_status: bool) -> String {
             "{:>4}  {:>7.2}  {:>7.2}  {:<6}  {:<10}{}  {} - {} [{}]",
             index + 1,
             row.pp,
-            row.kept_pp,
+            row.counted(),
             mods,
             row.played,
             status_column(label(row.status)),
@@ -95,6 +95,7 @@ mod tests {
         LostRow {
             pp: 300.0,
             kept_pp: 250.0,
+            counted_pp: None,
             score: 1,
             kept_score: 2,
             mods: "HDDT".into(),
@@ -163,6 +164,15 @@ mod tests {
             text.contains("A - Evil]52;c;ZXZpbA==Title2J [x]"),
             "{text:?}"
         );
+    }
+
+    #[test]
+    fn the_table_shows_what_osu_counts_now_on_the_map() {
+        let mut row = lost_row("B");
+        row.counted_pp = Some(280.0);
+        let text = table(&[row], 0, false);
+        assert!(text.lines().next().unwrap().contains("counted"), "{text}");
+        assert!(text.contains(" 300.00   280.00 "), "{text}");
     }
 
     #[test]

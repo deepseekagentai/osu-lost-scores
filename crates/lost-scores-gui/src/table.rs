@@ -78,6 +78,7 @@ impl Column {
 pub enum Detail {
     Lost {
         kept_pp: f64,
+        counted_pp: f64,
     },
     Weighted {
         place: usize,
@@ -494,6 +495,7 @@ fn lost_items(scan: &SavedScan, zone: &TimeZone) -> Vec<Item> {
                 row.beatmap_id,
                 Detail::Lost {
                     kept_pp: row.kept_pp,
+                    counted_pp: row.counted(),
                 },
                 zone,
             )
@@ -509,7 +511,7 @@ fn lost_footer(items: &[Item]) -> Vec<(String, String)> {
     let lost_pp: f64 = items
         .iter()
         .map(|item| match item.detail {
-            Detail::Lost { kept_pp } => item.pp - kept_pp,
+            Detail::Lost { counted_pp, .. } => item.pp - counted_pp,
             Detail::Weighted { .. } => 0.0,
         })
         .sum();
@@ -666,6 +668,7 @@ mod tests {
         LostRow {
             pp,
             kept_pp: kept,
+            counted_pp: None,
             score: 1_000_000,
             kept_score: 900_000,
             mods: mods.into(),

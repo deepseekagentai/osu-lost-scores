@@ -322,6 +322,7 @@ fn lost_row(
     LostRow {
         pp,
         kept_pp: kept,
+        counted_pp: None,
         score: 1_234_567,
         kept_score: 1_000_000,
         mods: mods.into(),
