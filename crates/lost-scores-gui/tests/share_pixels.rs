@@ -399,6 +399,31 @@ fn every_prepared_image_appears_pixel_for_pixel() {
     );
 }
 
+#[test]
+fn the_backdrop_is_sized_for_the_rows_below_it() {
+    use_offscreen_platform().unwrap();
+    let scan = synthetic_scan();
+    let options = ShareOptions {
+        count: 12,
+        include_all: false,
+        show_lost_in_top: true,
+    };
+    let images = render_images(&scan, &options, &Prepared::default(), &TimeZone::UTC).unwrap();
+    let mut failures = Vec::new();
+    for file in [LOST_FILE, POTENTIAL_FILE] {
+        let image = images.iter().find(|image| image.file == file).unwrap();
+        let width = image.width;
+        let margins = template(
+            "backdrop beside the rows",
+            &buffer_image(&backdrop_wide(image.height)),
+            None,
+            |x, y| (440..860).contains(&y) && (x < 40 || x >= width - 40),
+        );
+        check(image, vec![(margins, 1)], &mut failures);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn wide_backdrop(image: &Rendered) -> Template {
     template(
         "wide backdrop",

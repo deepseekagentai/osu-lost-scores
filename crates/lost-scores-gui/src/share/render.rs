@@ -271,12 +271,12 @@ pub fn render_images(
 
     let rows = lost_rows(scan, options);
     let lost = ShareLost::new()?;
-    lost.set_backdrop(wide_backdrop(lost.get_image_height()));
-    lost.set_backdrop_height(backdrop_height(lost.get_image_height()));
     lost.set_avatar(avatar(&prepared.header_avatar));
     lost.set_art(share_art(&art));
     lost.set_mods_width(mods_width(&rows));
     lost.set_rows(items(&rows, prepared, &art));
+    lost.set_backdrop(wide_backdrop(lost.get_image_height()));
+    lost.set_backdrop_height(backdrop_height(lost.get_image_height()));
     lost.set_nick(SharedString::from(scan.player_name.as_str()));
     lost.set_subtitle(subtitle(scan, options).into());
     lost.set_date(day.as_str().into());
@@ -286,12 +286,12 @@ pub fn render_images(
         let rows = potential_rows(scan, options);
         let card = stats(potential);
         let top = SharePotential::new()?;
-        top.set_backdrop(wide_backdrop(top.get_image_height()));
-        top.set_backdrop_height(backdrop_height(top.get_image_height()));
         top.set_avatar(avatar(&prepared.header_avatar));
         top.set_art(share_art(&art));
         top.set_mods_width(mods_width(&rows));
         top.set_rows(items(&rows, prepared, &art));
+        top.set_backdrop(wide_backdrop(top.get_image_height()));
+        top.set_backdrop_height(backdrop_height(top.get_image_height()));
         top.set_nick(SharedString::from(scan.player_name.as_str()));
         top.set_date(day.as_str().into());
         top.set_pp_from(card.pp_from.as_str().into());
