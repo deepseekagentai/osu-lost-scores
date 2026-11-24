@@ -1436,15 +1436,32 @@ export component ResultsPanel inherits Rectangle {
                     }
                 }
             }
-            if root.view-images && !State.has-images: Text {
+            if root.view-images && !State.has-images: VerticalLayout {
                 x: 0px;
                 y: 12px;
                 width: parent.width;
-                text: "This scan has no images. Images are made after every scan from now on.";
-                color: T.k;
-                font-size: 14px;
-                font-italic: true;
-                wrap: word-wrap;
+                spacing: 12px;
+                alignment: start;
+                Text {
+                    text: "This scan has no images. Images are made after every scan from now on.";
+                    color: T.k;
+                    font-size: 14px;
+                    font-italic: true;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    SecondaryButton {
+                        width: 200px;
+                        text: State.drawing-images ? "Drawing pictures…" : "Draw pictures";
+                        tip: "Draw the share pictures of this scan again";
+                        text-size: 15px;
+                        enabled: !State.drawing-images && !State.busy;
+                        clicked => {
+                            State.draw-images();
+                        }
+                    }
+                }
             }
             if root.view-images && State.has-images: PictureArrows {
                 x: parent.width - self.preferred-width - 24px;

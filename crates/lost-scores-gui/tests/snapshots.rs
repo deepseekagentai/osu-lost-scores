@@ -710,6 +710,12 @@ fn render_results_snapshots() {
         WIDE,
         &dir.join("40b-switch-count-images-wide.png"),
     );
+    state.set_has_images(false);
+    draw(&surface, &dir.join("40c-results-no-images.png"));
+    state.set_drawing_images(true);
+    draw(&surface, &dir.join("40d-results-drawing-images.png"));
+    state.set_drawing_images(false);
+    state.set_has_images(true);
     state.set_images_shown(false);
     state.set_show_results(true);
     draw(&surface, &dir.join("29-results-submit.png"));

@@ -375,7 +375,7 @@ fn run_renderer(job: &Job, folder: &Path) -> Result<Vec<String>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .output()
-        .map_err(|error| anyhow!("cannot start {}: {error}", renderer.display()))?;
+        .map_err(|error| start_failure(renderer, &error))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<String> = stderr
         .lines()
@@ -387,6 +387,16 @@ fn run_renderer(job: &Job, folder: &Path) -> Result<Vec<String>> {
         return Ok(lines);
     }
     Err(anyhow!("{}", failure_line(&lines, &output.status)))
+}
+
+pub const MOVED: &str = "Lost Scores was moved or renamed after it started, so it could not draw the pictures. Start it again from its new place and press Draw pictures";
+
+fn start_failure(renderer: &Path, error: &std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::NotFound && !renderer.exists() {
+        anyhow!(MOVED)
+    } else {
+        anyhow!("cannot start {}: {error}", renderer.display())
+    }
 }
 
 fn failure_line(lines: &[String], status: &std::process::ExitStatus) -> String {
@@ -404,7 +414,7 @@ mod tests {
 
     use lost_scores_app::pipeline::{Event, Step};
 
-    use super::Throttle;
+    use super::{MOVED, Throttle, start_failure};
 
     fn progress(done: usize, total: usize) -> Event {
         Event::Progress {
@@ -412,6 +422,21 @@ mod tests {
             done,
             total,
         }
+    }
+
+    #[test]
+    fn a_renderer_that_is_gone_says_the_program_was_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("lost-scores.exe");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(start_failure(&gone, &missing).to_string(), MOVED);
+        let here = std::env::current_exe().unwrap();
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(
+            start_failure(&here, &denied)
+                .to_string()
+                .starts_with(&format!("cannot start {}: ", here.display()))
+        );
     }
 
     #[test]

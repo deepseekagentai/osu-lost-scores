@@ -517,6 +517,8 @@ impl Session {
         let session = self.clone();
         state.on_open_scan_folder(move || session.open_scan_folder());
         let session = self.clone();
+        state.on_draw_images(move || session.draw_images());
+        let session = self.clone();
         state.on_open_beatmap(move |id| {
             if id > 0 {
                 session.launch("the page", format!("{BEATMAP_PAGE}{id}").into());
@@ -1703,6 +1705,77 @@ impl Session {
         self.put_on_clipboard(text, |app, result| match result {
             Ok(()) => app.toast("Copied to clipboard"),
             Err(error) => app.log(&format!("Could not copy the row: {error}")),
+        });
+    }
+
+    fn draw_images(&self) {
+        let state = self.window.global::<State>();
+        if state.get_drawing_images() {
+            return;
+        }
+        let Some(folder) = self.folder.borrow().clone() else {
+            return;
+        };
+        let renderer = self
+            .renderer
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
+        if !renderer.exists() {
+            self.log(&format!("Could not create the images: {}", worker::MOVED));
+            return;
+        }
+        let scan = match history::load(&folder) {
+            Ok(scan) => scan,
+            Err(error) => {
+                self.log(&format!(
+                    "Could not open the scan to draw its pictures: {error:#}"
+                ));
+                return;
+            }
+        };
+        let settings = self.settings.borrow();
+        let job = Job {
+            source: Source {
+                osu_dir: None,
+                player: None,
+                songs_dir: None,
+                check_missing: false,
+                maps: None,
+                stop_on_lookup_error: false,
+            },
+            scans_dir: folder.parent().map(Path::to_path_buf).unwrap_or_default(),
+            include_all: scan.include_all,
+            renderer,
+            share_count: usize::from(clamped_scores(settings.scores_to_show)),
+            show_lost_in_top: settings.show_lost_in_top_image,
+        };
+        drop(settings);
+        state.set_drawing_images(true);
+        let weak = self.weak.clone();
+        thread::spawn(move || {
+            let mut lines = Vec::new();
+            worker::create_images(
+                &job,
+                &scan,
+                &folder,
+                None,
+                &mut |event| {
+                    if let pipeline::Event::Log(line) = event {
+                        lines.push(line);
+                    }
+                },
+                &mut crate::share::rasters::HttpFetch::new(),
+            );
+            on_ui(&weak, move |app| {
+                app.window.global::<State>().set_drawing_images(false);
+                for line in &lines {
+                    app.log(line);
+                }
+                if app.folder.borrow().as_deref() == Some(folder.as_path()) {
+                    app.refresh_shared();
+                }
+            });
         });
     }
 
@@ -3364,6 +3437,31 @@ mod tests {
         let wanted = session.preview_wanted.borrow().clone();
         let epoch = session.preview_epoch.get();
         session.previews_arrived(epoch, crate::previews::render_all(&wanted));
+    }
+
+    #[test]
+    fn drawing_pictures_needs_an_open_scan() {
+        let (window, session, _fixture) = session(1100.0);
+        let before = session.log.row_count();
+        window.global::<State>().invoke_draw_images();
+        assert!(!window.global::<State>().get_drawing_images());
+        assert_eq!(session.log.row_count(), before);
+    }
+
+    #[test]
+    fn drawing_pictures_after_the_program_moved_says_what_to_do() {
+        let (window, session, _fixture) = session(1100.0);
+        let root = tempfile::tempdir().unwrap();
+        let folder = history::save(root.path(), &saved_scan()).unwrap();
+        open_scan(&session, &folder);
+        *session.renderer.borrow_mut() = Some(root.path().join("moved-away"));
+        window.global::<State>().invoke_draw_images();
+        assert!(!window.global::<State>().get_drawing_images());
+        let last = session.log.row_data(session.log.row_count() - 1).unwrap();
+        assert_eq!(
+            last.text.to_string(),
+            format!("Could not create the images: {}", crate::worker::MOVED)
+        );
     }
 
     fn saved_scan() -> lost_scores_app::history::SavedScan {

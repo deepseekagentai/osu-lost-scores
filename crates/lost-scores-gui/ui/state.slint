@@ -177,6 +177,8 @@ export global State {
     callback search-changed(string);
     callback select-scan(int);
     callback open-scan-folder();
+    callback draw-images();
+    in-out property <bool> drawing-images;
     callback delete-scan(int);
     callback delete-older-scans();
     callback confirm-delete();
