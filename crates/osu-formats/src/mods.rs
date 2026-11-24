@@ -1,43 +1,17 @@
-const NO_FAIL: u32 = 1 << 0;
-const EASY: u32 = 1 << 1;
-const TOUCH_DEVICE: u32 = 1 << 2;
-const HIDDEN: u32 = 1 << 3;
-const HARD_ROCK: u32 = 1 << 4;
-const SUDDEN_DEATH: u32 = 1 << 5;
-const DOUBLE_TIME: u32 = 1 << 6;
-const HALF_TIME: u32 = 1 << 8;
-const NIGHTCORE: u32 = 1 << 9;
-const FLASHLIGHT: u32 = 1 << 10;
-const SPUN_OUT: u32 = 1 << 12;
-const PERFECT: u32 = 1 << 14;
+use rosu_mods::GameModsLegacy;
 
-const RANKED_IN_STANDARD: u32 = NO_FAIL
-    | EASY
-    | TOUCH_DEVICE
-    | HIDDEN
-    | HARD_ROCK
-    | SUDDEN_DEATH
-    | DOUBLE_TIME
-    | HALF_TIME
-    | NIGHTCORE
-    | FLASHLIGHT
-    | SPUN_OUT
-    | PERFECT;
-
-const ACRONYMS: [(u32, &str); 12] = [
-    (NO_FAIL, "NF"),
-    (EASY, "EZ"),
-    (TOUCH_DEVICE, "TD"),
-    (HIDDEN, "HD"),
-    (HARD_ROCK, "HR"),
-    (SUDDEN_DEATH, "SD"),
-    (DOUBLE_TIME, "DT"),
-    (HALF_TIME, "HT"),
-    (NIGHTCORE, "NC"),
-    (FLASHLIGHT, "FL"),
-    (SPUN_OUT, "SO"),
-    (PERFECT, "PF"),
-];
+const RANKED_IN_STANDARD: GameModsLegacy = GameModsLegacy::NoFail
+    .union(GameModsLegacy::Easy)
+    .union(GameModsLegacy::TouchDevice)
+    .union(GameModsLegacy::Hidden)
+    .union(GameModsLegacy::HardRock)
+    .union(GameModsLegacy::SuddenDeath)
+    .union(GameModsLegacy::DoubleTime)
+    .union(GameModsLegacy::HalfTime)
+    .union(GameModsLegacy::Nightcore)
+    .union(GameModsLegacy::Flashlight)
+    .union(GameModsLegacy::SpunOut)
+    .union(GameModsLegacy::Perfect);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Mods(u32);
@@ -52,22 +26,18 @@ impl Mods {
     }
 
     pub const fn is_ranked_in_standard(self) -> bool {
-        self.0 & !RANKED_IN_STANDARD == 0
+        GameModsLegacy::from_bits_retain(self.0)
+            .difference(RANKED_IN_STANDARD)
+            .is_empty()
     }
 
     pub fn acronyms(self) -> String {
-        let mut bits = self.0;
-        if bits & NIGHTCORE != 0 {
-            bits &= !DOUBLE_TIME;
+        let mods = GameModsLegacy::from_bits_retain(self.0);
+        if mods.is_empty() {
+            String::new()
+        } else {
+            mods.to_string()
         }
-        if bits & PERFECT != 0 {
-            bits &= !SUDDEN_DEATH;
-        }
-        ACRONYMS
-            .iter()
-            .filter(|(bit, _)| bits & bit != 0)
-            .map(|(_, name)| *name)
-            .collect()
     }
 }
 

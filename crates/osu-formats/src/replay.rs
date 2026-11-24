@@ -1,6 +1,10 @@
+use std::io::{self, Write};
+
+use lzma_rs::decompress::{Options, UnpackedSize};
+use lzma_rs::lzma_decompress_with_options;
 use thiserror::Error;
 
-use crate::{Mods, lzma, utf8_ignoring_invalid};
+use crate::{Mods, utf8_ignoring_invalid};
 
 const TICKS_AT_UNIX_EPOCH: i64 = 621_355_968_000_000_000;
 const TICKS_PER_SECOND: i64 = 10_000_000;
@@ -84,7 +88,7 @@ impl ReplayHeader {
         if !life_pairs(life.as_bytes()) {
             return Err(ReplayError::LifeBar);
         }
-        if !lzma::alone(stream, MAX_FRAMES_TEXT).is_some_and(|text| cursor_frames(&text)) {
+        if !frames_text(stream).is_some_and(|text| cursor_frames(&text)) {
             return Err(ReplayError::Frames);
         }
         Ok(header)
@@ -194,6 +198,45 @@ impl Scan<'_> {
     fn done(&self) -> bool {
         self.at >= self.text.len()
     }
+}
+
+struct Capped(Vec<u8>);
+
+impl Write for Capped {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.0.len() + data.len() > MAX_FRAMES_TEXT {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        self.0.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn frames_text(stream: &[u8]) -> Option<Vec<u8>> {
+    let declared = u64::from_le_bytes(stream.get(5..13)?.try_into().ok()?);
+    whole_stream(stream, UnpackedSize::ReadFromHeader).or_else(|| {
+        if declared == u64::MAX {
+            return None;
+        }
+        whole_stream(stream, UnpackedSize::ReadHeaderButUseProvided(None))
+            .filter(|text| u64::try_from(text.len()).is_ok_and(|length| length == declared))
+    })
+}
+
+fn whole_stream(stream: &[u8], unpacked_size: UnpackedSize) -> Option<Vec<u8>> {
+    let mut input = io::Cursor::new(stream);
+    let mut output = Capped(Vec::new());
+    let options = Options {
+        unpacked_size,
+        memlimit: Some(MAX_FRAMES_TEXT),
+        allow_incomplete: false,
+    };
+    lzma_decompress_with_options(&mut input, &mut output, &options).ok()?;
+    (usize::try_from(input.position()).ok()? == stream.len()).then_some(output.0)
 }
 
 fn cursor_frames(text: &[u8]) -> bool {
